@@ -104,10 +104,10 @@
         },
         "localLlm.contextSize": {
           "type": "integer",
-          "default": 32768,
-          "minimum": 512,
+          "default": 0,
+          "minimum": 0,
           "maximum": 262144,
-          "description": "Physical context window passed to llama.cpp. The extension never advertises more input and output capacity than this value."
+          "description": "Physical context window. Zero lets llama.cpp start from the window the model was trained with and reduce it to fit this computer. Any other value pins the window and disables that fitting."
         },
         "localLlm.maxTools": {
           "type": "integer",
@@ -175,10 +175,10 @@
         },
         "localLlm.metalMemoryReserveMiB": {
           "type": "integer",
-          "default": 4096,
-          "minimum": 256,
+          "default": 1024,
+          "minimum": 0,
           "maximum": 32768,
-          "description": "Memory margin llama.cpp should preserve when fitting a model to Apple Metal. Higher values may offload more layers to CPU."
+          "description": "Memory llama.cpp leaves free when fitting a model to Apple Metal. llama.cpp measures free memory as its own Metal budget minus its own allocation, so it cannot see other applications. Raise this when other software needs memory. Values below 1024 are raised to 1024, the llama.cpp default."
         },
         "localLlm.temperature": {
           "type": "number",

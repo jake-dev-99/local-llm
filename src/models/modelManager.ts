@@ -6,6 +6,7 @@ import * as vscode from 'vscode';
 import { readConfig } from '../config';
 import type { InstalledModel, ModelSource } from '../domain';
 import type { LocalLlmLogger } from '../logging';
+import { readGgufMetadata } from './ggufMetadata';
 import { isSingleFileGguf, selectableHuggingFaceFiles } from './huggingFaceFileSelection';
 import { ModelRegistry } from './modelRegistry';
 import {
@@ -201,6 +202,7 @@ export class ModelManager {
   }): Promise<InstalledModel> {
     const name = friendlyName(input.filename);
     const fileMetadata = await stat(input.filePath);
+    const ggufMetadata = await readGgufMetadata(input.filePath);
     const model: InstalledModel = {
       id: `${slug(name)}-${input.sha256.slice(0, 12)}`,
       name,
@@ -216,6 +218,9 @@ export class ModelManager {
       ...(input.sourceUrl ? { sourceUrl: input.sourceUrl } : {}),
       ...(input.repository ? { repository: input.repository } : {}),
       ...(input.revision ? { revision: input.revision } : {}),
+      ...(ggufMetadata?.trainedContextLength
+        ? { trainedContextLength: ggufMetadata.trainedContextLength }
+        : {}),
     };
     const existing = this.registry.get(model.id);
     await this.registry.upsert(model);

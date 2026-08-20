@@ -33,6 +33,11 @@ export interface InstalledModel {
   installedAt: string;
   capabilities: ModelCapabilities;
   runtimeProfile?: ModelRuntimeProfile;
+  /**
+   * Context length from the GGUF header. A bootstrap estimate only; the window
+   * actually used comes from the worker once llama.cpp has fitted the model.
+   */
+  trainedContextLength?: number;
 }
 
 export type WorkerState =

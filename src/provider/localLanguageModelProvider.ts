@@ -5,7 +5,7 @@ import type { LocalLlmLogger } from '../logging';
 import type { ModelRegistry } from '../models/modelRegistry';
 import type { WorkerManager } from '../worker/workerManager';
 import { isFatalWorkerError } from '../worker/workerError';
-import { modelTokenLimits } from './modelCapacity';
+import { modelTokenLimits, resolveAdvertisedContextSize } from './modelCapacity';
 import {
   adaptMessages,
   adaptTools,
@@ -166,10 +166,11 @@ implements vscode.LanguageModelChatProvider<LocalLanguageModelInformation>, vsco
               'Agent tool calling is disabled for this model until it passes Local LLM: Validate Model Compatibility.',
             );
           }
-          const physicalContext = Math.max(
-            2,
-            Math.min(config.contextSize, profile.loadedContextSize),
-          );
+          // In automatic mode localLlm.contextSize is zero, so clamping against it
+          // would yield a two token window. The worker's loaded window is the truth.
+          const physicalContext = config.contextSize > 0
+            ? Math.max(2, Math.min(config.contextSize, profile.loadedContextSize))
+            : Math.max(2, profile.loadedContextSize);
           const maxTokens = clamp(
             numericOption(options.modelOptions, 'maxTokens', config.maxOutputTokens),
             1,
@@ -274,10 +275,19 @@ implements vscode.LanguageModelChatProvider<LocalLanguageModelInformation>, vsco
 
   private modelInformation(
     model: InstalledModel,
-    contextSize: number,
+    configuredContextSize: number,
     maxOutputTokens: number,
     maxTools: number,
   ): LocalLanguageModelInformation {
+    const contextSize = resolveAdvertisedContextSize({
+      configuredContextSize,
+      ...(model.runtimeProfile?.loadedContextSize
+        ? { loadedContextSize: model.runtimeProfile.loadedContextSize }
+        : {}),
+      ...(model.trainedContextLength
+        ? { trainedContextLength: model.trainedContextLength }
+        : {}),
+    });
     const limits = modelTokenLimits(contextSize, maxOutputTokens);
     const toolStatus = model.capabilities.toolCalling === 'supported'
       ? 'tool calls validated'

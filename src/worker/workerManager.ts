@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { constants as fsConstants } from 'node:fs';
 import { access, mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import * as net from 'node:net';
@@ -9,6 +9,7 @@ import type { InstalledModel, WorkerState } from '../domain';
 import type { LocalLlmLogger } from '../logging';
 import { abortError, InferenceScheduler, type InferenceKind } from './inferenceScheduler';
 import { LlamaClient } from './llamaClient';
+import { parseFittedContext, parseFreeDeviceMemoryMiB, resolveFitTargetMiB } from './memoryFit';
 import { isFatalWorkerError } from './workerError';
 import { verifiedWorkerPath } from './workerIntegrity';
 
@@ -207,12 +208,19 @@ export class WorkerManager implements vscode.Disposable {
       const apiKey = randomBytes(32).toString('hex');
       const apiKeyFile = await this.createApiKeyFile(apiKey);
       throwIfAborted(signal);
+      const orphanBytes = await orphanWorkerMemoryBytes(executable);
+      if (orphanBytes) {
+        this.logger.info(
+          `Another local worker still holds ${Math.round(orphanBytes / (1024 * 1024))} MiB; reserving that memory as well.`,
+        );
+      }
       const args = buildWorkerArguments(
         model.filePath,
         port,
         apiKeyFile,
         readConfig(this.context),
         process.platform,
+        orphanBytes,
       );
       child = spawn(executable, args, {
         cwd: pathDirectory(executable),
@@ -377,6 +385,13 @@ export class WorkerManager implements vscode.Disposable {
   }
 
   private logWorkerOutput(data: string): void {
+    const fitted = parseFittedContext(data);
+    if (fitted) {
+      const budget = parseFreeDeviceMemoryMiB(data);
+      this.logger.info(
+        `llama.cpp reduced the context window from ${fitted.trainedContextSize} to ${fitted.fittedContextSize} tokens to fit this computer${budget ? ` (it sees ${budget} MiB of device memory)` : ''}.`,
+      );
+    }
     for (const line of data.split(/\r?\n/)) {
       if (line.trim()) {
         this.logger.debug(`worker: ${line.trim()}`);
@@ -427,6 +442,7 @@ export function buildWorkerArguments(
   apiKeyFile: string,
   config: import('../domain').WorkerConfig,
   platform: NodeJS.Platform,
+  concurrentWorkerBytes?: number,
 ): string[] {
   const batchSize = Math.max(32, Math.floor(config.batchSize));
   const microBatchSize = Math.max(
@@ -442,8 +458,6 @@ export function buildWorkerArguments(
     String(port),
     '--api-key-file',
     apiKeyFile,
-    '--ctx-size',
-    String(config.contextSize),
     '--parallel',
     '1',
     '--batch-size',
@@ -453,13 +467,22 @@ export function buildWorkerArguments(
     '--jinja',
     '--no-webui',
   ];
+  // Omitting --ctx-size entirely lets llama.cpp start from the model's trained
+  // window and reduce it to fit this machine. Passing --ctx-size 0 would instead
+  // set fit_params_min_ctx to UINT32_MAX and disable that reduction.
+  if (config.contextSize > 0) {
+    args.push('--ctx-size', String(config.contextSize));
+  }
   const useMetal = platform === 'darwin' && config.acceleration === 'auto';
   if (useMetal) {
     args.push(
       '--fit',
       'on',
       '--fit-target',
-      String(Math.max(256, Math.floor(config.metalMemoryReserveMiB))),
+      String(resolveFitTargetMiB({
+        reserveMiB: config.metalMemoryReserveMiB,
+        ...(concurrentWorkerBytes === undefined ? {} : { concurrentWorkerBytes }),
+      })),
     );
   } else {
     args.push(
@@ -538,4 +561,41 @@ async function delay(milliseconds: number, signal?: AbortSignal): Promise<void> 
 function pathDirectory(filePath: string): string {
   const separator = Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\'));
   return separator >= 0 ? filePath.slice(0, separator) : '.';
+}
+
+
+/**
+ * Resident memory held by local workers this extension is not currently tracking.
+ *
+ * A VS Code reload can leave a previous worker alive. llama.cpp measures free
+ * device memory as its own Metal budget minus its own allocation, so it cannot
+ * see that process; the memory has to be reserved explicitly.
+ *
+ * Returns undefined when the platform offers no cheap way to ask.
+ */
+async function orphanWorkerMemoryBytes(executable: string): Promise<number | undefined> {
+  if (process.platform === 'win32') {
+    return undefined;
+  }
+  try {
+    const listing = await new Promise<string>((resolve, reject) => {
+      execFile('ps', ['-axo', 'rss=,command='], { maxBuffer: 8 * 1024 * 1024 }, (error, stdout) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(stdout);
+      });
+    });
+    let bytes = 0;
+    for (const line of listing.split(/\r?\n/)) {
+      const match = /^\s*(\d+)\s+(.*)$/.exec(line);
+      if (match?.[2]?.includes(executable) && match[1]) {
+        bytes += Number(match[1]) * 1024;
+      }
+    }
+    return bytes > 0 ? bytes : undefined;
+  } catch {
+    return undefined;
+  }
 }

@@ -9,7 +9,52 @@ type BuildWorkerArguments = (
   apiKeyFile: string,
   config: LocalLlmConfig,
   platform: NodeJS.Platform,
+  concurrentWorkerBytes?: number,
 ) => string[];
+
+test('an automatic context window omits --ctx-size so llama.cpp can fit the model', async () => {
+  const buildArguments = await loadBuildWorkerArguments();
+  const args = buildArguments(
+    '/models/qwen.gguf', 60000, '/keys/worker.key', config({ contextSize: 0 }), 'darwin',
+  );
+
+  // Passing --ctx-size at all pins the window. Passing --ctx-size 0 is worse: it sets
+  // fit_params_min_ctx to UINT32_MAX inside llama.cpp and disables context reduction.
+  assert.equal(args.includes('--ctx-size'), false);
+  assert.equal(args.includes('-c'), false);
+});
+
+test('an explicit context window is still passed through unchanged', async () => {
+  const buildArguments = await loadBuildWorkerArguments();
+  const args = buildArguments(
+    '/models/qwen.gguf', 60000, '/keys/worker.key', config({ contextSize: 32768 }), 'darwin',
+  );
+
+  assert.deepEqual(valueFor(args, '--ctx-size'), '32768');
+});
+
+test('the memory margin never drops below the llama.cpp default of 1024 MiB', async () => {
+  const buildArguments = await loadBuildWorkerArguments();
+  const args = buildArguments(
+    '/models/qwen.gguf', 60000, '/keys/worker.key',
+    config({ metalMemoryReserveMiB: 256 }), 'darwin',
+  );
+
+  assert.deepEqual(valueFor(args, '--fit-target'), '1024');
+});
+
+test('a second worker this extension owns is added to the memory margin', async () => {
+  const buildArguments = await loadBuildWorkerArguments();
+  const sixGiB = 6 * 1024 * 1024 * 1024;
+  const args = buildArguments(
+    '/models/qwen.gguf', 60000, '/keys/worker.key',
+    config({ metalMemoryReserveMiB: 2048 }), 'darwin', sixGiB,
+  );
+
+  // llama.cpp measures free device memory as its own Metal budget minus its own
+  // allocation, so it cannot see the other worker.
+  assert.deepEqual(valueFor(args, '--fit-target'), String(2048 + 6144));
+});
 
 test('Apple auto acceleration uses conservative batches and llama.cpp memory fitting', async () => {
   const buildArguments = await loadBuildWorkerArguments();

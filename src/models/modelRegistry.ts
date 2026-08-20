@@ -6,6 +6,7 @@ import type {
   ModelRuntimeProfile,
 } from '../domain';
 import type { LocalLlmLogger } from '../logging';
+import { readGgufMetadata } from './ggufMetadata';
 import { sha256File } from './modelSources';
 
 const REGISTRY_KEY = 'localLlm.installedModels.v1';
@@ -48,10 +49,18 @@ export class ModelRegistry {
             });
           } else {
             migrated ||= model.fileSize !== metadata.size || model.fileModifiedAt !== metadata.mtimeMs;
+            // Models installed before the GGUF header was read have no trained
+            // window recorded. Backfill it rather than requiring a reinstall.
+            let trainedContextLength = model.trainedContextLength;
+            if (trainedContextLength === undefined) {
+              trainedContextLength = (await readGgufMetadata(model.filePath))?.trainedContextLength;
+              migrated ||= trainedContextLength !== undefined;
+            }
             available.push({
               ...model,
               fileSize: metadata.size,
               fileModifiedAt: metadata.mtimeMs,
+              ...(trainedContextLength ? { trainedContextLength } : {}),
             });
           }
         }

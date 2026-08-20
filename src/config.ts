@@ -23,7 +23,7 @@ export function readConfig(context: vscode.ExtensionContext): LocalLlmConfig {
       ? expandHome(configuredDirectory)
       : defaultModelDirectory(context),
     defaultModelId: config.get<string>('defaultModelId', ''),
-    contextSize: config.get<number>('contextSize', 32768),
+    contextSize: config.get<number>('contextSize', 0),
     maxTools: config.get<number>('maxTools', 8),
     maxAgentToolRounds: config.get<number>('maxAgentToolRounds', 8),
     maxOutputTokens: config.get<number>('maxOutputTokens', 2048),
@@ -36,7 +36,7 @@ export function readConfig(context: vscode.ExtensionContext): LocalLlmConfig {
     microBatchSize,
 
 
-    metalMemoryReserveMiB: config.get<number>('metalMemoryReserveMiB', 4096),
+    metalMemoryReserveMiB: config.get<number>('metalMemoryReserveMiB', 1024),
     temperature: config.get<number>('temperature', 0.2),
     inlineEnabled: config.get<boolean>('inline.enabled', true),
     inlineMaxTokens: config.get<number>('inline.maxTokens', 64),
