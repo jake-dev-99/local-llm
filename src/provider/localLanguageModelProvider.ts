@@ -76,7 +76,10 @@ implements vscode.LanguageModelChatProvider<LocalLanguageModelInformation>, vsco
       localAgentNeedsMutationTool(adaptedMessages);
     // Never gate this on how many tools arrived. An empty tool list is exactly the
     // case that must reach resolveLocalAgentToolPolicy so it can refuse the turn.
-    const requireLocalAgentTool = requiresLocalAgentTool(adaptedMessages);
+    const requireLocalAgentTool = requiresLocalAgentTool(
+      adaptedMessages,
+      config.maxAgentToolRounds,
+    );
     const discoveryTools = localAgentRequest
       ? localAgentDiscoveryTools(availableTools)
       : [];

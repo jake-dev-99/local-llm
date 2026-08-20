@@ -55,6 +55,7 @@ export interface LocalLlmConfig extends WorkerConfig {
   modelDirectory: string;
   defaultModelId: string;
   maxTools: number;
+  maxAgentToolRounds: number;
   maxOutputTokens: number;
   maxToolCallTokens: number;
   startupTimeoutMilliseconds: number;

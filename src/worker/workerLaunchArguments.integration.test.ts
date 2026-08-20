@@ -47,6 +47,7 @@ function config(overrides: Partial<LocalLlmConfig> = {}): LocalLlmConfig {
     defaultModelId: '',
     contextSize: 32768,
     maxTools: 8,
+    maxAgentToolRounds: 8,
     maxOutputTokens: 2048,
     maxToolCallTokens: 512,
     startupTimeoutMilliseconds: 600_000,

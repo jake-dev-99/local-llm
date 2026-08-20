@@ -25,6 +25,7 @@ export function readConfig(context: vscode.ExtensionContext): LocalLlmConfig {
     defaultModelId: config.get<string>('defaultModelId', ''),
     contextSize: config.get<number>('contextSize', 32768),
     maxTools: config.get<number>('maxTools', 8),
+    maxAgentToolRounds: config.get<number>('maxAgentToolRounds', 8),
     maxOutputTokens: config.get<number>('maxOutputTokens', 2048),
     maxToolCallTokens: config.get<number>('maxToolCallTokens', 512),
     startupTimeoutMilliseconds:

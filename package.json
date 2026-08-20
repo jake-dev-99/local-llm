@@ -116,6 +116,13 @@
           "maximum": 32,
           "description": "Maximum tool definitions accepted per model request. Use the bundled Local Agent, which has a small local-only tool set."
         },
+        "localLlm.maxAgentToolRounds": {
+          "type": "integer",
+          "default": 8,
+          "minimum": 1,
+          "maximum": 50,
+          "description": "How many tool calls the bundled Local Agent must make before it may answer. One completed tool call no longer ends the task."
+        },
         "localLlm.maxOutputTokens": {
           "type": "integer",
           "default": 2048,

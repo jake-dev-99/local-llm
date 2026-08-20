@@ -288,16 +288,16 @@ test('Local Agent turn still requires a tool when the host supplies none', () =>
 
   // Without this, an empty tool list silently disables the Local Agent contract
   // and the model answers from the prompt alone.
-  assert.equal(requiresLocalAgentTool(messages), true);
+  assert.equal(requiresLocalAgentTool(messages, 8), true);
   assert.throws(
-    () => resolveLocalAgentToolPolicy([], false, requiresLocalAgentTool(messages), false),
+    () => resolveLocalAgentToolPolicy([], false, requiresLocalAgentTool(messages, 8), false),
     /Supplied tools: none/,
   );
 });
 
 test('a non Local Agent turn never forces a tool', () => {
   assert.equal(
-    requiresLocalAgentTool([{ role: 'user', content: 'Explain this function.' }]),
+    requiresLocalAgentTool([{ role: 'user', content: 'Explain this function.' }], 8),
     false,
   );
 });
