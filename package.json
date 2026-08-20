@@ -2,7 +2,7 @@
   "name": "local-llm-engine",
   "displayName": "Local LLM Engine",
   "description": "Run GGUF language models locally in VS Code Chat, Agent mode, and inline completion.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "publisher": "local-llm",
   "license": "MIT",
   "engines": {
@@ -111,10 +111,10 @@
         },
         "localLlm.maxTools": {
           "type": "integer",
-          "default": 8,
+          "default": 128,
           "minimum": 1,
-          "maximum": 32,
-          "description": "Maximum tool definitions accepted per model request. Use the bundled Local Agent, which has a small local-only tool set."
+          "maximum": 512,
+          "description": "Maximum tool definitions accepted per model request. Each definition costs roughly 130 to 140 tokens of the input budget, and the budget itself is enforced separately against a real token count. Lower this only to keep a small model's tool choice focused; the bundled Local Agent already supplies a curated set."
         },
         "localLlm.maxAgentToolRounds": {
           "type": "integer",
