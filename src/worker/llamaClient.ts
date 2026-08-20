@@ -42,8 +42,15 @@ export interface ChatResult {
   toolCallCount: number;
 }
 
+/**
+ * Whether the loaded model emits tool calls on llama.cpp's native tool_calls
+ * channel. Measured once per worker process, then reused.
+ */
+type NativeToolCallSupport = 'unknown' | 'available' | 'unavailable';
+
 export class LlamaClient {
   private modelProfile: WorkerModelProfile | undefined;
+  private nativeToolCalls: NativeToolCallSupport = 'unknown';
 
   constructor(
     readonly baseUrl: string,
@@ -113,6 +120,14 @@ export class LlamaClient {
     }
 
     const toolProtocolEnabled = tools.length > 0 && toolChoice !== 'none';
+
+    // Some instruct models describe a tool call in prose and never populate the
+    // native tool_calls channel. Once a model has demonstrated that, its native
+    // generation is discarded every turn, so stop paying for it.
+    if (toolProtocolEnabled && this.nativeToolCalls === 'unavailable') {
+      return this.schemaConstrainedDecision(request, tools, toolChoice, 0, onEvent, signal);
+    }
+
     const nativeEvents: ChatStreamEvent[] = [];
     const nativeResult = await this.streamNativeChat(
       request,
@@ -120,12 +135,37 @@ export class LlamaClient {
       signal,
     );
     if (!toolProtocolEnabled || nativeResult.toolCallCount > 0) {
+      if (toolProtocolEnabled) {
+        this.nativeToolCalls = 'available';
+      }
       for (const event of nativeEvents) {
         onEvent(event);
       }
       return nativeResult;
     }
 
+    this.nativeToolCalls = 'unavailable';
+    this.log?.(
+      'This model returned no native tool call; using schema-constrained decisions for the rest of this worker session.',
+    );
+    return this.schemaConstrainedDecision(
+      request,
+      tools,
+      toolChoice,
+      nativeResult.textCharacters,
+      onEvent,
+      signal,
+    );
+  }
+
+  private async schemaConstrainedDecision(
+    request: ChatRequest,
+    tools: readonly ChatTool[],
+    toolChoice: NonNullable<ChatRequest['toolChoice']>,
+    textCharacters: number,
+    onEvent: (event: ChatStreamEvent) => void,
+    signal?: AbortSignal,
+  ): Promise<ChatResult> {
     const fallback = await this.schemaConstrainedFallback(
       request,
       tools,
@@ -141,14 +181,14 @@ export class LlamaClient {
       });
       return {
         inputTokens: fallback.inputTokens,
-        textCharacters: nativeResult.textCharacters,
+        textCharacters,
         toolCallCount: 1,
       };
     }
     onEvent({ kind: 'text', text: fallback.decision.text });
     return {
       inputTokens: fallback.inputTokens,
-      textCharacters: nativeResult.textCharacters + fallback.decision.text.length,
+      textCharacters: textCharacters + fallback.decision.text.length,
       toolCallCount: 0,
     };
   }

@@ -11,15 +11,12 @@ import {
   adaptTools,
   serializeMessageForTokenCount,
 } from './messageAdapter';
-import {
-  isLocalAgentRequest,
-  shouldRequireLocalAgentTool,
-} from './localAgentToolChoice';
+import { isLocalAgentRequest } from './localAgentToolChoice';
 import {
   localAgentAvailableTools,
   localAgentDiscoveryTools,
   localAgentNeedsMutationTool,
-  localAgentNeedsReadForMutation,
+  requiresLocalAgentTool,
   resolveLocalAgentToolPolicy,
 } from './localAgentTools';
 import { messagesForSystemRoleSupport } from './messageRoleSupport';
@@ -75,15 +72,11 @@ implements vscode.LanguageModelChatProvider<LocalLanguageModelInformation>, vsco
     const availableTools = localAgentRequest
       ? localAgentAvailableTools(tools ?? [], adaptedMessages)
       : tools ?? [];
-    const needsReadForMutation = localAgentRequest &&
-      localAgentNeedsReadForMutation(adaptedMessages);
     const needsMutationTool = localAgentRequest &&
       localAgentNeedsMutationTool(adaptedMessages);
-    const requireLocalAgentTool = Boolean(
-      availableTools.length && (
-        shouldRequireLocalAgentTool(adaptedMessages) || needsReadForMutation
-      ),
-    );
+    // Never gate this on how many tools arrived. An empty tool list is exactly the
+    // case that must reach resolveLocalAgentToolPolicy so it can refuse the turn.
+    const requireLocalAgentTool = requiresLocalAgentTool(adaptedMessages);
     const discoveryTools = localAgentRequest
       ? localAgentDiscoveryTools(availableTools)
       : [];

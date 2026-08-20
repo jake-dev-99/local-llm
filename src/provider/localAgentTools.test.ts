@@ -6,8 +6,10 @@ import {
   localAgentDiscoveryTools,
   localAgentNeedsMutationTool,
   localAgentNeedsReadForMutation,
+  requiresLocalAgentTool,
   resolveLocalAgentToolPolicy,
 } from './localAgentTools.ts';
+import { LOCAL_AGENT_PROTOCOL_MARKER } from './localAgentToolChoice.ts';
 
 function tool(name: string): ChatTool {
   return { type: 'function', function: { name, parameters: { type: 'object' } } };
@@ -275,5 +277,27 @@ test('a direct change request with a no-change clause remains read-only', () => 
   assert.deepEqual(
     localAgentAvailableTools(localAgentTools, messages).map((item) => item.function.name),
     ['read_file', 'get_errors'],
+  );
+});
+
+test('Local Agent turn still requires a tool when the host supplies none', () => {
+  const messages: ChatMessage[] = [
+    { role: 'system', content: `Protocol marker: ${LOCAL_AGENT_PROTOCOL_MARKER}.` },
+    { role: 'user', content: 'What is the purpose of this app?' },
+  ];
+
+  // Without this, an empty tool list silently disables the Local Agent contract
+  // and the model answers from the prompt alone.
+  assert.equal(requiresLocalAgentTool(messages), true);
+  assert.throws(
+    () => resolveLocalAgentToolPolicy([], false, requiresLocalAgentTool(messages), false),
+    /Supplied tools: none/,
+  );
+});
+
+test('a non Local Agent turn never forces a tool', () => {
+  assert.equal(
+    requiresLocalAgentTool([{ role: 'user', content: 'Explain this function.' }]),
+    false,
   );
 });

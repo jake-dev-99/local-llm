@@ -1,4 +1,8 @@
 import type { ChatMessage, ChatTool } from '../domain';
+import {
+  isLocalAgentRequest,
+  shouldRequireLocalAgentTool,
+} from './localAgentToolChoice.ts';
 
 const LOCAL_AGENT_PROTOCOL_LINE =
   'Protocol marker: LOCAL_LLM_WORKSPACE_AGENT_PROTOCOL_9E218F31_V1.';
@@ -65,6 +69,20 @@ export function localAgentAvailableTools(
     LOCAL_AGENT_DISCOVERY_TOOL_NAMES.has(tool.function.name) ||
     (allowEdits && LOCAL_AGENT_EDIT_TOOL_NAMES.has(tool.function.name)),
   );
+}
+
+/**
+ * Whether a Local Agent turn must produce a tool call.
+ *
+ * This deliberately ignores how many tools the host supplied. An empty tool list
+ * is the case that most needs catching: without a tool the model answers from the
+ * prompt alone and prints the call it wanted as ordinary text.
+ */
+export function requiresLocalAgentTool(messages: readonly ChatMessage[]): boolean {
+  if (!isLocalAgentRequest(messages)) {
+    return false;
+  }
+  return shouldRequireLocalAgentTool(messages) || localAgentNeedsReadForMutation(messages);
 }
 
 export function localAgentNeedsReadForMutation(messages: readonly ChatMessage[]): boolean {

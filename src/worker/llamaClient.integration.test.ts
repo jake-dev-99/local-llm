@@ -131,6 +131,90 @@ test('chat accepts a valid native tool call without running the fallback', async
   }
 });
 
+test('chat stops repeating the native pass once the worker proves it emits no tool calls', async () => {
+  const nativeRequests: string[] = [];
+  const fallbackRequests: string[] = [];
+  const server = createServer((request, response) => {
+    if (request.url === '/v1/chat/completions/input_tokens') {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end('{"input_tokens":10}');
+      return;
+    }
+    if (request.url === '/v1/chat/completions') {
+      let body = '';
+      request.on('data', (chunk) => {
+        body += chunk;
+      });
+      request.on('end', () => {
+        if ((JSON.parse(body) as { response_format?: unknown }).response_format) {
+          fallbackRequests.push(body);
+          response.writeHead(200, { 'content-type': 'application/json' });
+          response.end(JSON.stringify({
+            choices: [{
+              message: {
+                content: JSON.stringify({
+                  kind: 'tool',
+                  name: 'read_file',
+                  arguments: { filePath: '/workspace/config.ts' },
+                }),
+              },
+            }],
+          }));
+          return;
+        }
+        // The measured Qwen2.5-Coder behaviour: prose that prints the call instead
+        // of emitting it on the native tool_calls channel.
+        nativeRequests.push(body);
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(
+          'data: {"choices":[{"delta":{"content":"I will use the read_file tool."}}]}\n\n' +
+            'data: [DONE]\n\n',
+        );
+      });
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+  await listen(server);
+
+  try {
+    const client = await testClient(server);
+    const request: ChatRequest = {
+      messages: [{ role: 'user', content: 'Review config.ts.' }],
+      tools: [{
+        type: 'function',
+        function: {
+          name: 'read_file',
+          parameters: {
+            type: 'object',
+            properties: { filePath: { type: 'string' } },
+            required: ['filePath'],
+            additionalProperties: false,
+          },
+        },
+      }],
+      toolChoice: 'required',
+      inputTokenBudget: 100,
+      maxTokens: 64,
+      temperature: 0,
+    };
+
+    const first: ChatStreamEvent[] = [];
+    await client.chat(request, (event) => first.push(event));
+    const second: ChatStreamEvent[] = [];
+    await client.chat(request, (event) => second.push(event));
+
+    // The first turn may probe the native path. The second must not repeat a
+    // generation the worker has already shown to be useless.
+    assert.equal(nativeRequests.length, 1);
+    assert.equal(fallbackRequests.length, 2);
+    assert.deepEqual(second.map((event) => event.kind), ['toolCall']);
+  } finally {
+    await close(server);
+  }
+});
+
 async function testClient(server: ReturnType<typeof createServer>): Promise<TestLlamaClient> {
   const address = server.address() as AddressInfo;
   const LlamaClient = await loadLlamaClient();
