@@ -1,0 +1,121 @@
+import * as vscode from 'vscode';
+import { LocalInlineCompletionProvider } from './completion/localInlineCompletionProvider';
+import { readConfig } from './config';
+import { LocalLlmLogger } from './logging';
+import { ModelManager } from './models/modelManager';
+import { ModelRegistry } from './models/modelRegistry';
+import { LocalLanguageModelProvider } from './provider/localLanguageModelProvider';
+import { registerModelCommands } from './ui/modelCommands';
+import { WorkerManager } from './worker/workerManager';
+
+let activeWorker: WorkerManager | undefined;
+
+export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  const logger = new LocalLlmLogger(readConfig(context).logLevel);
+  const registry = new ModelRegistry(context.globalState, logger);
+  await registry.initialize();
+  const worker = new WorkerManager(context, logger);
+  activeWorker = worker;
+  const models = new ModelManager(context, registry, logger);
+  const languageModels = new LocalLanguageModelProvider(context, registry, worker, logger);
+  const inlineCompletions = new LocalInlineCompletionProvider(context, registry, worker, logger);
+
+  const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 20);
+  status.command = 'localLlm.manageModels';
+  status.name = 'Local LLM';
+  updateStatus(status, worker.state, registry.list().length);
+  status.show();
+
+  context.subscriptions.push(
+    logger,
+    registry,
+    worker,
+    languageModels,
+    inlineCompletions,
+    status,
+    vscode.lm.registerLanguageModelChatProvider('local-llm-engine', languageModels),
+    vscode.languages.registerInlineCompletionItemProvider({ scheme: 'file' }, inlineCompletions),
+    ...registerModelCommands({ context, models, worker, logger }),
+    registry.onDidChange(() => updateStatus(status, worker.state, registry.list().length)),
+    worker.onDidChangeState((state) => updateStatus(status, state, registry.list().length)),
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (!event.affectsConfiguration('localLlm')) {
+        return;
+      }
+      logger.setLevel(readConfig(context).logLevel);
+      if (
+        event.affectsConfiguration('localLlm.contextSize') ||
+        event.affectsConfiguration('localLlm.maxOutputTokens') ||
+        event.affectsConfiguration('localLlm.maxTools')
+      ) {
+        languageModels.refresh();
+      }
+      if (
+        event.affectsConfiguration('localLlm.contextSize') ||
+        event.affectsConfiguration('localLlm.cpuThreads') ||
+        event.affectsConfiguration('localLlm.acceleration') ||
+        event.affectsConfiguration('localLlm.batchSize') ||
+        event.affectsConfiguration('localLlm.microBatchSize') ||
+        event.affectsConfiguration('localLlm.metalMemoryReserveMiB') ||
+        event.affectsConfiguration('localLlm.startupTimeoutSeconds')
+      ) {
+        void worker.stop();
+      }
+    }),
+  );
+
+  logger.info(
+    `Local LLM Engine activated on ${process.platform}-${process.arch}; ${registry.list().length} model(s) installed.`,
+  );
+  if (!isSupportedPlatform()) {
+    void vscode.window.showWarningMessage(
+      `Local LLM Engine does not include a worker for ${process.platform}-${process.arch}. Supported platforms are Apple Silicon macOS and x64 Windows.`,
+    );
+  }
+}
+
+export async function deactivate(): Promise<void> {
+  const worker = activeWorker;
+  activeWorker = undefined;
+  await worker?.stop();
+}
+
+function isSupportedPlatform(): boolean {
+  return (
+    (process.platform === 'darwin' && process.arch === 'arm64') ||
+    (process.platform === 'win32' && process.arch === 'x64')
+  );
+}
+
+function updateStatus(
+  item: vscode.StatusBarItem,
+  state: import('./domain').WorkerState,
+  modelCount: number,
+): void {
+  switch (state.kind) {
+    case 'ready':
+      item.text = '$(sparkle) Local LLM';
+      item.tooltip = 'Local model ready';
+      item.backgroundColor = undefined;
+      break;
+    case 'starting':
+      item.text = '$(loading~spin) Local LLM';
+      item.tooltip = 'Loading local model';
+      item.backgroundColor = undefined;
+      break;
+    case 'failed':
+      item.text = '$(error) Local LLM';
+      item.tooltip = state.message;
+      item.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
+      break;
+    case 'stopping':
+      item.text = '$(loading~spin) Local LLM';
+      item.tooltip = 'Stopping local model';
+      item.backgroundColor = undefined;
+      break;
+    case 'stopped':
+      item.text = modelCount ? '$(circle-outline) Local LLM' : '$(add) Local LLM';
+      item.tooltip = modelCount ? 'Local worker stopped' : 'Install a local GGUF model';
+      item.backgroundColor = undefined;
+  }
+}

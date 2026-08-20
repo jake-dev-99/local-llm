@@ -1,0 +1,15 @@
+.build/**
+.git/**
+.gitignore
+.github/**
+.agents/**
+.codex/**
+**/.DS_Store
+docs/**
+node_modules/**
+src/**
+scripts/**
+tsconfig.json
+esbuild.mjs
+package-lock.json
+*.vsix

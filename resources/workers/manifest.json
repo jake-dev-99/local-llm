@@ -1,0 +1,14 @@
+{
+  "llamaCppCommit": "60eeeb6082c1126bb8bc72902c83123cd056811b",
+  "llamaCppBuild": "b10472",
+  "workers": {
+    "darwin-arm64": {
+      "path": "resources/workers/darwin-arm64/llama-server",
+      "sha256": "5188f4ae2d8dc59261d7e4381c582cd7401da388bd17ce987cc42179c7a692c7"
+    },
+    "win32-x64": {
+      "path": "resources/workers/win32-x64/llama-server.exe",
+      "sha256": "b6978c718101551634f82edf4b94888267715c4b42aa92b94bfd7bd365ff530b"
+    }
+  }
+}

@@ -1,0 +1,235 @@
+{
+  "name": "local-llm-engine",
+  "displayName": "Local LLM Engine",
+  "description": "Run GGUF language models locally in VS Code Chat, Agent mode, and inline completion.",
+  "version": "0.2.7",
+  "publisher": "local-llm",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.125.0"
+  },
+  "categories": [
+    "Machine Learning",
+    "Programming Languages"
+  ],
+  "keywords": [
+    "local",
+    "llm",
+    "gguf",
+    "llama.cpp",
+    "chat"
+  ],
+  "main": "./dist/extension.js",
+  "extensionKind": [
+    "ui"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "chatAgents": [
+      {
+        "path": "./agents/local-agent.agent.md"
+      }
+    ],
+    "languageModelChatProviders": [
+      {
+        "vendor": "local-llm-engine",
+        "displayName": "Local LLM",
+        "managementCommand": "localLlm.manageModels"
+      }
+    ],
+    "commands": [
+      {
+        "command": "localLlm.manageModels",
+        "title": "Local LLM: Manage Models"
+      },
+      {
+        "command": "localLlm.importModel",
+        "title": "Local LLM: Import GGUF Model"
+      },
+      {
+        "command": "localLlm.downloadHuggingFace",
+        "title": "Local LLM: Download from Hugging Face"
+      },
+      {
+        "command": "localLlm.downloadUrl",
+        "title": "Local LLM: Download GGUF from URL"
+      },
+      {
+        "command": "localLlm.removeModel",
+        "title": "Local LLM: Remove Model"
+      },
+      {
+        "command": "localLlm.selectDefaultModel",
+        "title": "Local LLM: Select Default Model"
+      },
+      {
+        "command": "localLlm.stopWorker",
+        "title": "Local LLM: Stop Model Worker"
+      },
+      {
+        "command": "localLlm.showStatus",
+        "title": "Local LLM: Show Status"
+      },
+      {
+        "command": "localLlm.setHuggingFaceToken",
+        "title": "Local LLM: Set Hugging Face Token"
+      },
+      {
+        "command": "localLlm.validateModel",
+        "title": "Local LLM: Validate Model Compatibility"
+      },
+      {
+        "command": "localLlm.configureStrictLocal",
+        "title": "Local LLM: Configure Local Privacy Defaults"
+      },
+      {
+        "command": "localLlm.checkPrivacyDefaults",
+        "title": "Local LLM: Check Local Privacy Defaults"
+      }
+    ],
+    "configuration": {
+      "title": "Local LLM",
+      "properties": {
+        "localLlm.modelDirectory": {
+          "type": "string",
+          "default": "",
+          "description": "Directory for downloaded and imported GGUF models. Empty uses VS Code global extension storage."
+        },
+        "localLlm.defaultModelId": {
+          "type": "string",
+          "default": "",
+          "description": "Installed model ID used for inline completion and as the preferred local model."
+        },
+        "localLlm.contextSize": {
+          "type": "integer",
+          "default": 32768,
+          "minimum": 512,
+          "maximum": 262144,
+          "description": "Physical context window passed to llama.cpp. The extension never advertises more input and output capacity than this value."
+        },
+        "localLlm.maxTools": {
+          "type": "integer",
+          "default": 8,
+          "minimum": 1,
+          "maximum": 32,
+          "description": "Maximum tool definitions accepted per model request. Use the bundled Local Agent, which has a small local-only tool set."
+        },
+        "localLlm.maxOutputTokens": {
+          "type": "integer",
+          "default": 2048,
+          "minimum": 1,
+          "maximum": 32768,
+          "description": "Maximum tokens generated for chat responses."
+        },
+        "localLlm.maxToolCallTokens": {
+          "type": "integer",
+          "default": 512,
+          "minimum": 32,
+          "maximum": 32768,
+          "description": "Maximum output tokens for schema-constrained required tool decisions."
+        },
+        "localLlm.cpuThreads": {
+          "type": "integer",
+          "default": 0,
+          "minimum": 0,
+          "description": "CPU threads for llama.cpp. Zero uses its automatic selection."
+        },
+        "localLlm.startupTimeoutSeconds": {
+          "type": "integer",
+          "default": 600,
+          "minimum": 30,
+          "maximum": 3600,
+          "description": "Maximum time to wait for a model to load before reporting startup failure."
+        },
+        "localLlm.acceleration": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "cpu"
+          ],
+          "default": "auto",
+          "description": "Use Metal automatically on Apple Silicon, or force CPU inference."
+        },
+        "localLlm.batchSize": {
+          "type": "integer",
+          "default": 256,
+          "minimum": 32,
+          "maximum": 4096,
+          "description": "Logical prompt-processing batch size. Lower values reduce peak memory at the cost of prompt-processing speed."
+        },
+        "localLlm.microBatchSize": {
+          "type": "integer",
+          "default": 64,
+          "minimum": 32,
+          "maximum": 2048,
+          "description": "Physical llama.cpp micro-batch size. This is capped at batchSize; lower values materially reduce Metal compute-graph memory."
+        },
+        "localLlm.metalMemoryReserveMiB": {
+          "type": "integer",
+          "default": 4096,
+          "minimum": 256,
+          "maximum": 32768,
+          "description": "Memory margin llama.cpp should preserve when fitting a model to Apple Metal. Higher values may offload more layers to CPU."
+        },
+        "localLlm.temperature": {
+          "type": "number",
+          "default": 0.2,
+          "minimum": 0,
+          "maximum": 2,
+          "description": "Default generation temperature."
+        },
+        "localLlm.inline.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable local inline code completions."
+        },
+        "localLlm.inline.maxTokens": {
+          "type": "integer",
+          "default": 64,
+          "minimum": 1,
+          "maximum": 512,
+          "description": "Maximum tokens generated for an inline completion."
+        },
+        "localLlm.inline.debounceMilliseconds": {
+          "type": "integer",
+          "default": 250,
+          "minimum": 0,
+          "maximum": 2000,
+          "description": "Delay after typing before starting a local inline completion. New edits cancel the pending request."
+        },
+        "localLlm.logLevel": {
+          "type": "string",
+          "enum": [
+            "error",
+            "info",
+            "debug"
+          ],
+          "default": "info",
+          "description": "Diagnostic logging level. Prompt and source contents are never logged."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test src/**/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "build:worker": "node scripts/build-worker.mjs",
+    "package:vsix": "node scripts/package-vsix.mjs",
+    "vscode:prepublish": "npm run typecheck && npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "26.2.0",
+    "@types/vscode": "1.125.0",
+    "@vscode/vsce": "3.9.2",
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2"
+  },
+  "dependencies": {
+    "ajv": "8.17.1"
+  }
+}

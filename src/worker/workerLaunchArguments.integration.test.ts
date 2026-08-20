@@ -1,0 +1,112 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { build, type Plugin } from 'esbuild';
+import type { LocalLlmConfig } from '../domain';
+
+type BuildWorkerArguments = (
+  modelPath: string,
+  port: number,
+  apiKeyFile: string,
+  config: LocalLlmConfig,
+  platform: NodeJS.Platform,
+) => string[];
+
+test('Apple auto acceleration uses conservative batches and llama.cpp memory fitting', async () => {
+  const buildArguments = await loadBuildWorkerArguments();
+  const args = buildArguments('/models/qwen.gguf', 60000, '/keys/worker.key', config(), 'darwin');
+
+  assert.deepEqual(valueFor(args, '--batch-size'), '256');
+  assert.deepEqual(valueFor(args, '--ubatch-size'), '64');
+  assert.deepEqual(valueFor(args, '--fit'), 'on');
+  assert.deepEqual(valueFor(args, '--fit-target'), '4096');
+  assert.equal(args.includes('--n-gpu-layers'), false);
+  assert.equal(args.includes('--device'), false);
+});
+
+test('CPU execution explicitly disables device offload while retaining bounded batches', async () => {
+  const buildArguments = await loadBuildWorkerArguments();
+  const args = buildArguments(
+    '/models/qwen.gguf',
+    60000,
+    '/keys/worker.key',
+    config({ acceleration: 'cpu' }),
+    'darwin',
+  );
+
+  assert.deepEqual(valueFor(args, '--batch-size'), '256');
+  assert.deepEqual(valueFor(args, '--ubatch-size'), '64');
+  assert.deepEqual(valueFor(args, '--fit'), 'off');
+  assert.deepEqual(valueFor(args, '--n-gpu-layers'), '0');
+  assert.deepEqual(valueFor(args, '--device'), 'none');
+  assert.equal(args.includes('--no-op-offload'), true);
+});
+
+function config(overrides: Partial<LocalLlmConfig> = {}): LocalLlmConfig {
+  return {
+    modelDirectory: '/models',
+    defaultModelId: '',
+    contextSize: 32768,
+    maxTools: 8,
+    maxOutputTokens: 2048,
+    maxToolCallTokens: 512,
+    startupTimeoutMilliseconds: 600_000,
+    cpuThreads: 0,
+    acceleration: 'auto',
+    batchSize: 256,
+    microBatchSize: 64,
+    metalMemoryReserveMiB: 4096,
+    temperature: 0.2,
+    inlineEnabled: true,
+    inlineMaxTokens: 64,
+    inlineDebounceMilliseconds: 250,
+    logLevel: 'info',
+    ...overrides,
+  };
+}
+
+function valueFor(args: readonly string[], flag: string): string | undefined {
+  const index = args.indexOf(flag);
+  return index >= 0 ? args[index + 1] : undefined;
+}
+
+async function loadBuildWorkerArguments(): Promise<BuildWorkerArguments> {
+  const vscodeStub: Plugin = {
+    name: 'vscode-stub',
+    setup(buildContext) {
+      buildContext.onResolve({ filter: /^vscode$/ }, () => ({
+        path: 'vscode',
+        namespace: 'test-stub',
+      }));
+      buildContext.onLoad({ filter: /.*/, namespace: 'test-stub' }, () => ({
+        contents: `
+          export class EventEmitter {}
+          export class CancellationError extends Error {}
+          export const workspace = { getConfiguration() { return {}; } };
+          export const ConfigurationTarget = { Global: 1 };
+        `,
+        loader: 'js',
+      }));
+    },
+  };
+  const bundled = await build({
+    entryPoints: ['src/worker/workerManager.ts'],
+    absWorkingDir: process.cwd(),
+    bundle: true,
+    format: 'esm',
+    platform: 'node',
+    target: 'node26',
+    plugins: [vscodeStub],
+    write: false,
+  });
+  const source = bundled.outputFiles[0]?.contents;
+  assert.ok(source, 'esbuild returned the bundled WorkerManager');
+  const url = `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
+  const loaded = await import(url) as { buildWorkerArguments?: BuildWorkerArguments };
+  const buildWorkerArguments = loaded.buildWorkerArguments;
+  assert.equal(
+    typeof buildWorkerArguments,
+    'function',
+    'WorkerManager must export buildWorkerArguments',
+  );
+  return buildWorkerArguments as BuildWorkerArguments;
+}
