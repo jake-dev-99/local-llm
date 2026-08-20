@@ -2,7 +2,7 @@
   "name": "local-llm-engine",
   "displayName": "Local LLM Engine",
   "description": "Run GGUF language models locally in VS Code Chat, Agent mode, and inline completion.",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "publisher": "local-llm",
   "license": "MIT",
   "engines": {
