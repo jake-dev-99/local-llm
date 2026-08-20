@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { describeError, errorStack } from './errorDetail';
 
 export class LocalLlmLogger implements vscode.Disposable {
   private readonly channel = vscode.window.createOutputChannel('Local LLM');
@@ -9,9 +10,23 @@ export class LocalLlmLogger implements vscode.Disposable {
     this.level = level;
   }
 
+  /**
+   * Failures are always reported in full, at every log level.
+   *
+   * The cause chain and the stack are the difference between a report that can be
+   * acted on and one that cannot, so neither is ever suppressed.
+   */
   error(message: string, error?: unknown): void {
-    const detail = error instanceof Error ? `: ${error.message}` : '';
+    const detail = error === undefined ? '' : `: ${describeError(error)}`;
     this.write('ERROR', `${message}${detail}`);
+    const stack = errorStack(error);
+    if (stack) {
+      for (const line of stack.split(/\r?\n/).slice(1)) {
+        if (line.trim()) {
+          this.write('ERROR', `    ${line.trim()}`);
+        }
+      }
+    }
   }
 
   info(message: string): void {

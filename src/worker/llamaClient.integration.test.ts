@@ -6,6 +6,7 @@ import { build } from 'esbuild';
 import type { ChatRequest, ChatStreamEvent } from '../domain';
 
 interface TestLlamaClient {
+  tokenize(content: string, signal?: AbortSignal): Promise<number>;
   chat(
     request: ChatRequest,
     onEvent: (event: ChatStreamEvent) => void,
@@ -148,18 +149,20 @@ test('chat stops repeating the native pass once the worker proves it emits no to
       request.on('end', () => {
         if ((JSON.parse(body) as { response_format?: unknown }).response_format) {
           fallbackRequests.push(body);
-          response.writeHead(200, { 'content-type': 'application/json' });
-          response.end(JSON.stringify({
-            choices: [{
-              message: {
-                content: JSON.stringify({
-                  kind: 'tool',
-                  name: 'read_file',
-                  arguments: { filePath: '/workspace/config.ts' },
-                }),
-              },
-            }],
-          }));
+          response.writeHead(200, { 'content-type': 'text/event-stream' });
+          response.end(
+            `data: ${JSON.stringify({
+              choices: [{
+                delta: {
+                  content: JSON.stringify({
+                    kind: 'tool',
+                    name: 'read_file',
+                    arguments: { filePath: '/workspace/config.ts' },
+                  }),
+                },
+              }],
+            })}\n\ndata: [DONE]\n\n`,
+          );
           return;
         }
         // The measured Qwen2.5-Coder behaviour: prose that prints the call instead
@@ -210,6 +213,116 @@ test('chat stops repeating the native pass once the worker proves it emits no to
     assert.equal(nativeRequests.length, 1);
     assert.equal(fallbackRequests.length, 2);
     assert.deepEqual(second.map((event) => event.kind), ['toolCall']);
+  } finally {
+    await close(server);
+  }
+});
+
+test('the schema-constrained decision streams so it cannot hit a headers timeout', async () => {
+  let fallbackBody = '';
+  const server = createServer((request, response) => {
+    if (request.url === '/v1/chat/completions/input_tokens') {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end('{"input_tokens":10}');
+      return;
+    }
+    if (request.url === '/v1/chat/completions') {
+      let body = '';
+      request.on('data', (chunk) => {
+        body += chunk;
+      });
+      request.on('end', () => {
+        const parsed = JSON.parse(body) as { response_format?: unknown };
+        if (!parsed.response_format) {
+          response.writeHead(200, { 'content-type': 'text/event-stream' });
+          response.end(
+            'data: {"choices":[{"delta":{"content":"I will read the file."}}]}\n\n'
+              + 'data: [DONE]\n\n',
+          );
+          return;
+        }
+        fallbackBody = body;
+        // A non-streaming worker sends no headers until generation ends. At the
+        // 1.81 tokens per second measured on a loaded machine, a 2048 token answer
+        // outlives Node's 300 second headers timeout.
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(
+          'data: {"choices":[{"delta":{"content":"{\\"kind\\":\\"tool\\","}}]}\n\n'
+            + 'data: {"choices":[{"delta":{"content":"\\"name\\":\\"read_file\\","}}]}\n\n'
+            + 'data: {"choices":[{"delta":{"content":"\\"arguments\\":{\\"filePath\\":\\"/a.ts\\"}}"}}]}\n\n'
+            + 'data: [DONE]\n\n',
+        );
+      });
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+  await listen(server);
+
+  try {
+    const client = await testClient(server);
+    const events: ChatStreamEvent[] = [];
+    const result = await client.chat(
+      {
+        messages: [{ role: 'user', content: 'Review config.ts.' }],
+        tools: [{
+          type: 'function',
+          function: {
+            name: 'read_file',
+            parameters: {
+              type: 'object',
+              properties: { filePath: { type: 'string' } },
+              required: ['filePath'],
+              additionalProperties: false,
+            },
+          },
+        }],
+        toolChoice: 'required',
+        inputTokenBudget: 100,
+        maxTokens: 64,
+        temperature: 0,
+      },
+      (event) => events.push(event),
+    );
+
+    assert.equal((JSON.parse(fallbackBody) as { stream?: boolean }).stream, true);
+    assert.equal(result.toolCallCount, 1);
+    assert.deepEqual(events, [{
+      kind: 'toolCall',
+      id: events[0]?.kind === 'toolCall' ? events[0].id : '',
+      name: 'read_file',
+      input: { filePath: '/a.ts' },
+    }]);
+  } finally {
+    await close(server);
+  }
+});
+
+test('a broken connection names the endpoint and the underlying cause', async () => {
+  const server = createServer((request, response) => {
+    if (request.url === '/tokenize') {
+      request.socket.destroy();
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+  await listen(server);
+
+  try {
+    const client = await testClient(server);
+    await assert.rejects(
+      client.tokenize('hello'),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        // "fetch failed" alone is useless in a log. The endpoint and the cause
+        // underneath it are what make the failure diagnosable.
+        assert.match(error.message, /\/tokenize/);
+        assert.match(error.message, /caused by/);
+        return true;
+      },
+    );
   } finally {
     await close(server);
   }

@@ -40,17 +40,11 @@ test('required chat falls back to one schema-constrained tool decision', async (
           );
           return;
         }
-        response.writeHead(200, { 'content-type': 'application/json' });
-        response.end(JSON.stringify({
-          choices: [{
-            message: {
-              content: JSON.stringify({
-                kind: 'tool',
-                name: 'read_file',
-                arguments: { filePath: '/workspace/config.ts' },
-              }),
-            },
-          }],
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(streamedDecision({
+          kind: 'tool',
+          name: 'read_file',
+          arguments: { filePath: '/workspace/config.ts' },
         }));
       });
       return;
@@ -94,7 +88,9 @@ test('required chat falls back to one schema-constrained tool decision', async (
 
     assert.equal(completionBodies.length, 2);
     assert.ok(Array.isArray(completionBodies[0]?.tools));
-    assert.equal(completionBodies[1]?.stream, false);
+    // Must stream. A non-streaming decision sends no headers until generation ends,
+    // and slow local generation outlives Node's 300 second headers timeout.
+    assert.equal(completionBodies[1]?.stream, true);
     assert.equal(completionBodies[1]?.tools, undefined);
     assert.equal(
       (completionBodies[1]?.response_format as { type?: unknown } | undefined)?.type,
@@ -131,17 +127,11 @@ test('schema fallback rejects arguments that violate the supplied tool schema', 
         );
         return;
       }
-      response.writeHead(200, { 'content-type': 'application/json' });
-      response.end(JSON.stringify({
-        choices: [{
-          message: {
-            content: JSON.stringify({
-              kind: 'tool',
-              name: 'read_file',
-              arguments: { filePath: 42 },
-            }),
-          },
-        }],
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.end(streamedDecision({
+        kind: 'tool',
+        name: 'read_file',
+        arguments: { filePath: 42 },
       }));
       return;
     }
@@ -274,14 +264,8 @@ test('automatic chat uses the constrained fallback to choose a final answer', as
           );
           return;
         }
-        response.writeHead(200, { 'content-type': 'application/json' });
-        response.end(JSON.stringify({
-          choices: [{
-            message: {
-              content: JSON.stringify({ kind: 'final', text: 'Validated final answer.' }),
-            },
-          }],
-        }));
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(streamedDecision({ kind: 'final', text: 'Validated final answer.' }));
       });
       return;
     }
@@ -340,4 +324,14 @@ async function loadLlamaClient(): Promise<TestLlamaClientConstructor> {
   const loaded = await import(url) as { LlamaClient?: TestLlamaClientConstructor };
   assert.ok(loaded.LlamaClient, 'bundled module exports LlamaClient');
   return loaded.LlamaClient;
+}
+
+/**
+ * The schema-constrained decision now streams, so a slow local model cannot
+ * outlive Node's 300 second headers timeout before the first byte arrives.
+ */
+function streamedDecision(decision: unknown): string {
+  return `data: ${JSON.stringify({
+    choices: [{ delta: { content: JSON.stringify(decision) } }],
+  })}\n\ndata: [DONE]\n\n`;
 }

@@ -202,7 +202,10 @@ export class ModelManager {
   }): Promise<InstalledModel> {
     const name = friendlyName(input.filename);
     const fileMetadata = await stat(input.filePath);
-    const ggufMetadata = await readGgufMetadata(input.filePath);
+    const ggufMetadata = await readGgufMetadata(
+      input.filePath,
+      (warning) => this.logger.info(warning),
+    );
     const model: InstalledModel = {
       id: `${slug(name)}-${input.sha256.slice(0, 12)}`,
       name,

@@ -14,7 +14,7 @@ import {
   type ToolDecision,
   validateToolCallInput,
 } from './toolProtocol';
-import { workerRequestError, workerStreamError } from './workerError';
+import { workerRequestError, workerStreamError, workerTransportError } from './workerError';
 
 interface OpenAiChunk {
   error?: unknown;
@@ -324,7 +324,7 @@ export class LlamaClient {
     const body: Record<string, unknown> = {
       model: 'local',
       messages,
-      stream: false,
+      stream: true,
       max_tokens: maxTokens,
       temperature: 0,
       response_format: toolDecisionResponseFormat(tools, toolRequired),
@@ -343,12 +343,11 @@ export class LlamaClient {
       body: JSON.stringify(body),
       ...requestSignal(signal),
     });
-    const payload = (await response.json()) as {
-      choices?: Array<{ message?: { content?: unknown } }>;
-    };
-    const content = payload.choices?.[0]?.message?.content;
-    if (typeof content !== 'string' || !content.trim()) {
-      throw new Error('The schema-constrained fallback returned no decision.');
+    const content = await this.readStreamedContent(response, '/v1/chat/completions');
+    if (!content.trim()) {
+      throw new Error(
+        'The schema-constrained fallback returned no decision. The worker streamed an empty response.',
+      );
     }
     return {
       decision: parseToolDecision(content, tools, toolRequired),
@@ -439,11 +438,73 @@ export class LlamaClient {
     const headers = new Headers(init.headers);
     headers.set('Authorization', `Bearer ${this.apiKey}`);
     headers.set('Content-Type', 'application/json');
-    const response = await fetch(`${this.baseUrl}${path}`, { ...init, headers });
+    let response: Response;
+    try {
+      response = await fetch(`${this.baseUrl}${path}`, { ...init, headers });
+    } catch (error) {
+      // A caller-driven abort is expected control flow, not a fault to describe.
+      if (init.signal?.aborted) {
+        throw error;
+      }
+      throw workerTransportError(path, error);
+    }
     if (!response.ok) {
       throw workerRequestError(path, response.status, await response.text());
     }
     return response;
+  }
+
+  /**
+   * Concatenates the text of a streamed completion.
+   *
+   * Every generating request streams. A non-streaming request sends no response
+   * headers until the whole answer exists, and slow local generation outlives the
+   * 300 second headers timeout built into Node's fetch.
+   */
+  private async readStreamedContent(response: Response, path: string): Promise<string> {
+    if (!response.body) {
+      throw new Error(`Local worker request ${path} returned an empty streaming response.`);
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let content = '';
+    const consume = (frame: string): void => {
+      const data = frame
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith('data:'))
+        .map((line) => line.slice(5).trim())
+        .join('');
+      if (!data || data === '[DONE]') {
+        return;
+      }
+      let chunk: OpenAiChunk;
+      try {
+        chunk = JSON.parse(data) as OpenAiChunk;
+      } catch {
+        return;
+      }
+      if (chunk.error !== undefined) {
+        throw workerStreamError(path, chunk.error);
+      }
+      content += chunk.choices?.[0]?.delta?.content ?? '';
+    };
+    while (true) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      const frames = buffer.split(/\r?\n\r?\n/);
+      buffer = frames.pop() ?? '';
+      for (const frame of frames) {
+        consume(frame);
+      }
+      if (done) {
+        break;
+      }
+    }
+    if (buffer.trim()) {
+      consume(buffer);
+    }
+    return content;
   }
 }
 

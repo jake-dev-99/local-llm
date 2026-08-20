@@ -1,4 +1,5 @@
 import { open } from 'node:fs/promises';
+import { describeError } from '../errorDetail.ts';
 
 /**
  * Metadata read straight from a GGUF file header, without loading the model.
@@ -43,6 +44,7 @@ const GgufType = {
  */
 export async function readGgufMetadata(
   filePath: string,
+  onWarning?: (message: string) => void,
 ): Promise<GgufModelMetadata | undefined> {
   let handle;
   try {
@@ -51,15 +53,23 @@ export async function readGgufMetadata(
     const length = Math.min(size, MAX_HEADER_BYTES);
     const buffer = Buffer.alloc(length);
     await handle.read(buffer, 0, length, 0);
-    return parseGgufHeader(buffer);
-  } catch {
+    const metadata = parseGgufHeader(buffer, onWarning);
+    if (!metadata) {
+      onWarning?.(`No GGUF metadata could be read from ${filePath}.`);
+    }
+    return metadata;
+  } catch (error) {
+    onWarning?.(`Could not read GGUF metadata from ${filePath}: ${describeError(error)}`);
     return undefined;
   } finally {
     await handle?.close().catch(() => undefined);
   }
 }
 
-export function parseGgufHeader(buffer: Buffer): GgufModelMetadata | undefined {
+export function parseGgufHeader(
+  buffer: Buffer,
+  onWarning?: (message: string) => void,
+): GgufModelMetadata | undefined {
   if (buffer.length < 24 || buffer.toString('ascii', 0, 4) !== GGUF_MAGIC) {
     return undefined;
   }
@@ -85,13 +95,15 @@ export function parseGgufHeader(buffer: Buffer): GgufModelMetadata | undefined {
       }
     }
     if (!architecture) {
+      onWarning?.('The GGUF header declared no general.architecture key.');
       return undefined;
     }
     return {
       architecture,
       ...(isPositiveInteger(trainedContextLength) ? { trainedContextLength } : {}),
     };
-  } catch {
+  } catch (error) {
+    onWarning?.(`The GGUF header could not be parsed: ${describeError(error)}`);
     return undefined;
   }
 }

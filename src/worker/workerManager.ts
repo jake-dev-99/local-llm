@@ -9,6 +9,7 @@ import type { InstalledModel, WorkerState } from '../domain';
 import type { LocalLlmLogger } from '../logging';
 import { abortError, InferenceScheduler, type InferenceKind } from './inferenceScheduler';
 import { LlamaClient } from './llamaClient';
+import { describeError } from '../errorDetail';
 import { parseFittedContext, parseFreeDeviceMemoryMiB, resolveFitTargetMiB } from './memoryFit';
 import { isFatalWorkerError } from './workerError';
 import { verifiedWorkerPath } from './workerIntegrity';
@@ -208,7 +209,10 @@ export class WorkerManager implements vscode.Disposable {
       const apiKey = randomBytes(32).toString('hex');
       const apiKeyFile = await this.createApiKeyFile(apiKey);
       throwIfAborted(signal);
-      const orphanBytes = await orphanWorkerMemoryBytes(executable);
+      const orphanBytes = await orphanWorkerMemoryBytes(
+        executable,
+        (warning) => this.logger.error(warning),
+      );
       if (orphanBytes) {
         this.logger.info(
           `Another local worker still holds ${Math.round(orphanBytes / (1024 * 1024))} MiB; reserving that memory as well.`,
@@ -417,7 +421,10 @@ export class WorkerManager implements vscode.Disposable {
     const filePath = this.apiKeyFile;
     this.apiKeyFile = undefined;
     if (filePath) {
-      await rm(filePath, { force: true }).catch(() => undefined);
+      // A worker API key left on disk is a real problem, not a detail to swallow.
+      await rm(filePath, { force: true }).catch((error: unknown) => {
+        this.logger.error(`Failed to delete the worker API key file ${filePath}`, error);
+      });
     }
   }
 
@@ -574,7 +581,10 @@ function pathDirectory(filePath: string): string {
  *
  * Returns undefined when the platform offers no cheap way to ask.
  */
-async function orphanWorkerMemoryBytes(executable: string): Promise<number | undefined> {
+async function orphanWorkerMemoryBytes(
+  executable: string,
+  onWarning?: (message: string) => void,
+): Promise<number | undefined> {
   const workerName = executable.slice(
     Math.max(executable.lastIndexOf('/'), executable.lastIndexOf('\\')) + 1,
   ) || executable;
@@ -599,7 +609,8 @@ async function orphanWorkerMemoryBytes(executable: string): Promise<number | und
       }
     }
     return bytes > 0 ? bytes : undefined;
-  } catch {
+  } catch (error) {
+    onWarning?.(`Could not measure memory held by other local workers: ${describeError(error)}`);
     return undefined;
   }
 }

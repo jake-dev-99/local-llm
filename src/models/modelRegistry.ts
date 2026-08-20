@@ -53,7 +53,10 @@ export class ModelRegistry {
             // window recorded. Backfill it rather than requiring a reinstall.
             let trainedContextLength = model.trainedContextLength;
             if (trainedContextLength === undefined) {
-              trainedContextLength = (await readGgufMetadata(model.filePath))?.trainedContextLength;
+              trainedContextLength = (await readGgufMetadata(
+                model.filePath,
+                (warning) => this.logger.info(warning),
+              ))?.trainedContextLength;
               migrated ||= trainedContextLength !== undefined;
             }
             available.push({
@@ -64,8 +67,11 @@ export class ModelRegistry {
             });
           }
         }
-      } catch {
-        this.logger.info(`Removed unavailable model from registry: ${model.name}.`);
+      } catch (error) {
+        this.logger.error(
+          `Removed unavailable model from registry: ${model.name} (${model.filePath})`,
+          error,
+        );
       }
     }
     this.models = available;

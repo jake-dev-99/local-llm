@@ -1,8 +1,24 @@
+import { describeError } from '../errorDetail.ts';
+
 export class LocalWorkerFatalError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'LocalWorkerFatalError';
   }
+}
+
+/**
+ * A request that never reached a response.
+ *
+ * Node reports these as a bare "fetch failed", which says nothing about which
+ * endpoint died or why. The endpoint and the full cause chain go in the message
+ * so the Output channel is enough to diagnose it.
+ */
+export function workerTransportError(path: string, error: unknown): Error {
+  return new Error(
+    `Local worker request ${path} never completed: ${describeError(error)}.`,
+    { cause: error },
+  );
 }
 
 export function workerRequestError(path: string, status: number, body: string): Error {
