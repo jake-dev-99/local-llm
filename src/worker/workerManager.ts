@@ -565,15 +565,19 @@ function pathDirectory(filePath: string): string {
 
 
 /**
- * Resident memory held by local workers this extension is not currently tracking.
+ * Resident memory held by any llama.cpp server already running on this computer.
  *
- * A VS Code reload can leave a previous worker alive. llama.cpp measures free
- * device memory as its own Metal budget minus its own allocation, so it cannot
- * see that process; the memory has to be reserved explicitly.
+ * A VS Code reload can leave a previous worker alive, and an earlier version of
+ * this extension installs to a different path. llama.cpp measures free device
+ * memory as its own Metal budget minus its own allocation, so every one of those
+ * processes is invisible to it and their memory has to be reserved explicitly.
  *
  * Returns undefined when the platform offers no cheap way to ask.
  */
 async function orphanWorkerMemoryBytes(executable: string): Promise<number | undefined> {
+  const workerName = executable.slice(
+    Math.max(executable.lastIndexOf('/'), executable.lastIndexOf('\\')) + 1,
+  ) || executable;
   if (process.platform === 'win32') {
     return undefined;
   }
@@ -590,7 +594,7 @@ async function orphanWorkerMemoryBytes(executable: string): Promise<number | und
     let bytes = 0;
     for (const line of listing.split(/\r?\n/)) {
       const match = /^\s*(\d+)\s+(.*)$/.exec(line);
-      if (match?.[2]?.includes(executable) && match[1]) {
+      if (match?.[2]?.includes(workerName) && match[1]) {
         bytes += Number(match[1]) * 1024;
       }
     }
