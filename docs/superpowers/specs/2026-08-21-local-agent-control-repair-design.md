@@ -18,17 +18,39 @@ Prompts, source code, tool results, and generated text must never leave the mach
 
 The model-download workflow is the only allowed remote exception.
 
-## 2. Confirmed Problem
+## 2. Reported Failure
 
-The current `maxAgentToolRounds` setting requires eight completed calls before Local Agent may answer.
+The user sent the same audit prompt twice, back-to-back, inside one Local Agent conversation.
 
-It therefore acts as a minimum instead of a ceiling.
+The first request completed with an answer.
 
-One repeated request caused ten generations and about twenty-seven minutes of inference.
+The second request ran for more than thirty minutes.
 
-The run included one discarded native attempt, eight forced decisions, and one final decision.
+It then returned the exact same answer as the first request.
 
-The repeated answer was freshly generated, not replayed from an extension cache.
+The reported failure is unreliable repeated-request handling combined with uncontrolled work.
+
+It is not simply an eight-call configuration problem.
+
+### 2.1 Confirmed Trace Facts
+
+The attached trace captures about twenty-seven minutes of the second request's worker processing.
+
+It shows one discarded native attempt, eight required fallback decisions, and one automatic final decision.
+
+The final answer was freshly generated, not replayed from an extension cache.
+
+The current `maxAgentToolRounds` behavior explains the eight forced decisions.
+
+### 2.2 Diagnosis Boundary
+
+The trace does not prove why the final wording duplicated the earlier answer.
+
+The prior answer remained in history, and fallback generation used temperature zero.
+
+Those facts are plausible contributors, not a confirmed copying mechanism.
+
+The repair must address runaway work and repeated-request contamination as separate failures.
 
 ## 3. Required Behavior
 
