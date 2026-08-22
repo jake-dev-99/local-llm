@@ -328,6 +328,9 @@ async function loadLlamaClient(): Promise<TestLlamaClientConstructor> {
     format: 'esm',
     platform: 'node',
     target: 'node26',
+    banner: {
+      js: "import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(process.cwd() + '/');",
+    },
     write: false,
   });
   const source = bundled.outputFiles[0]?.contents;

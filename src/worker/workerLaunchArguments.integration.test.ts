@@ -141,6 +141,9 @@ async function loadBuildWorkerArguments(): Promise<BuildWorkerArguments> {
     format: 'esm',
     platform: 'node',
     target: 'node26',
+    banner: {
+      js: "import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(process.cwd() + '/');",
+    },
     plugins: [vscodeStub],
     write: false,
   });

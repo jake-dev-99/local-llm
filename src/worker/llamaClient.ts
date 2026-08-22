@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { fetch as pooledFetch, Pool } from 'undici';
 import type {
   ChatMessage,
   ChatRequest,
@@ -15,6 +16,14 @@ import {
   validateToolCallInput,
 } from './toolProtocol';
 import { workerRequestError, workerStreamError, workerTransportError } from './workerError';
+
+type WorkerResponse = Awaited<ReturnType<typeof pooledFetch>>;
+
+interface WorkerRequestInit {
+  method: 'GET' | 'POST';
+  body?: string;
+  signal?: AbortSignal;
+}
 
 interface OpenAiChunk {
   error?: unknown;
@@ -36,6 +45,9 @@ interface PendingToolCall {
   arguments: string;
 }
 
+const TOKEN_COUNT_CACHE_MAX_ENTRIES = 4_096;
+const TOKEN_COUNT_CACHE_MAX_TEXT_LENGTH = 32 * 1_024;
+
 export interface ChatResult {
   inputTokens: number;
   textCharacters: number;
@@ -51,6 +63,8 @@ export type NativeToolCallSupport = 'unknown' | 'available' | 'unavailable';
 export class LlamaClient {
   private modelProfile: WorkerModelProfile | undefined;
   private nativeToolCalls: NativeToolCallSupport = 'unknown';
+  private readonly pool: Pool;
+  private readonly tokenCounts = new Map<string, number>();
 
   constructor(
     readonly baseUrl: string,
@@ -58,6 +72,10 @@ export class LlamaClient {
     private readonly log?: (message: string) => void,
   ) {
     assertLoopbackWorkerUrl(baseUrl);
+    this.pool = new Pool(baseUrl, {
+      connections: 1,
+      pipelining: 1,
+    });
   }
 
   getNativeToolCallSupport(): NativeToolCallSupport {
@@ -68,9 +86,17 @@ export class LlamaClient {
     this.nativeToolCalls = support;
   }
 
+  async dispose(): Promise<void> {
+    this.tokenCounts.clear();
+    await this.pool.destroy();
+  }
+
   async health(signal?: AbortSignal): Promise<boolean> {
     try {
-      const response = await fetch(`${this.baseUrl}/health`, requestSignal(signal));
+      const response = await pooledFetch(`${this.baseUrl}/health`, {
+        ...requestSignal(signal),
+        dispatcher: this.pool,
+      });
       return response.ok;
     } catch (error) {
       if (signal?.aborted) {
@@ -81,6 +107,12 @@ export class LlamaClient {
   }
 
   async tokenize(content: string, signal?: AbortSignal): Promise<number> {
+    const cached = this.tokenCounts.get(content);
+    if (cached !== undefined) {
+      this.tokenCounts.delete(content);
+      this.tokenCounts.set(content, cached);
+      return cached;
+    }
     const response = await this.request('/tokenize', {
       method: 'POST',
       body: JSON.stringify({
@@ -91,7 +123,18 @@ export class LlamaClient {
       ...requestSignal(signal),
     });
     const payload = (await response.json()) as { tokens?: unknown[] };
-    return Array.isArray(payload.tokens) ? payload.tokens.length : 0;
+    const count = Array.isArray(payload.tokens) ? payload.tokens.length : 0;
+    if (content.length <= TOKEN_COUNT_CACHE_MAX_TEXT_LENGTH) {
+      while (this.tokenCounts.size >= TOKEN_COUNT_CACHE_MAX_ENTRIES) {
+        const oldest = this.tokenCounts.keys().next().value;
+        if (oldest === undefined) {
+          break;
+        }
+        this.tokenCounts.delete(oldest);
+      }
+      this.tokenCounts.set(content, count);
+    }
+    return count;
   }
 
   async getModelProfile(signal?: AbortSignal): Promise<WorkerModelProfile> {
@@ -451,13 +494,17 @@ export class LlamaClient {
     return delta?.content ?? '';
   }
 
-  private async request(path: string, init: RequestInit): Promise<Response> {
-    const headers = new Headers(init.headers);
-    headers.set('Authorization', `Bearer ${this.apiKey}`);
-    headers.set('Content-Type', 'application/json');
-    let response: Response;
+  private async request(path: string, init: WorkerRequestInit): Promise<WorkerResponse> {
+    let response: WorkerResponse;
     try {
-      response = await fetch(`${this.baseUrl}${path}`, { ...init, headers });
+      response = await pooledFetch(`${this.baseUrl}${path}`, {
+        ...init,
+        headers: {
+          'Authorization': `Bearer ${this.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        dispatcher: this.pool,
+      });
     } catch (error) {
       // A caller-driven abort is expected control flow, not a fault to describe.
       if (init.signal?.aborted) {
@@ -478,7 +525,7 @@ export class LlamaClient {
    * headers until the whole answer exists, and slow local generation outlives the
    * 300 second headers timeout built into Node's fetch.
    */
-  private async readStreamedContent(response: Response, path: string): Promise<string> {
+  private async readStreamedContent(response: WorkerResponse, path: string): Promise<string> {
     if (!response.body) {
       throw new Error(`Local worker request ${path} returned an empty streaming response.`);
     }
@@ -525,7 +572,7 @@ export class LlamaClient {
   }
 }
 
-function requestSignal(signal?: AbortSignal): RequestInit {
+function requestSignal(signal?: AbortSignal): Pick<WorkerRequestInit, 'signal'> {
   return signal ? { signal } : {};
 }
 

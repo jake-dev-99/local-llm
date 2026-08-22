@@ -140,8 +140,10 @@ export class WorkerManager implements vscode.Disposable {
   private async stopProcess(): Promise<void> {
     this.generation += 1;
     const child = this.child;
+    const client = this.currentClient;
     if (!child) {
       this.currentClient = undefined;
+      await client?.dispose();
       await this.removeApiKeyFile();
       if (this.workerState.kind !== 'stopped') {
         this.setState({ kind: 'stopped' });
@@ -150,6 +152,8 @@ export class WorkerManager implements vscode.Disposable {
     }
 
     this.requestedStop = true;
+    this.currentClient = undefined;
+    await client?.dispose();
     const modelId = this.currentModel?.id ?? 'unknown';
     this.setState({ kind: 'stopping', modelId });
     child.kill('SIGTERM');
@@ -162,7 +166,6 @@ export class WorkerManager implements vscode.Disposable {
     if (this.child === child) {
       this.child = undefined;
     }
-    this.currentClient = undefined;
     await this.removeApiKeyFile();
     this.requestedStop = false;
     this.setState({ kind: 'stopped' });
@@ -180,6 +183,7 @@ export class WorkerManager implements vscode.Disposable {
   ): Promise<LlamaClient> {
     const startGeneration = this.generation;
     let child: ChildProcessWithoutNullStreams | undefined;
+    let client: LlamaClient | undefined;
     this.requestedStop = false;
     this.setState({ kind: 'starting', modelId: model.id });
     try {
@@ -248,7 +252,7 @@ export class WorkerManager implements vscode.Disposable {
         void this.handleExit(child as ChildProcessWithoutNullStreams, code, exitSignal);
       });
 
-      const client = new LlamaClient(
+      client = new LlamaClient(
         `http://127.0.0.1:${port}`,
         apiKey,
         (message) => this.logger.info(message),
@@ -272,6 +276,7 @@ export class WorkerManager implements vscode.Disposable {
         child.kill('SIGKILL');
       }
       this.currentClient = undefined;
+      await client?.dispose();
       await this.removeApiKeyFile();
       const cancelled = signal?.aborted || startGeneration !== this.generation || this.disposed;
       if (cancelled) {
@@ -336,8 +341,10 @@ export class WorkerManager implements vscode.Disposable {
     const exitGeneration = this.generation;
     const wasReady = this.workerState.kind === 'ready';
     const wasRequestedStop = this.requestedStop;
+    const client = this.currentClient;
     this.child = undefined;
     this.currentClient = undefined;
+    await client?.dispose();
     await this.removeApiKeyFile();
     if (wasRequestedStop || this.disposed) {
       return;

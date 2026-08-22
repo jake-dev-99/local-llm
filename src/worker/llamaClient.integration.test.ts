@@ -6,6 +6,7 @@ import { build } from 'esbuild';
 import type { ChatRequest, ChatStreamEvent } from '../domain';
 
 interface TestLlamaClient {
+  dispose(): Promise<void>;
   getNativeToolCallSupport(): 'unknown' | 'available' | 'unavailable';
   setNativeToolCallSupport(support: 'unknown' | 'available' | 'unavailable'): void;
   tokenize(content: string, signal?: AbortSignal): Promise<number>;
@@ -27,6 +28,107 @@ test('the worker client rejects non-loopback addresses', async () => {
     () => new LlamaClient('http://192.0.2.1:8080', 'test-key'),
     /loopback/i,
   );
+});
+
+test('tokenization reuses one worker connection', async () => {
+  let connectionCount = 0;
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end('{"tokens":[1]}');
+  });
+  server.on('connection', () => {
+    connectionCount += 1;
+  });
+  await listen(server);
+
+  try {
+    const client = await testClient(server);
+    for (let index = 0; index < 1_000; index += 1) {
+      assert.equal(await client.tokenize(`token-${index}`), 1);
+    }
+    assert.equal(connectionCount, 1);
+  } finally {
+    server.closeAllConnections();
+    await close(server);
+  }
+});
+
+test('tokenization caches repeated text for the loaded worker', async () => {
+  let requestCount = 0;
+  const server = createServer((_request, response) => {
+    requestCount += 1;
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end('{"tokens":[1,2]}');
+  });
+  await listen(server);
+
+  try {
+    const client = await testClient(server);
+    for (let index = 0; index < 100; index += 1) {
+      assert.equal(await client.tokenize('repeated tool schema text'), 2);
+    }
+    assert.equal(requestCount, 1);
+  } finally {
+    server.closeAllConnections();
+    await close(server);
+  }
+});
+
+test('disposing the client closes its worker connection', async () => {
+  let openConnections = 0;
+  let resolveConnectionClosed: (() => void) | undefined;
+  const connectionClosed = new Promise<void>((resolve) => {
+    resolveConnectionClosed = resolve;
+  });
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end('{"tokens":[1]}');
+  });
+  server.on('connection', (socket) => {
+    openConnections += 1;
+    socket.on('close', () => {
+      openConnections -= 1;
+      resolveConnectionClosed?.();
+    });
+  });
+  await listen(server);
+
+  try {
+    const client = await testClient(server);
+    assert.equal(await client.tokenize('hello'), 1);
+    assert.equal(openConnections, 1);
+    await client.dispose();
+    await connectionClosed;
+    assert.equal(openConnections, 0);
+  } finally {
+    server.closeAllConnections();
+    await close(server);
+  }
+});
+
+test('tokenization continues when the worker retires a keep-alive socket', async () => {
+  let connectionCount = 0;
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end('{"tokens":[1]}');
+  });
+  server.maxRequestsPerSocket = 5;
+  server.on('connection', () => {
+    connectionCount += 1;
+  });
+  await listen(server);
+
+  try {
+    const client = await testClient(server);
+    for (let index = 0; index < 20; index += 1) {
+      assert.equal(await client.tokenize(`token-${index}`), 1);
+    }
+    assert.equal(connectionCount, 4);
+    await client.dispose();
+  } finally {
+    server.closeAllConnections();
+    await close(server);
+  }
 });
 
 test('chat rejects a llama-server error delivered after an SSE stream starts', async () => {
@@ -548,6 +650,9 @@ async function loadLlamaClient(): Promise<TestLlamaClientConstructor> {
     format: 'esm',
     platform: 'node',
     target: 'node26',
+    banner: {
+      js: "import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(process.cwd() + '/');",
+    },
     write: false,
   });
   const source = bundled.outputFiles[0]?.contents;
