@@ -1,4 +1,4 @@
-# Local Agent Control Repair Design
+# Local Agent Response Quality and Work Control Design
 
 **Status:** Draft for review; implementation not started
 
@@ -6,72 +6,113 @@
 
 ## 1. North Star
 
-The project must prove a dependable, self-contained local language-model experience inside native VS Code workflows.
+The project must deliver valid local-model results inside native VS Code workflows.
 
-The product path includes model installation, Chat, bounded agent tools, inline completion, and offline inference.
+Result quality comes before response speed.
 
-Local Agent is one proof point, not the product's center.
+Local inference may be slow because models and hardware are limited.
 
-This repair must remain small and must not delay the approved capacity work.
+A thirty-minute request is acceptable when it produces a strong, evidence-based result.
 
-Prompts, source code, tool results, and generated text must never leave the machine.
+A five-second request is unacceptable when it blindly repeats an earlier answer.
+
+Time becomes waste only when work is redundant, stalled, irrelevant, or unable to improve the result.
+
+The extension must remain well-scoped, scalable, and useful across models, hardware, and VS Code experiences.
+
+The current PoC validates two machines:
+
+1. An Apple Silicon M4 Pro Mac using Metal.
+2. A Windows x64 Intel Arc machine using the current CPU worker.
+
+Future platforms must reuse the same provider contracts and pass separate runtime validation.
+
+Prompts, source code, tool results, and generated text must remain local.
 
 The model-download workflow is the only allowed remote exception.
 
-## 2. Reported Failure
+## 2. Reported Quality Failure
 
-The user sent the same audit prompt twice, back-to-back, inside one Local Agent conversation.
+The user sent the same audit prompt twice inside one Local Agent conversation.
 
-The first request completed with an answer.
+The first request returned an answer.
 
-The second request ran for more than thirty minutes.
+The second request later returned the exact same answer.
 
-It then returned the exact same answer as the first request.
+That duplicated result is the failure.
 
-The reported failure is unreliable repeated-request handling combined with uncontrolled work.
+The request duration increased the wasted computation, but did not define the failure.
 
-It is not simply an eight-call configuration problem.
+The second response did not demonstrate a fresh evaluation of the active request.
 
 ### 2.1 Confirmed Trace Facts
 
-The attached trace captures about twenty-seven minutes of the second request's worker processing.
+The trace captures about twenty-seven minutes of the second request's worker processing.
 
 It shows one discarded native attempt, eight required fallback decisions, and one automatic final decision.
 
-The final answer was freshly generated, not replayed from an extension cache.
+The final response was freshly generated, not replayed from an extension cache.
 
 The current `maxAgentToolRounds` behavior explains the eight forced decisions.
 
+It does not explain the duplicated final wording by itself.
+
 ### 2.2 Diagnosis Boundary
 
-The trace does not prove why the final wording duplicated the earlier answer.
+The prior answer remained in conversation history.
 
-The prior answer remained in history, and fallback generation used temperature zero.
+Schema-constrained fallback generation used temperature zero.
 
-Those facts are plausible contributors, not a confirmed copying mechanism.
+Those facts may explain deterministic repetition, but the trace cannot prove the copying mechanism.
 
-The repair must address runaway work and repeated-request contamination as separate failures.
+The repair must prevent duplicate output without pretending the exact cause is known.
 
-## 3. Required Behavior
+## 3. Definition of a Valid Result
 
-1. One successful, evidence-bearing read-only result satisfies minimum discovery.
-2. Explicit no-match and no-error results count as evidence.
-3. Failed, empty, malformed, or repeated results do not satisfy discovery.
-4. Every emitted tool invocation counts toward the ceiling.
-5. Local Agent permits at most eight invocations per active user request.
-6. Loaded tool definitions never count as invocations.
-7. Final generation never counts as an invocation.
-8. After discovery, the model may choose another tool or answer.
-9. Existing automatic fallback supplies semantic early stopping.
-10. No separate classification generation is added.
-11. Exact repeated tool choices are blocked.
-12. No fixed runtime deadline stops progressing work.
-13. Token and result pressure narrows future work without rewriting history.
-14. Native tool capability persists across worker restarts.
-15. Repeated requests omit the matching prior answer and require fresh evidence.
-16. Ordinary Chat and VS Code's built-in Agent retain current orchestration.
+A valid Local Agent result must satisfy these requirements:
 
-## 4. Minimal Design
+1. It directly addresses the active user request.
+2. Workspace-dependent claims come from current tool evidence.
+3. Relevant claims remain traceable to collected evidence.
+4. The answer distinguishes completed work, unfinished work, and uncertainty.
+5. The answer never claims an edit or check succeeded without supporting tool output.
+6. A repeated request receives an independent evaluation.
+7. An exact normalized duplicate final response fails repeated-request validation.
+
+A repeated evaluation may reach the same conclusion.
+
+It must still demonstrate fresh evidence and current reasoning.
+
+Matching conclusions remain acceptable; matching normalized response text does not.
+
+## 4. Quality Control Contract
+
+Program checks enforce measurable facts:
+
+1. At least one successful evidence result exists for workspace-dependent requests.
+2. Tool calls and results remain novel enough to improve the answer.
+3. Invocation and physical context limits remain truthful.
+4. A repeated final response does not exactly match the prior final response.
+5. Native capability records match the active runtime fingerprint.
+
+The model judges semantic sufficiency:
+
+1. Whether collected evidence answers the request.
+2. Whether another tool call could materially improve the result.
+3. Whether remaining uncertainty requires more evidence.
+4. Whether the final answer accurately reflects completed work.
+
+One evidence result satisfies minimum discovery.
+
+It does not automatically mean the request is complete.
+
+The model may continue gathering useful evidence until sufficient or constrained.
+
+No separate classification generation is added.
+
+The existing automatic fallback already chooses another tool or final text.
+
+## 5. Minimal Architecture
 
 The repair extends existing helpers instead of adding a general agent framework.
 
@@ -83,56 +124,115 @@ It stores no duplicate conversation history.
 
 The evaluator returns three outcomes:
 
-1. `requireDiscovery` offers only recognized read-only tools.
-2. `allowToolOrFinal` uses the existing automatic tool-or-final fallback.
-3. `forceFinal` removes tools and requests an evidence-based answer.
+1. `requireEvidence` offers recognized read-only tools.
+2. `allowToolOrFinal` lets the existing fallback choose the next useful action.
+3. `forceFinal` requests the best supported answer from collected evidence.
 
-The evaluator tracks the active request, invocation count, evidence, and prior call signatures.
+The evaluator tracks only these facts:
 
-`localAgentTools.ts` retains filtering and edit-after-read behavior.
+1. The active user request.
+2. Emitted invocation count.
+3. Successful evidence presence.
+4. Prior call signatures and result digests.
+5. Repeated-request status.
+6. Prior final-response digest.
 
-`localLanguageModelProvider.ts` applies the evaluator before shared worker execution.
+`localAgentTools.ts` retains Local Agent filtering and edit-after-read behavior.
+
+`localLanguageModelProvider.ts` applies evaluator decisions before shared worker execution.
 
 The shared worker client retains generation, validation, streaming, and cancellation responsibilities.
 
-## 5. Request Flow
+Ordinary Chat and VS Code's built-in Agent retain their current orchestration.
 
-1. The first Local Agent workspace decision requires one recognized read-only tool.
-2. A matching nonempty result satisfies discovery unless it is a known failure.
-3. The next decision may call another tool or return final text.
-4. A duplicate tool signature receives one chance to choose differently or answer.
-5. Another duplicate forces final generation from collected evidence.
-6. The eighth emitted call prevents any ninth call.
-7. Forced final text names unfinished work and uncertainty.
-8. User cancellation ends the request without automatic final text.
+## 6. Evidence and Novelty
 
-The call signature combines the tool name with canonical JSON arguments.
+A successful evidence result must satisfy these conditions:
 
-A successful edit permits a later repeat because workspace contents changed.
+1. It matches an emitted recognized discovery call.
+2. Its content is nonempty.
+3. It is not a known tool failure.
+4. Its normalized digest is new during the active request.
 
-## 6. Runtime and Context
+Explicit no-match and no-error results count because they establish absence.
+
+Failed, empty, malformed, or repeated results do not satisfy minimum evidence.
+
+Every emitted invocation still counts toward the ceiling.
+
+A call signature combines the tool name with canonical JSON arguments.
+
+An exact duplicate call is blocked unless a successful edit followed the earlier call.
+
+The model then chooses a different tool call or final text.
+
+A second consecutive duplicate forces final generation from collected evidence.
+
+This stops loops because work repeated, not because work took too long.
+
+## 7. Repeated-Request Protection
+
+Protection activates for an exact normalized request already followed by final text.
+
+The provider omits only the matching prior assistant answer from model input.
+
+Other history, tool calls, and tool results remain available.
+
+The repeated request must obtain one fresh evidence-bearing result.
+
+The model then answers independently from current evidence.
+
+The final response is buffered before delivery for this repeated-request case.
+
+Its normalized digest is compared with the matching prior response.
+
+An exact duplicate is rejected once.
+
+The model receives one revision request using fresh evidence and no prior answer text.
+
+If the revision duplicates again, the extension does not present it as a valid result.
+
+It returns a clear quality failure and names the evidence collected.
+
+This bounded retry prevents another deterministic generation loop.
+
+## 8. Work and Context Control
+
+Local Agent permits at most eight tool invocations per active user request by default.
+
+The existing setting remains configurable.
+
+Eight is a maximum, never a required count.
+
+Loaded tool definitions never count as invocations.
+
+Failed, blocked, and repeated invocations count because they consume work.
+
+Final generation never counts as an invocation.
 
 The physical input budget remains authoritative.
 
 Exact token counting continues before every inference request.
 
-Cumulative invocation count and tool-result size guide narrower future choices.
+The model receives remaining input tokens, invocation count, and cumulative result size.
 
-Before automatic decisions, the model receives remaining input tokens and cumulative result size.
+Token and result pressure instruct narrower work without removing raw history.
 
-Only the physical input budget and invocation ceiling are hard limits.
-
-The controller never removes raw VS Code history or tool results.
+Only physical context and invocation limits are hard boundaries.
 
 Elapsed time remains diagnostic and cancellation-aware.
 
 Progressing requests receive no time-based cancellation.
 
+User cancellation ends work immediately without automatic final text.
+
 Worker transport failures remain visible errors.
 
-## 7. Persistent Native Capability
+## 9. Persistent Native Capability
 
 The current worker client remembers native tool support for one process only.
+
+That causes one discarded generation after every worker restart.
 
 The persisted record uses this exact fingerprint:
 
@@ -150,21 +250,29 @@ Any fingerprint change invalidates the record.
 
 This cache benefits every tool-enabled request.
 
-## 8. Repeated Requests
+It prevents known-useless work without judging request duration.
 
-Protection applies to an exact normalized Local Agent request already followed by final text.
+## 10. Scalability and Platform Boundaries
 
-The provider omits only that matching prior answer from model input.
+Controller decisions depend on messages, tool evidence, configuration, and runtime capabilities.
 
-Other conversation history, calls, and results remain available.
+They never depend on a specific model name or hardware speed.
 
-The repeated request must obtain fresh evidence before answering.
+The TypeScript behavior remains shared across platform packages.
 
-The design prevents copying through direct answer exposure.
+Platform workers continue reporting their actual capabilities.
 
-It does not force cosmetic rewording when fresh evidence supports the same conclusion.
+The current macOS package uses Metal on the M4 Pro acceptance machine.
 
-## 9. Absolute Locality
+The current Windows package guarantees CPU inference on the Intel Arc acceptance machine.
+
+Intel Arc acceleration is not added by this repair.
+
+No untested platform receives a support claim.
+
+Future workers may add acceleration without changing the response-quality contract.
+
+## 11. Absolute Locality
 
 1. Worker traffic remains authenticated and bound to `127.0.0.1`.
 2. The worker client rejects non-loopback runtime addresses.
@@ -173,8 +281,9 @@ It does not force cosmetic rewording when fresh evidence supports the same concl
 5. New state remains inside VS Code global storage.
 6. Model downloads may contact HTTPS sources for model metadata and model bytes.
 7. Download requests never include prompts, source, tool results, or generated text.
-8. This extension adds no telemetry.
-9. This repair adds no network path.
+8. Logs never include prompt bodies, source bodies, or tool-result bodies.
+9. This extension adds no telemetry.
+10. This repair adds no network path.
 
 The source audit found remote fetches only inside the model-download workflow.
 
@@ -184,63 +293,100 @@ Unrelated VS Code extensions remain outside this extension's enforcement boundar
 
 Documentation must state that boundary without weakening this extension's guarantee.
 
-## 10. Expected Changes
+## 12. Error and Status Behavior
+
+1. Missing required discovery tools fail before inference.
+2. Invalid tool names or arguments never reach VS Code.
+3. Malformed fallback decisions continue failing closed.
+4. Duplicate final output never appears as successful completion.
+5. Ceiling exhaustion produces the best supported partial answer.
+6. Partial answers name unfinished work and uncertainty.
+7. Capability persistence failure reverts to `unknown`.
+8. Capability persistence failure never enables remote inference.
+
+Debug logs record these measurements without content bodies:
+
+1. Active-request invocation count.
+2. Successful evidence count.
+3. Duplicate call and result detection.
+4. Repeated-response detection and revision.
+5. Input tokens and cumulative result size.
+6. Elapsed time and cancellation.
+7. Native capability source and fingerprint status.
+
+Elapsed time alone never produces a warning or failure.
+
+## 13. Expected Changes
 
 1. Replace mandatory-round logic in `src/provider/localAgentToolChoice.ts`.
 2. Update policy handling in `src/provider/localAgentTools.ts`.
-3. Integrate decisions in `src/provider/localLanguageModelProvider.ts`.
-4. Persist native capability through `src/models/modelRegistry.ts`.
-5. Consume capability state in `src/worker/llamaClient.ts`.
-6. Define the record in `src/domain.ts`.
-7. Correct the setting description in `package.json`.
-8. Replace tests that encode eight mandatory calls.
-9. Update `README.md` behavior and privacy wording.
+3. Integrate quality decisions in `src/provider/localLanguageModelProvider.ts`.
+4. Add repeated-response comparison around repeated-request final generation.
+5. Persist native capability through `src/models/modelRegistry.ts`.
+6. Consume capability state in `src/worker/llamaClient.ts`.
+7. Define the capability record in `src/domain.ts`.
+8. Correct the setting description in `package.json`.
+9. Replace tests that encode eight mandatory calls.
+10. Update `README.md` behavior, platform, and privacy wording.
 
 No unrelated provider, download, completion, or capacity refactor belongs here.
 
-## 11. Validation
+## 14. Validation
 
-1. One evidence result permits final text.
-2. Useful additional evidence remains possible.
-3. Eight emitted calls prevent a ninth.
-4. Failed and duplicate calls count toward eight.
-5. Repeated requests omit the matching prior answer.
-6. Repeated requests require fresh evidence.
-7. Persisted unavailable capability skips the discarded probe after restart.
-8. Fingerprint changes invalidate persisted capability.
-9. Non-loopback worker addresses fail.
-10. Ordinary Chat remains unchanged.
-11. Built-in Agent receives no Local Agent ceiling.
-12. Progressing work receives no elapsed-time cancellation.
+Source validation must prove these behaviors:
+
+1. One evidence result permits completion when the model judges it sufficient.
+2. Complex requests may gather additional useful evidence.
+3. Eight emitted calls prevent a ninth call by default.
+4. Failed and duplicate calls count toward the ceiling.
+5. Long progressing requests receive no elapsed-time cancellation.
+6. Repeated requests omit the matching prior answer.
+7. Repeated requests require fresh evidence.
+8. Exact duplicate final output triggers one revision.
+9. A second duplicate becomes an explicit quality failure.
+10. Same conclusions remain valid when fresh evidence supports them.
+11. Persisted unavailable capability skips the discarded probe after restart.
+12. Fingerprint changes invalidate persisted capability.
+13. Non-loopback worker addresses fail.
+14. Ordinary Chat remains unchanged.
+15. Built-in Agent receives no Local Agent invocation ceiling.
+16. Logs contain metrics without prompt or workspace content.
 
 Installed runtime validation remains separate:
 
-1. Install the exact macOS package.
-2. Run the same Local Agent request twice.
-3. Confirm both requests gather evidence independently.
-4. Confirm a simple request may finish after one call.
-5. Restart the worker and confirm the discarded probe stays absent.
-6. Confirm inference traffic remains loopback-only.
-7. Repeat the product path on the target Intel Windows machine.
+1. Install the exact package on the M4 Pro Mac.
+2. Run the same evidence-dependent request twice.
+3. Confirm the second response uses fresh evidence.
+4. Confirm the second response never blindly duplicates the first.
+5. Confirm a simple request may finish after one call.
+6. Confirm a complex progressing request may run without a time deadline.
+7. Restart the worker and confirm the discarded probe stays absent.
+8. Confirm inference traffic remains loopback-only.
+9. Repeat the same product path on the Windows Intel Arc machine.
+10. Record that Windows validation used CPU inference.
 
-## 12. Non-Goals and Delivery
+Tests, packages, macOS runtime, and Windows runtime remain separate evidence claims.
+
+## 15. Non-Goals and Delivery
 
 This repair excludes these items:
 
 1. A general autonomous-agent framework.
-2. Chat-history compaction or retention redesign.
-3. Fixed total runtime limits.
-4. New Local Agent tools.
-5. Local embeddings or workspace indexing.
-6. Dynamic-capacity implementation inside this repair.
-7. Remote inference, remote fallback, or telemetry.
+2. Response-speed targets or runtime service levels.
+3. Chat-history compaction or retention redesign.
+4. Fixed total runtime limits.
+5. New Local Agent tools.
+6. Local embeddings or workspace indexing.
+7. Intel Arc acceleration.
+8. Dynamic-capacity implementation inside this repair.
+9. Remote inference, remote fallback, or telemetry.
 
 Delivery order remains:
 
-1. Implement this narrow repair.
+1. Implement this response-quality repair.
 2. Validate source behavior.
-3. Validate the installed macOS package.
-4. Validate the Intel Windows path.
+3. Validate the installed M4 Pro package.
+4. Validate the Windows Intel Arc machine using CPU inference.
 5. Return immediately to dynamic-capacity implementation.
 
-Success means Local Agent performs bounded useful work without dominating the product roadmap.
+Success means valid local results improve through useful work, regardless of necessary runtime.
