@@ -1,5 +1,7 @@
 # Local Agent Response Quality and Work Control Design
 
+> **Superseded:** `docs/superpowers/specs/2026-08-22-thin-local-agent-provider-design.md` replaces this controller design.
+
 **Status:** Implemented and source-validated; installed macOS and Windows runtime validation pending
 
 **Date:** 2026-08-21

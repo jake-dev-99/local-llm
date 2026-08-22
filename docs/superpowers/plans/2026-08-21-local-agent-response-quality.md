@@ -1,5 +1,7 @@
 # Local Agent Response Quality Implementation Plan
 
+> **Superseded:** `docs/superpowers/plans/2026-08-22-thin-local-agent-provider.md` replaces this implementation plan.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans. Do not delegate this implementation.
 
 **Goal:** Prevent mandatory eight-call loops and exact repeated answers while preserving useful long-running local work.
@@ -110,4 +112,3 @@
 8. Record the exact VSIX path and checksum.
 9. Commit the implementation without unrelated changes.
 10. Report source validation, package creation, and installed-runtime validation separately.
-
