@@ -18,8 +18,8 @@ The prototype supports:
 - installed models in VS Code's native Chat model picker
 - ordinary streaming Chat
 - a bundled **Local Agent** that preserves VS Code's native agent loop, edit
-  previews, approvals, and revert UX with six local workspace tool selectors
-- native llama.cpp tool calls with one JSON Schema-constrained fallback
+  previews, approvals, and revert UX with a focused local workspace tool set
+- native llama.cpp tool calls with schema-constrained action selection fallback
 - local inline fill-in-the-middle completion with Chat priority
 
 ## Install
@@ -27,13 +27,13 @@ The prototype supports:
 Install the VSIX that matches the computer:
 
 ```shell
-code --install-extension local-llm-engine-0.3.3-darwin-arm64.vsix --force
+code --install-extension local-llm-engine-0.3.4-darwin-arm64.vsix --force
 ```
 
 or:
 
 ```shell
-code --install-extension local-llm-engine-0.3.3-win32-x64.vsix --force
+code --install-extension local-llm-engine-0.3.4-win32-x64.vsix --force
 ```
 
 Reload VS Code after upgrading from an earlier prototype. Installed models live
@@ -74,11 +74,11 @@ upstream history or control Copilot compaction. Advertising imaginary context
 capacity or trimming an arbitrary prefix of tools only moves the failure.
 
 This extension instead contributes a supported native custom agent with these
-six local tool selectors:
+recognized local workspace tools:
 
-- read file and workspace problems
-- find files, list directories, and exact text search
-- edit files
+- `read_file`, `get_errors`, and `list_dir`
+- `file_search` and `grep_search`
+- `insert_edit_into_file` and `replace_string_in_file`
 
 VS Code can expand a selector such as edit into a small number of concrete tool
 contracts. The provider logs and exact-counts the effective contracts it
@@ -88,23 +88,17 @@ bounding schema overhead for common 7B models. Remote semantic search, web,
 GitHub repository search, MCP, terminal execution, memory, and subagents are not
 available to Local Agent.
 
-Requests that do not clearly ask for workspace changes keep only known
-read/search/problem tools. Explicit change requests gain the two recognized edit
-tools only after a completed file read. This wording check is a conservative UX
-safeguard, not a security boundary; VS Code still owns edit previews and
-approvals.
+Local Agent receives every recognized local tool supplied by VS Code.
+The model decides whether tools are relevant and which tool to invoke.
+VS Code still owns edit previews, approvals, and reversions.
 
-Each workspace-dependent request requires one successful read-only evidence
-result before the model may answer. That result is a minimum, not automatic
-completion. The model may gather more useful evidence, but the configured Local
-Agent invocation ceiling prevents repeated work from continuing indefinitely.
-Final generation does not count as a tool invocation. No elapsed-time deadline
-ends progressing work.
+The configured Local Agent ceiling defaults to eight invoked tools per active
+request. Loaded definitions and final generation do not count. At the ceiling,
+the provider disables tools and requests normal final generation. No elapsed-time
+deadline ends progressing work.
 
-When an exact request is repeated, the matching prior answer is omitted from the
-fresh model input. Current history and tool evidence remain available. An exact
-repeated final receives one independent revision; a second exact duplicate is
-reported as a quality failure instead of being presented as successful work.
+The provider preserves the history supplied by VS Code. It never rewrites
+history or rejects repeated calls and answers based on semantic guesses.
 
 ## Privacy boundary
 
@@ -149,14 +143,13 @@ The client accepts llama.cpp-native `tool_calls` first. Every native function
 name must match a supplied tool. Its arguments must validate against that
 tool's supplied JSON Schema before VS Code receives the call.
 
-If a tool-enabled response contains no native call, the client discards that
-response and makes one schema-constrained JSON decision request. Required turns
-must select exactly one supplied tool. Automatic turns may select one tool or
-return final text. The complete fallback object is validated again with Ajv,
-then converted into a native VS Code tool-call or text part. Invalid names,
-arguments, JSON, or decisions fail closed. The extension does not parse or
-execute bare objects, Markdown fences, XML-like envelopes, or prose containing
-tool-shaped text.
+If a tool-enabled response contains no usable native call, the client makes one
+schema-constrained action request. Required turns select one supplied tool.
+Automatic turns select one tool or a text-free `final` action. A `final` action
+starts ordinary streamed generation without tools or a response schema.
+Structured actions use temperature zero. Final generation uses the configured
+chat temperature and output limit. Invalid names, arguments, JSON, or decisions
+fail closed.
 
 A failed required native-tool probe is persisted by model hash, worker build,
 chat-template hash, platform, and tool-protocol version. Matching restarts skip
@@ -173,9 +166,9 @@ from a different model already active for Chat.
 - `localLlm.defaultModelId`: preferred model for inline completion
 - `localLlm.contextSize`: physical llama.cpp context window; default `0` lets llama.cpp fit it
 - `localLlm.maxOutputTokens`: maximum Chat output, default `2048`
-- `localLlm.maxToolCallTokens`: schema-constrained required-decision ceiling, default `512`
+- `localLlm.maxToolCallTokens`: schema-constrained tool-action ceiling, default `512`
 - `localLlm.maxTools`: maximum loaded tool definitions per request, default `128`
-- `localLlm.maxAgentToolRounds`: maximum invoked tools per active Local Agent request, default `8`
+- `localLlm.maxAgentToolRounds`: maximum invoked tools per active Local Agent request, default `8`; loaded definitions and final generation do not count
 - `localLlm.startupTimeoutSeconds`: model-load timeout, default `600`
 - `localLlm.cpuThreads`: zero lets llama.cpp choose
 - `localLlm.acceleration`: `auto` fits Metal offload to available memory on macOS; `cpu` disables it
