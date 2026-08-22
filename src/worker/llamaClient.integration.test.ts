@@ -6,6 +6,8 @@ import { build } from 'esbuild';
 import type { ChatRequest, ChatStreamEvent } from '../domain';
 
 interface TestLlamaClient {
+  getNativeToolCallSupport(): 'unknown' | 'available' | 'unavailable';
+  setNativeToolCallSupport(support: 'unknown' | 'available' | 'unavailable'): void;
   tokenize(content: string, signal?: AbortSignal): Promise<number>;
   chat(
     request: ChatRequest,
@@ -18,6 +20,14 @@ type TestLlamaClientConstructor = new (
   baseUrl: string,
   apiKey: string,
 ) => TestLlamaClient;
+
+test('the worker client rejects non-loopback addresses', async () => {
+  const LlamaClient = await loadLlamaClient();
+  assert.throws(
+    () => new LlamaClient('http://192.0.2.1:8080', 'test-key'),
+    /loopback/i,
+  );
+});
 
 test('chat rejects a llama-server error delivered after an SSE stream starts', async () => {
   const server = createServer((request, response) => {
@@ -213,6 +223,140 @@ test('chat stops repeating the native pass once the worker proves it emits no to
     assert.equal(nativeRequests.length, 1);
     assert.equal(fallbackRequests.length, 2);
     assert.deepEqual(second.map((event) => event.kind), ['toolCall']);
+  } finally {
+    await close(server);
+  }
+});
+
+test('persisted unavailable support skips the discarded native probe after restart', async () => {
+  let nativeRequests = 0;
+  let fallbackRequests = 0;
+  const server = createServer((request, response) => {
+    if (request.url === '/v1/chat/completions/input_tokens') {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end('{"input_tokens":10}');
+      return;
+    }
+    if (request.url === '/v1/chat/completions') {
+      let body = '';
+      request.on('data', (chunk) => {
+        body += chunk;
+      });
+      request.on('end', () => {
+        const parsed = JSON.parse(body) as { response_format?: unknown };
+        if (!parsed.response_format) {
+          nativeRequests += 1;
+          response.writeHead(200, { 'content-type': 'text/event-stream' });
+          response.end('data: [DONE]\n\n');
+          return;
+        }
+        fallbackRequests += 1;
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(
+          `data: ${JSON.stringify({
+            choices: [{
+              delta: {
+                content: JSON.stringify({
+                  kind: 'tool',
+                  name: 'read_file',
+                  arguments: { filePath: '/workspace/config.ts' },
+                }),
+              },
+            }],
+          })}\n\ndata: [DONE]\n\n`,
+        );
+      });
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+  await listen(server);
+
+  try {
+    const client = await testClient(server);
+    client.setNativeToolCallSupport('unavailable');
+    await client.chat(
+      {
+        messages: [{ role: 'user', content: 'Review config.ts.' }],
+        tools: [{
+          type: 'function',
+          function: {
+            name: 'read_file',
+            parameters: {
+              type: 'object',
+              properties: { filePath: { type: 'string' } },
+              required: ['filePath'],
+              additionalProperties: false,
+            },
+          },
+        }],
+        toolChoice: 'required',
+        inputTokenBudget: 100,
+        maxTokens: 64,
+        temperature: 0,
+      },
+      () => undefined,
+    );
+
+    assert.equal(nativeRequests, 0);
+    assert.equal(fallbackRequests, 1);
+    assert.equal(client.getNativeToolCallSupport(), 'unavailable');
+  } finally {
+    await close(server);
+  }
+});
+
+test('an automatic final does not prove native tool calls are unavailable', async () => {
+  const server = createServer((request, response) => {
+    if (request.url === '/v1/chat/completions/input_tokens') {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end('{"input_tokens":10}');
+      return;
+    }
+    if (request.url === '/v1/chat/completions') {
+      let body = '';
+      request.on('data', (chunk) => {
+        body += chunk;
+      });
+      request.on('end', () => {
+        const parsed = JSON.parse(body) as { response_format?: unknown };
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(parsed.response_format
+          ? `data: ${JSON.stringify({
+            choices: [{
+              delta: {
+                content: JSON.stringify({ kind: 'final', text: 'Enough evidence.' }),
+              },
+            }],
+          })}\n\ndata: [DONE]\n\n`
+          : 'data: {"choices":[{"delta":{"content":"Enough evidence."}}]}\n\ndata: [DONE]\n\n');
+      });
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+  await listen(server);
+
+  try {
+    const client = await testClient(server);
+    await client.chat(
+      {
+        messages: [{ role: 'user', content: 'Finish the review.' }],
+        tools: [{
+          type: 'function',
+          function: { name: 'read_file', parameters: { type: 'object' } },
+        }],
+        toolChoice: 'auto',
+        inputTokenBudget: 100,
+        maxTokens: 64,
+        temperature: 0,
+      },
+      () => undefined,
+    );
+
+    assert.equal(client.getNativeToolCallSupport(), 'unknown');
   } finally {
     await close(server);
   }

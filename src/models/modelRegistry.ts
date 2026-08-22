@@ -4,6 +4,7 @@ import type {
   CapabilitySupport,
   InstalledModel,
   ModelRuntimeProfile,
+  NativeToolCapabilityRecord,
 } from '../domain';
 import type { LocalLlmLogger } from '../logging';
 import { readGgufMetadata } from './ggufMetadata';
@@ -39,7 +40,11 @@ export class ModelRegistry {
           if (identityChanged) {
             migrated = true;
             this.logger.info(`Model bytes changed on disk; invalidated compatibility: ${model.name}.`);
-            const { runtimeProfile: _runtimeProfile, ...modelWithoutRuntimeProfile } = model;
+            const {
+              runtimeProfile: _runtimeProfile,
+              nativeToolCapability: _nativeToolCapability,
+              ...modelWithoutRuntimeProfile
+            } = model;
             available.push({
               ...modelWithoutRuntimeProfile,
               fileSize: metadata.size,
@@ -130,6 +135,17 @@ export class ModelRegistry {
 
   async markToolCalling(id: string, support: CapabilitySupport): Promise<void> {
     await this.markCapability(id, 'toolCalling', support);
+  }
+
+  async updateNativeToolCapability(
+    id: string,
+    record: NativeToolCapabilityRecord,
+  ): Promise<void> {
+    const model = this.get(id);
+    if (!model || JSON.stringify(model.nativeToolCapability) === JSON.stringify(record)) {
+      return;
+    }
+    await this.upsert({ ...model, nativeToolCapability: record });
   }
 
   async markFillInMiddle(id: string, support: CapabilitySupport): Promise<void> {

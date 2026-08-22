@@ -1,19 +1,10 @@
 import type { ChatMessage, ChatTool } from '../domain';
 import {
+  activeLocalAgentRequestIndex,
   isLocalAgentRequest,
+  LOCAL_AGENT_DISCOVERY_TOOL_NAMES,
   shouldRequireLocalAgentTool,
 } from './localAgentToolChoice.ts';
-
-const LOCAL_AGENT_PROTOCOL_LINE =
-  'Protocol marker: LOCAL_LLM_WORKSPACE_AGENT_PROTOCOL_9E218F31_V1.';
-
-const LOCAL_AGENT_DISCOVERY_TOOL_NAMES = new Set([
-  'file_search',
-  'grep_search',
-  'get_errors',
-  'list_dir',
-  'read_file',
-]);
 
 const LOCAL_AGENT_EDIT_TOOL_NAMES = new Set([
   'insert_edit_into_file',
@@ -104,12 +95,13 @@ export function localAgentNeedsMutationTool(messages: readonly ChatMessage[]): b
 
 export interface LocalAgentToolPolicy {
   tools: ChatTool[];
-  toolChoice: 'auto' | 'required';
+  toolChoice: 'auto' | 'required' | 'none';
   source:
     | 'caller-required'
     | 'caller-auto'
     | 'local-agent-discovery'
-    | 'local-agent-mutation';
+    | 'local-agent-mutation'
+    | 'local-agent-final';
 }
 
 export function resolveLocalAgentToolPolicy(
@@ -117,7 +109,11 @@ export function resolveLocalAgentToolPolicy(
   callerRequired: boolean,
   localAgentNeedsInitialTool: boolean,
   localAgentNeedsMutation: boolean = false,
+  localAgentForceFinal: boolean = false,
 ): LocalAgentToolPolicy {
+  if (localAgentForceFinal) {
+    return { tools: [], toolChoice: 'none', source: 'local-agent-final' };
+  }
   if (callerRequired) {
     return { tools: [...tools], toolChoice: 'required', source: 'caller-required' };
   }
@@ -165,7 +161,7 @@ function hasCompletedFileRead(messages: readonly ChatMessage[]): boolean {
 }
 
 function completedToolNames(messages: readonly ChatMessage[]): Set<string> {
-  const requestIndex = activeUserRequestIndex(messages);
+  const requestIndex = activeLocalAgentRequestIndex(messages);
   const completed = new Set<string>();
   if (requestIndex < 0) {
     return completed;
@@ -191,48 +187,6 @@ function completedToolNames(messages: readonly ChatMessage[]): Set<string> {
 }
 
 function activeUserRequest(messages: readonly ChatMessage[]): string | undefined {
-  const index = activeUserRequestIndex(messages);
+  const index = activeLocalAgentRequestIndex(messages);
   return index >= 0 ? messages[index]?.content : undefined;
-}
-
-function activeUserRequestIndex(messages: readonly ChatMessage[]): number {
-  const lastFinalAssistantIndex = messages.findLastIndex(
-    (message) => message.role === 'assistant' && !message.tool_calls?.length,
-  );
-  const firstToolCallIndex = messages.findIndex(
-    (message, index) =>
-      index > lastFinalAssistantIndex &&
-      message.role === 'assistant' &&
-      Boolean(message.tool_calls?.length),
-  );
-  if (firstToolCallIndex >= 0) {
-    const laterUserIndex = messages.findLastIndex(
-      (message, index) =>
-        index > firstToolCallIndex &&
-        message.role === 'user' &&
-        !isProtocolInstruction(message.content) &&
-        !isLikelyHookContext(message.content),
-    );
-    if (laterUserIndex >= 0) {
-      return laterUserIndex;
-    }
-  }
-  const searchEnd = firstToolCallIndex >= 0 ? firstToolCallIndex : messages.length;
-  for (let index = searchEnd - 1; index > lastFinalAssistantIndex; index -= 1) {
-    const message = messages[index];
-    if (message?.role === 'user' && !isProtocolInstruction(message.content)) {
-      return index;
-    }
-  }
-  return -1;
-}
-
-function isLikelyHookContext(content: string): boolean {
-  return /^\s*(?:additional\s+)?hook context\s*:/i.test(content);
-}
-
-function isProtocolInstruction(content: string): boolean {
-  return content.split(/\r?\n/).some(
-    (line) => line.trim() === LOCAL_AGENT_PROTOCOL_LINE,
-  );
 }

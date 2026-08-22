@@ -27,13 +27,13 @@ The prototype supports:
 Install the VSIX that matches the computer:
 
 ```shell
-code --install-extension local-llm-engine-0.2.7-darwin-arm64.vsix --force
+code --install-extension local-llm-engine-0.3.3-darwin-arm64.vsix --force
 ```
 
 or:
 
 ```shell
-code --install-extension local-llm-engine-0.2.7-win32-x64.vsix --force
+code --install-extension local-llm-engine-0.3.3-win32-x64.vsix --force
 ```
 
 Reload VS Code after upgrading from an earlier prototype. Installed models live
@@ -94,12 +94,25 @@ tools only after a completed file read. This wording check is a conservative UX
 safeguard, not a security boundary; VS Code still owns edit previews and
 approvals.
 
+Each workspace-dependent request requires one successful read-only evidence
+result before the model may answer. That result is a minimum, not automatic
+completion. The model may gather more useful evidence, but the configured Local
+Agent invocation ceiling prevents repeated work from continuing indefinitely.
+Final generation does not count as a tool invocation. No elapsed-time deadline
+ends progressing work.
+
+When an exact request is repeated, the matching prior answer is omitted from the
+fresh model input. Current history and tool evidence remain available. An exact
+repeated final receives one independent revision; a second exact duplicate is
+reported as a quality failure instead of being presented as successful work.
+
 ## Privacy boundary
 
 Prompts, source code, tool results, and generated text handled by this provider
 are sent only to an authenticated worker bound to `127.0.0.1`. The worker API
 key is written to a private temporary file rather than exposed in its process
-arguments. The extension has no telemetry.
+arguments. The worker client rejects non-loopback runtime addresses. The
+extension has no telemetry.
 
 **Configure Local Privacy Defaults** sets `chat.utilityModel` and
 `chat.utilitySmallModel` to the selected local model, sets
@@ -145,6 +158,10 @@ arguments, JSON, or decisions fail closed. The extension does not parse or
 execute bare objects, Markdown fences, XML-like envelopes, or prose containing
 tool-shaped text.
 
+A failed required native-tool probe is persisted by model hash, worker build,
+chat-template hash, platform, and tool-protocol version. Matching restarts skip
+that known-useless generation. Any fingerprint change restores one native probe.
+
 Inline completion is enabled only after the validation command gets a nonempty
 result from the default model's `/infill` endpoint. It reads a bounded range
 around the cursor, debounces typing, cancels stale work, and never switches away
@@ -154,16 +171,17 @@ from a different model already active for Chat.
 
 - `localLlm.modelDirectory`: managed GGUF directory; empty uses extension global storage
 - `localLlm.defaultModelId`: preferred model for inline completion
-- `localLlm.contextSize`: physical llama.cpp context window, default `32768`
+- `localLlm.contextSize`: physical llama.cpp context window; default `0` lets llama.cpp fit it
 - `localLlm.maxOutputTokens`: maximum Chat output, default `2048`
 - `localLlm.maxToolCallTokens`: schema-constrained required-decision ceiling, default `512`
-- `localLlm.maxTools`: maximum tool definitions per request, default `8`
+- `localLlm.maxTools`: maximum loaded tool definitions per request, default `128`
+- `localLlm.maxAgentToolRounds`: maximum invoked tools per active Local Agent request, default `8`
 - `localLlm.startupTimeoutSeconds`: model-load timeout, default `600`
 - `localLlm.cpuThreads`: zero lets llama.cpp choose
 - `localLlm.acceleration`: `auto` fits Metal offload to available memory on macOS; `cpu` disables it
 - `localLlm.batchSize`: logical prompt batch, default `256`
 - `localLlm.microBatchSize`: physical compute batch, default `64`; lower values reduce peak memory
-- `localLlm.metalMemoryReserveMiB`: Metal fitting reserve, default `4096`
+- `localLlm.metalMemoryReserveMiB`: Metal fitting reserve, default `1024`
 - `localLlm.temperature`: generation temperature, default `0.2`
 - `localLlm.inline.enabled`: enables inline completion
 - `localLlm.inline.maxTokens`: inline output ceiling, default `64`

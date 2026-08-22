@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 export interface WorkerModelProfile {
   loadedContextSize: number;
   hasChatTemplate: boolean;
@@ -5,6 +7,7 @@ export interface WorkerModelProfile {
   supportsToolCalls: boolean;
   supportsSystemRole: boolean;
   workerBuild?: string;
+  chatTemplateFingerprint?: string;
 }
 
 export function parseWorkerModelProfile(value: unknown): WorkerModelProfile {
@@ -18,14 +21,21 @@ export function parseWorkerModelProfile(value: unknown): WorkerModelProfile {
   const workerBuild = typeof payload.build_info === 'string' && payload.build_info
     ? payload.build_info
     : undefined;
+  const chatTemplate = typeof payload.chat_template === 'string' && payload.chat_template
+    ? payload.chat_template
+    : undefined;
+  const chatTemplateFingerprint = chatTemplate
+    ? createHash('sha256').update(chatTemplate).digest('hex')
+    : undefined;
 
   return {
     loadedContextSize,
-    hasChatTemplate: typeof payload.chat_template === 'string' && payload.chat_template.length > 0,
+    hasChatTemplate: Boolean(chatTemplate),
     supportsTools: capabilities.supports_tools === true,
     supportsToolCalls: capabilities.supports_tool_calls === true,
     supportsSystemRole: capabilities.supports_system_role === true,
     ...(workerBuild ? { workerBuild } : {}),
+    ...(chatTemplateFingerprint ? { chatTemplateFingerprint } : {}),
   };
 }
 

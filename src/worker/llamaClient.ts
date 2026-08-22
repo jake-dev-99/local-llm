@@ -46,7 +46,7 @@ export interface ChatResult {
  * Whether the loaded model emits tool calls on llama.cpp's native tool_calls
  * channel. Measured once per worker process, then reused.
  */
-type NativeToolCallSupport = 'unknown' | 'available' | 'unavailable';
+export type NativeToolCallSupport = 'unknown' | 'available' | 'unavailable';
 
 export class LlamaClient {
   private modelProfile: WorkerModelProfile | undefined;
@@ -56,7 +56,17 @@ export class LlamaClient {
     readonly baseUrl: string,
     private readonly apiKey: string,
     private readonly log?: (message: string) => void,
-  ) {}
+  ) {
+    assertLoopbackWorkerUrl(baseUrl);
+  }
+
+  getNativeToolCallSupport(): NativeToolCallSupport {
+    return this.nativeToolCalls;
+  }
+
+  setNativeToolCallSupport(support: NativeToolCallSupport): void {
+    this.nativeToolCalls = support;
+  }
 
   async health(signal?: AbortSignal): Promise<boolean> {
     try {
@@ -144,10 +154,12 @@ export class LlamaClient {
       return nativeResult;
     }
 
-    this.nativeToolCalls = 'unavailable';
-    this.log?.(
-      'This model returned no native tool call; using schema-constrained decisions for the rest of this worker session.',
-    );
+    if (toolChoice === 'required') {
+      this.nativeToolCalls = 'unavailable';
+      this.log?.(
+        'This model returned no required native tool call; using schema-constrained decisions for this runtime fingerprint.',
+      );
+    }
     return this.schemaConstrainedDecision(
       request,
       tools,
@@ -510,6 +522,18 @@ export class LlamaClient {
 
 function requestSignal(signal?: AbortSignal): RequestInit {
   return signal ? { signal } : {};
+}
+
+function assertLoopbackWorkerUrl(baseUrl: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    throw new Error('The local worker address is invalid.');
+  }
+  if (parsed.protocol !== 'http:' || parsed.hostname !== '127.0.0.1') {
+    throw new Error('The local worker client accepts only HTTP loopback addresses on 127.0.0.1.');
+  }
 }
 
 function withTools(

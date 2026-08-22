@@ -64,6 +64,14 @@ test('the generic resolver preserves the tool contract supplied by its caller', 
   );
 });
 
+test('Local Agent ceiling forces final generation even when the caller requests a tool', () => {
+  const tools = [tool('read_file'), tool('get_errors')];
+  assert.deepEqual(
+    resolveLocalAgentToolPolicy(tools, true, false, false, true),
+    { tools: [], toolChoice: 'none', source: 'local-agent-final' },
+  );
+});
+
 test('extension-forced Local Agent fails closed without a discovery tool', () => {
   assert.throws(
     () => resolveLocalAgentToolPolicy([tool('replace_string_in_file')], false, true),

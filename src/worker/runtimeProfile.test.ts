@@ -21,6 +21,7 @@ test('parseWorkerModelProfile reads runtime context and tool-template support', 
       supportsToolCalls: true,
       supportsSystemRole: true,
       workerBuild: 'b10472-60eeeb608',
+      chatTemplateFingerprint: 'e45627f95325271d40ad1ed82e196e096212abb84cce29ccb7f72733291af356',
     },
   );
 });

@@ -1,6 +1,6 @@
 # Local Agent Response Quality and Work Control Design
 
-**Status:** Draft for review; implementation not started
+**Status:** Implemented and source-validated; installed macOS and Windows runtime validation pending
 
 **Date:** 2026-08-21
 

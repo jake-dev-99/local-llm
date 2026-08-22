@@ -15,6 +15,15 @@ export interface ModelRuntimeProfile {
   supportsToolCalls: boolean;
   supportsSystemRole: boolean;
   workerBuild?: string;
+  chatTemplateFingerprint?: string;
+}
+
+export type NativeToolCallSupport = 'available' | 'unavailable';
+
+export interface NativeToolCapabilityRecord {
+  fingerprint: string;
+  support: NativeToolCallSupport;
+  observedAt: string;
 }
 
 export interface InstalledModel {
@@ -33,6 +42,7 @@ export interface InstalledModel {
   installedAt: string;
   capabilities: ModelCapabilities;
   runtimeProfile?: ModelRuntimeProfile;
+  nativeToolCapability?: NativeToolCapabilityRecord;
   /**
    * Context length from the GGUF header. A bootstrap estimate only; the window
    * actually used comes from the worker once llama.cpp has fitted the model.

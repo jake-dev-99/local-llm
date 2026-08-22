@@ -2,7 +2,7 @@
   "name": "local-llm-engine",
   "displayName": "Local LLM Engine",
   "description": "Run GGUF language models locally in VS Code Chat, Agent mode, and inline completion.",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "publisher": "local-llm",
   "license": "MIT",
   "engines": {
@@ -121,7 +121,7 @@
           "default": 8,
           "minimum": 1,
           "maximum": 50,
-          "description": "How many tool calls the bundled Local Agent must make before it may answer. One completed tool call no longer ends the task."
+          "description": "Maximum tool invocations per active bundled Local Agent request. The model may answer after one successful evidence result, or continue gathering useful evidence. Final generation does not count."
         },
         "localLlm.maxOutputTokens": {
           "type": "integer",
