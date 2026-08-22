@@ -326,7 +326,7 @@ test('an automatic final does not prove native tool calls are unavailable', asyn
           ? `data: ${JSON.stringify({
             choices: [{
               delta: {
-                content: JSON.stringify({ kind: 'final', text: 'Enough evidence.' }),
+                content: JSON.stringify({ kind: 'final' }),
               },
             }],
           })}\n\ndata: [DONE]\n\n`
@@ -357,6 +357,55 @@ test('an automatic final does not prove native tool calls are unavailable', asyn
     );
 
     assert.equal(client.getNativeToolCallSupport(), 'unknown');
+  } finally {
+    await close(server);
+  }
+});
+
+test('persisted available support accepts a native automatic final', async () => {
+  let completionCount = 0;
+  const server = createServer((request, response) => {
+    if (request.url === '/v1/chat/completions/input_tokens') {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end('{"input_tokens":10}');
+      return;
+    }
+    if (request.url === '/v1/chat/completions') {
+      completionCount += 1;
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.end(
+        'data: {"choices":[{"delta":{"content":"Current final."}}]}\n\n' +
+          'data: [DONE]\n\n',
+      );
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+  await listen(server);
+
+  try {
+    const client = await testClient(server);
+    client.setNativeToolCallSupport('available');
+    const events: ChatStreamEvent[] = [];
+    const result = await client.chat(
+      {
+        messages: [{ role: 'user', content: 'Finish the review.' }],
+        tools: [{
+          type: 'function',
+          function: { name: 'read_file', parameters: { type: 'object' } },
+        }],
+        toolChoice: 'auto',
+        inputTokenBudget: 100,
+        maxTokens: 64,
+        temperature: 0.2,
+      },
+      (event) => events.push(event),
+    );
+
+    assert.equal(completionCount, 1);
+    assert.equal(result.toolCallCount, 0);
+    assert.deepEqual(events, [{ kind: 'text', text: 'Current final.' }]);
   } finally {
     await close(server);
   }

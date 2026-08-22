@@ -3,7 +3,7 @@ import type { ChatTool } from '../domain';
 
 export type ToolDecision =
   | { kind: 'tool'; name: string; arguments: Record<string, unknown> }
-  | { kind: 'final'; text: string };
+  | { kind: 'final' };
 
 const validator = new Ajv({
   allErrors: true,
@@ -56,7 +56,7 @@ export function parseToolDecision(
   ) {
     return parsed as ToolDecision;
   }
-  if (!toolRequired && parsed.kind === 'final' && typeof parsed.text === 'string') {
+  if (!toolRequired && parsed.kind === 'final') {
     return parsed as ToolDecision;
   }
   throw new Error('The schema-constrained fallback returned an invalid decision.');
@@ -117,9 +117,8 @@ function toolDecisionSchema(
       type: 'object',
       properties: {
         kind: { type: 'string', enum: ['final'] },
-        text: { type: 'string', minLength: 1 },
       },
-      required: ['kind', 'text'],
+      required: ['kind'],
       additionalProperties: false,
     });
   }

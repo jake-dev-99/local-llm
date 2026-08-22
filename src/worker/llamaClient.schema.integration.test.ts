@@ -6,6 +6,7 @@ import { build } from 'esbuild';
 import type { ChatRequest, ChatStreamEvent } from '../domain';
 
 interface TestLlamaClient {
+  setNativeToolCallSupport(support: 'unknown' | 'available' | 'unavailable'): void;
   chat(
     request: ChatRequest,
     onEvent: (event: ChatStreamEvent) => void,
@@ -241,7 +242,7 @@ test('native tool calls also validate arguments against the supplied schema', as
   }
 });
 
-test('automatic chat uses the constrained fallback to choose a final answer', async () => {
+test('automatic fallback selects ordinary final generation', async () => {
   const completionBodies: Array<Record<string, unknown>> = [];
   const server = createServer((request, response) => {
     if (request.url === '/v1/chat/completions/input_tokens') {
@@ -258,14 +259,14 @@ test('automatic chat uses the constrained fallback to choose a final answer', as
         );
         if (completionBodies.length === 1) {
           response.writeHead(200, { 'content-type': 'text/event-stream' });
-          response.end(
-            'data: {"choices":[{"delta":{"content":"Untrusted first answer."}}]}\n\n' +
-              'data: [DONE]\n\n',
-          );
+          response.end(streamedDecision({ kind: 'final' }));
           return;
         }
         response.writeHead(200, { 'content-type': 'text/event-stream' });
-        response.end(streamedDecision({ kind: 'final', text: 'Validated final answer.' }));
+        response.end(
+          'data: {"choices":[{"delta":{"content":"Current evidence supports the answer."}}]}\n\n' +
+            'data: [DONE]\n\n',
+        );
       });
       return;
     }
@@ -281,6 +282,7 @@ test('automatic chat uses the constrained fallback to choose a final answer', as
     const address = server.address() as AddressInfo;
     const LlamaClient = await loadLlamaClient();
     const client = new LlamaClient(`http://127.0.0.1:${address.port}`, 'test-key');
+    client.setNativeToolCallSupport('unavailable');
     const events: ChatStreamEvent[] = [];
     const result = await client.chat(
       {
@@ -291,16 +293,26 @@ test('automatic chat uses the constrained fallback to choose a final answer', as
         }],
         toolChoice: 'auto',
         inputTokenBudget: 100,
-        maxTokens: 64,
-        temperature: 0,
+        maxTokens: 256,
+        toolCallMaxTokens: 64,
+        temperature: 0.2,
       },
       (event) => events.push(event),
     );
 
     assert.equal(completionBodies.length, 2);
+    assert.equal(completionBodies[0]?.temperature, 0);
+    assert.equal(completionBodies[0]?.max_tokens, 64);
+    assert.ok(completionBodies[0]?.response_format);
+    assert.equal(completionBodies[1]?.temperature, 0.2);
+    assert.equal(completionBodies[1]?.max_tokens, 256);
+    assert.equal(completionBodies[1]?.response_format, undefined);
+    assert.equal(completionBodies[1]?.tools, undefined);
     assert.equal(result.toolCallCount, 0);
-    assert.deepEqual(events, [{ kind: 'text', text: 'Validated final answer.' }]);
-    assert.equal(JSON.stringify(events).includes('Untrusted first answer.'), false);
+    assert.deepEqual(events, [{
+      kind: 'text',
+      text: 'Current evidence supports the answer.',
+    }]);
   } finally {
     await new Promise<void>((resolve, reject) => {
       server.close((error) => (error ? reject(error) : resolve()));

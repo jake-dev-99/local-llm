@@ -144,8 +144,11 @@ export class LlamaClient {
       (event) => nativeEvents.push(event),
       signal,
     );
-    if (!toolProtocolEnabled || nativeResult.toolCallCount > 0) {
-      if (toolProtocolEnabled) {
+    const nativeAutomaticFinal = toolChoice === 'auto' &&
+      this.nativeToolCalls === 'available' &&
+      nativeResult.toolCallCount === 0;
+    if (!toolProtocolEnabled || nativeResult.toolCallCount > 0 || nativeAutomaticFinal) {
+      if (toolProtocolEnabled && nativeResult.toolCallCount > 0) {
         this.nativeToolCalls = 'available';
       }
       for (const event of nativeEvents) {
@@ -197,12 +200,16 @@ export class LlamaClient {
         toolCallCount: 1,
       };
     }
-    onEvent({ kind: 'text', text: fallback.decision.text });
-    return {
-      inputTokens: fallback.inputTokens,
-      textCharacters: textCharacters + fallback.decision.text.length,
-      toolCallCount: 0,
-    };
+    const {
+      tools: _tools,
+      workerToolChoice: _workerToolChoice,
+      ...withoutTools
+    } = request;
+    return this.streamNativeChat(
+      { ...withoutTools, toolChoice: 'none' },
+      onEvent,
+      signal,
+    );
   }
 
   private async streamNativeChat(
@@ -318,19 +325,17 @@ export class LlamaClient {
     toolRequired: boolean,
     signal?: AbortSignal,
   ): Promise<{ decision: ToolDecision; inputTokens: number }> {
-    const maxTokens = toolRequired
-      ? Math.min(
-        request.maxTokens,
-        Math.max(1, Math.floor(request.toolCallMaxTokens ?? request.maxTokens)),
-      )
-      : request.maxTokens;
+    const maxTokens = Math.min(
+      request.maxTokens,
+      Math.max(1, Math.floor(request.toolCallMaxTokens ?? request.maxTokens)),
+    );
     const messages: ChatMessage[] = [
       ...request.messages,
       {
         role: 'user',
         content: toolRequired
           ? 'Return exactly one tool decision matching the response schema. Choose the supplied tool needed for the current task.'
-          : 'Return one decision matching the response schema. Choose kind tool when another tool is needed. Otherwise choose kind final with the final answer.',
+          : 'Return one action matching the response schema. Choose kind tool when another tool is needed. Otherwise choose kind final.',
       },
     ];
     const body: Record<string, unknown> = {
