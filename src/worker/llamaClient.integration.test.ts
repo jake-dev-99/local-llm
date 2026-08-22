@@ -30,7 +30,7 @@ test('the worker client rejects non-loopback addresses', async () => {
   );
 });
 
-test('tokenization reuses one worker connection', async () => {
+test('tokenization reuses one worker connection for an ordinary burst', async () => {
   let connectionCount = 0;
   const server = createServer((_request, response) => {
     response.writeHead(200, { 'content-type': 'application/json' });
@@ -43,7 +43,7 @@ test('tokenization reuses one worker connection', async () => {
 
   try {
     const client = await testClient(server);
-    for (let index = 0; index < 1_000; index += 1) {
+    for (let index = 0; index < 50; index += 1) {
       assert.equal(await client.tokenize(`token-${index}`), 1);
     }
     assert.equal(connectionCount, 1);
@@ -127,6 +127,69 @@ test('tokenization continues when the worker retires a keep-alive socket', async
     await client.dispose();
   } finally {
     server.closeAllConnections();
+    await close(server);
+  }
+});
+
+test('chat survives a worker that resets connections at its hard request limit', async () => {
+  let connectionCount = 0;
+  const requestCounts = new WeakMap<object, number>();
+  const server = createServer((request, response) => {
+    const requestCount = (requestCounts.get(request.socket) ?? 0) + 1;
+    requestCounts.set(request.socket, requestCount);
+    if (requestCount >= 100) {
+      request.socket.destroy();
+      return;
+    }
+    if (request.url === '/tokenize') {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end('{"tokens":[1]}');
+      return;
+    }
+    if (request.url === '/v1/chat/completions/input_tokens') {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end('{"input_tokens":10}');
+      return;
+    }
+    if (request.url === '/v1/chat/completions') {
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.end(
+        'data: {"choices":[{"delta":{"content":"done"}}]}\n\n' +
+          'data: [DONE]\n\n',
+      );
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+  server.on('connection', () => {
+    connectionCount += 1;
+  });
+  await listen(server);
+
+  try {
+    const client = await testClient(server);
+    try {
+      for (let index = 0; index < 99; index += 1) {
+        assert.equal(await client.tokenize(`token-${index}`), 1);
+      }
+      const events: ChatStreamEvent[] = [];
+      await client.chat(
+        {
+          messages: [{ role: 'user', content: 'Finish.' }],
+          inputTokenBudget: 100,
+          maxTokens: 8,
+          temperature: 0,
+        },
+        (event) => events.push(event),
+      );
+
+      assert.deepEqual(events, [{ kind: 'text', text: 'done' }]);
+      assert.equal(connectionCount, 2);
+    } finally {
+      await client.dispose();
+    }
+  } finally {
     await close(server);
   }
 });

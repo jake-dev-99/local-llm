@@ -47,6 +47,7 @@ interface PendingToolCall {
 
 const TOKEN_COUNT_CACHE_MAX_ENTRIES = 4_096;
 const TOKEN_COUNT_CACHE_MAX_TEXT_LENGTH = 32 * 1_024;
+const WORKER_CONNECTION_MAX_REQUESTS = 64;
 
 export interface ChatResult {
   inputTokens: number;
@@ -75,6 +76,9 @@ export class LlamaClient {
     this.pool = new Pool(baseUrl, {
       connections: 1,
       pipelining: 1,
+      // llama.cpp retires keep-alive connections after 100 requests. Rotate
+      // first so an immediate follow-up cannot race the server's final close.
+      maxRequestsPerClient: WORKER_CONNECTION_MAX_REQUESTS,
     });
   }
 
