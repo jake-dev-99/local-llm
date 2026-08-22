@@ -17,16 +17,12 @@ import {
   serializeMessageForTokenCount,
 } from './messageAdapter';
 import {
-  evaluateLocalAgentTurn,
   isLocalAgentRequest,
-  matchingPriorLocalAgentFinal,
-  messagesForFreshLocalAgentRequest,
+  localAgentToolInvocationCount,
+  localAgentToolLimitReached,
 } from './localAgentToolChoice';
-import { runLocalAgentResponse } from './localAgentResponse';
 import {
   localAgentAvailableTools,
-  localAgentDiscoveryTools,
-  localAgentNeedsMutationTool,
   resolveLocalAgentToolPolicy,
 } from './localAgentTools';
 import { messagesForSystemRoleSupport } from './messageRoleSupport';
@@ -79,22 +75,14 @@ implements vscode.LanguageModelChatProvider<LocalLanguageModelInformation>, vsco
     const tools = adaptTools(options.tools);
     const adaptedMessages = adaptMessages(messages);
     const localAgentRequest = isLocalAgentRequest(adaptedMessages);
-    const localAgentState = evaluateLocalAgentTurn(
+    const availableTools = localAgentRequest
+      ? localAgentAvailableTools(tools ?? [])
+      : tools ?? [];
+    const invocationCount = localAgentToolInvocationCount(adaptedMessages);
+    const forceLocalAgentFinal = localAgentToolLimitReached(
       adaptedMessages,
       config.maxAgentToolRounds,
     );
-    const availableTools = localAgentRequest
-      ? localAgentAvailableTools(tools ?? [], adaptedMessages)
-      : tools ?? [];
-    const forceLocalAgentFinal = localAgentState.phase === 'forceFinal';
-    const needsMutationTool = localAgentRequest && !forceLocalAgentFinal &&
-      localAgentNeedsMutationTool(adaptedMessages);
-    // Never gate this on how many tools arrived. An empty tool list is exactly the
-    // case that must reach resolveLocalAgentToolPolicy so it can refuse the turn.
-    const requireLocalAgentTool = localAgentState.phase === 'requireEvidence';
-    const discoveryTools = localAgentRequest
-      ? localAgentDiscoveryTools(availableTools)
-      : [];
     this.logger.debug(
       `Chat request adapted ${adaptedMessages.length} message${adaptedMessages.length === 1 ? '' : 's'} with roles: ${adaptedMessages.map((message) => message.role).join(', ')}.`,
     );
@@ -108,8 +96,6 @@ implements vscode.LanguageModelChatProvider<LocalLanguageModelInformation>, vsco
       toolPolicy = resolveLocalAgentToolPolicy(
         availableTools,
         options.toolMode === vscode.LanguageModelChatToolMode.Required,
-        requireLocalAgentTool,
-        needsMutationTool,
         forceLocalAgentFinal,
       );
     } catch (error) {
@@ -122,21 +108,9 @@ implements vscode.LanguageModelChatProvider<LocalLanguageModelInformation>, vsco
         `This request supplied ${toolPolicy.tools.length} authorized tools, but the local model is configured for at most ${config.maxTools}. Select the bundled Local Agent or increase localLlm.maxTools deliberately.`,
       );
     }
-    if (
-      toolPolicy.source === 'local-agent-discovery'
-    ) {
-      this.logger.debug(
-        `Local Agent workspace turn needs discovery; requiring one of ${discoveryTools.length} read-only tools.`,
-      );
-    }
-    if (toolPolicy.source === 'local-agent-mutation') {
-      this.logger.debug(
-        `Local Agent workspace turn requires one authorized editor: ${toolPolicy.tools.map((tool) => tool.function.name).join(', ')}.`,
-      );
-    }
     if (localAgentRequest) {
       this.logger.debug(
-        `Local Agent work state: ${localAgentState.invocationCount}/${config.maxAgentToolRounds} invoked, ${localAgentState.evidenceCount} evidence result(s), ${localAgentState.resultCharacters} result characters, phase ${localAgentState.phase}.`,
+        `Local Agent tool allowance: ${invocationCount}/${config.maxAgentToolRounds} invoked; final generation ${forceLocalAgentFinal ? 'required' : 'model-selected'}.`,
       );
     }
     const temperature = clamp(
@@ -215,65 +189,27 @@ implements vscode.LanguageModelChatProvider<LocalLanguageModelInformation>, vsco
             1,
             physicalContext - 1,
           );
-          const freshMessages = localAgentRequest
-            ? messagesForFreshLocalAgentRequest(adaptedMessages)
-            : adaptedMessages;
-          const controllerMessages = localAgentRequest
-            ? [...freshMessages, {
-              role: 'user' as const,
-              content: localAgentControllerStatus(
-                localAgentState,
-                config.maxAgentToolRounds,
-                physicalContext - maxTokens,
-              ),
-            }]
-            : freshMessages;
           const modelMessages = messagesForSystemRoleSupport(
-            controllerMessages,
+            adaptedMessages,
             profile.supportsSystemRole,
           );
           const chatRequest = {
             messages: modelMessages,
             ...(toolPolicy.tools.length ? { tools: toolPolicy.tools } : {}),
             toolChoice: toolPolicy.toolChoice,
-            ...(toolPolicy.source === 'local-agent-discovery'
-              ? { workerToolChoice: 'auto' as const }
-              : {}),
             inputTokenBudget: physicalContext - maxTokens,
             maxTokens,
-            toolCallMaxTokens: toolPolicy.source === 'local-agent-discovery'
-              ? Math.min(config.maxToolCallTokens, 256)
-              : config.maxToolCallTokens,
+            toolCallMaxTokens: config.maxToolCallTokens,
             temperature,
           };
           let observedToolCall = false;
           try {
-            if (localAgentRequest) {
-              const priorFinal = matchingPriorLocalAgentFinal(adaptedMessages);
-              const response = await runLocalAgentResponse({
-                messages: adaptedMessages,
-                request: chatRequest,
-                ...(priorFinal ? { previousFinal: priorFinal.text } : {}),
-                maxToolInvocations: config.maxAgentToolRounds,
-                log: (message) => this.logger.debug(message),
-                generate: async (request) => {
-                  const events: import('../domain').ChatStreamEvent[] = [];
-                  const result = await client.chat(request, (event) => events.push(event), signal);
-                  return { events, result };
-                },
-              });
-              observedToolCall = response.observedToolCall;
-              for (const event of response.events) {
-                reportChatEvent(progress, event);
-              }
-            } else {
-              const result = await client.chat(
-                chatRequest,
-                (event) => reportChatEvent(progress, event),
-                signal,
-              );
-              observedToolCall = result.toolCallCount > 0;
-            }
+            const result = await client.chat(
+              chatRequest,
+              (event) => reportChatEvent(progress, event),
+              signal,
+            );
+            observedToolCall = result.toolCallCount > 0;
           } finally {
             if (nativeCapabilityFingerprint) {
               const support = client.getNativeToolCallSupport();
@@ -432,18 +368,6 @@ implements vscode.LanguageModelChatProvider<LocalLanguageModelInformation>, vsco
     };
     await this.registry.updateRuntimeProfile(modelId, stored);
   }
-}
-
-function localAgentControllerStatus(
-  state: ReturnType<typeof evaluateLocalAgentTurn>,
-  maxToolInvocations: number,
-  inputTokenBudget: number,
-): string {
-  const remaining = Math.max(0, maxToolInvocations - state.invocationCount);
-  const nextStep = state.phase === 'forceFinal'
-    ? 'The invocation ceiling is reached. Answer from collected evidence and name unfinished work or uncertainty.'
-    : 'Answer when evidence is sufficient. Otherwise choose only a tool that materially improves the result.';
-  return `Local Agent controller: ${state.invocationCount}/${maxToolInvocations} tool invocations used; ${remaining} remain; ${state.evidenceCount} successful evidence result(s); ${state.resultCharacters} result characters; ${inputTokenBudget} input-token budget. ${nextStep}`;
 }
 
 function reportChatEvent(
