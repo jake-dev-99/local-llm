@@ -127,6 +127,45 @@ test('a worker spawn error includes backend context and still removes the key di
   assert.deepEqual(cleanup, ['/tmp/local-llm-smoke-test']);
 });
 
+test('a spawn failure without a PID skips termination and preserves the spawn error', async () => {
+  const cleanup = [];
+  const child = fakeChild({ pid: undefined });
+  child.kill = (signal) => {
+    child.kills.push(signal);
+    throw new Error('cannot signal a process without a PID');
+  };
+  await assert.rejects(
+    runSmokeWorker(['--backend', 'sycl', '--model', '/models/test.gguf'], smokeDependencies({
+      child,
+      spawnWorker: () => {
+        queueMicrotask(() => child.emit('error', new Error('missing executable')));
+        return child;
+      },
+      fetchFn: hangingFetch,
+      removeDirectory: async (directory) => cleanup.push(directory),
+    })),
+    /Failed to start sycl worker .*missing executable/,
+  );
+
+  assert.deepEqual(child.kills, []);
+  assert.deepEqual(cleanup, ['/tmp/local-llm-smoke-test']);
+});
+
+test('a random key failure removes the already-created temporary directory', async () => {
+  const cleanup = [];
+  await assert.rejects(
+    runSmokeWorker(['--backend', 'cpu', '--model', '/models/test.gguf'], smokeDependencies({
+      randomBytes: () => {
+        throw new Error('random key generation failed');
+      },
+      removeDirectory: async (directory) => cleanup.push(directory),
+    })),
+    /random key generation failed/,
+  );
+
+  assert.deepEqual(cleanup, ['/tmp/local-llm-smoke-test']);
+});
+
 test('forced worker termination waits for the SIGKILL exit event', async () => {
   const child = fakeChild({ exitOn: 'SIGKILL' });
   await terminateWorkerProcess(child, { termTimeoutMs: 1, killTimeoutMs: 20 });
@@ -164,8 +203,10 @@ function smokeDependencies(overrides = {}) {
   };
 }
 
-function fakeChild({ exitOn } = {}) {
+function fakeChild(options = {}) {
+  const { exitOn } = options;
   const child = new EventEmitter();
+  child.pid = Object.hasOwn(options, 'pid') ? options.pid : 4321;
   child.exitCode = null;
   child.killed = false;
   child.kills = [];

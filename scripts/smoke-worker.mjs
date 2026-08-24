@@ -44,13 +44,13 @@ export async function runSmokeWorker(args, dependencies = {}) {
   const device = backend === 'sycl' ? await options.discoverSycl(executable) : undefined;
   const port = await options.allocatePort();
   const keyDirectory = await options.makeTempDirectory(path.join(tmpdir(), 'local-llm-worker-smoke-'));
-  const apiKey = options.randomBytes(32).toString('hex');
-  const apiKeyFile = path.join(keyDirectory, 'api-key');
-  const spawnAbort = new AbortController();
   let child;
   let removeSpawnErrorListener = () => undefined;
 
   try {
+    const apiKey = options.randomBytes(32).toString('hex');
+    const apiKeyFile = path.join(keyDirectory, 'api-key');
+    const spawnAbort = new AbortController();
     await options.writeFile(apiKeyFile, `${apiKey}\n`, { mode: 0o600 });
     const workerArgs = buildExtensionEquivalentArguments(modelPath, port, apiKeyFile, backend);
     child = options.spawnWorker(executable, workerArgs, {
@@ -256,7 +256,7 @@ async function withRequestTimeout(operation, timeoutMs, signal, label) {
 }
 
 export async function terminateWorkerProcess(child, { termTimeoutMs = 5_000, killTimeoutMs = 5_000 } = {}) {
-  if (!child || child.exitCode !== null) return;
+  if (!child || !Number.isInteger(child.pid) || child.pid <= 0 || child.exitCode !== null) return;
   child.kill('SIGTERM');
   if (await waitForWorkerExit(child, termTimeoutMs)) return;
   if (child.exitCode !== null) return;
