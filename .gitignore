@@ -1,6 +1,7 @@
 node_modules/
 dist/
 build/
+.worktrees/
 *.vsix
 .DS_Store
 !resources/workers/*/.gitkeep
