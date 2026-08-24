@@ -42,6 +42,58 @@ test('collects transitive non-system DLL dependencies once', async () => {
   ].sort());
 });
 
+test('rejects distinct source files that flatten to the same DLL name', async () => {
+  await assert.rejects(
+    collectDependencyClosure(
+      [path.join('/first', 'shared.dll'), path.join('/second', 'shared.dll')],
+      fakeOptions(new Map()),
+    ),
+    /Dependency filename collision for shared\.dll/,
+  );
+});
+
+test('copies dynamically loaded llama.cpp CPU and SYCL backend modules', async (context) => {
+  const fixture = await syclFixture(context);
+  const bundle = await assembleWindowsSyclBundle(fixture.options);
+  for (const name of ['ggml-cpu.dll', 'ggml-sycl.dll']) {
+    assert.equal(bundle.files.some((file) => file.path.endsWith(`/${name}`)), true);
+  }
+});
+
+test('fails before publishing when a required llama.cpp backend module is missing', async (context) => {
+  const fixture = await syclFixture(context);
+  await rm(fixture.build('ggml-cpu.dll'));
+  await assert.rejects(
+    assembleWindowsSyclBundle(fixture.options),
+    /Required llama\.cpp backend module ggml-cpu\.dll was not found/,
+  );
+});
+
+test('copies the VC redistributable CRT instead of a PATH System32 copy', async (context) => {
+  const fixture = await syclFixture(context);
+  const vcRuntime = path.join(fixture.options.vcToolsRedistDir, 'x64', 'Microsoft.VC143.CRT');
+  const systemRoot = path.join(fixture.options.root, 'Windows');
+  const system32 = path.join(systemRoot, 'System32');
+  await mkdir(vcRuntime, { recursive: true });
+  await mkdir(system32, { recursive: true });
+  await writeFile(path.join(vcRuntime, 'VCRUNTIME140.dll'), 'redistributable CRT');
+  await writeFile(path.join(system32, 'VCRUNTIME140.dll'), 'System32 CRT');
+  fixture.options.pathDirectories = [system32];
+  fixture.options.systemRoot = systemRoot;
+  fixture.options.runDumpbin = async (absoluteFile) => (
+    path.basename(absoluteFile).toLowerCase() === 'ggml-cpu.dll'
+      ? '    VCRUNTIME140.dll\n'
+      : ''
+  );
+
+  await assembleWindowsSyclBundle(fixture.options);
+
+  assert.equal(
+    await readFile(path.join(fixture.options.destination, 'VCRUNTIME140.dll'), 'utf8'),
+    'redistributable CRT',
+  );
+});
+
 test('copies required SYCL companions that are loaded dynamically', async (context) => {
   const fixture = await syclFixture(context);
   const bundle = await assembleWindowsSyclBundle(fixture.options);
@@ -159,7 +211,7 @@ async function syclFixture(context) {
   const cpuDirectory = path.join(root, 'resources/workers/win32-x64/cpu');
   await mkdir(buildOutput, { recursive: true });
   await mkdir(cpuDirectory, { recursive: true });
-  for (const name of ['llama-server.exe', 'llama-server-impl.dll', 'ggml-sycl.dll']) {
+  for (const name of ['llama-server.exe', 'llama-server-impl.dll', 'ggml-cpu.dll', 'ggml-sycl.dll']) {
     await writeFile(path.join(buildOutput, name), name);
   }
   for (const relative of REQUIRED_SYCL_COMPANIONS) {
@@ -172,6 +224,7 @@ async function syclFixture(context) {
   }
   return {
     cpuDirectory,
+    build: (name) => path.join(buildOutput, name),
     runtime: (name) => findFixtureRuntime(oneApiRoot, name),
     options: {
       root,

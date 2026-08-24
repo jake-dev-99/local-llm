@@ -25,6 +25,11 @@ export const REQUIRED_SYCL_COMPANIONS = [
   'umf/latest/bin/umf.dll',
 ];
 
+export const REQUIRED_LLAMA_BACKEND_MODULES = [
+  'ggml-cpu.dll',
+  'ggml-sycl.dll',
+];
+
 const SYSTEM_DEPENDENCIES = new Set([
   'advapi32.dll',
   'crypt32.dll',
@@ -52,15 +57,21 @@ export function parseDumpbinDependents(output) {
 export async function collectDependencyClosure(roots, options) {
   const queue = [...roots];
   const files = [];
-  const seen = new Set();
+  const seen = new Map();
 
   while (queue.length > 0) {
     const absoluteFile = queue.shift();
     const key = path.basename(absoluteFile).toLowerCase();
-    if (seen.has(key)) {
+    const previous = seen.get(key);
+    if (previous && normalizedSourcePath(previous) !== normalizedSourcePath(absoluteFile)) {
+      throw new Error(
+        `Dependency filename collision for ${path.basename(absoluteFile)}: ${previous} and ${absoluteFile}.`,
+      );
+    }
+    if (previous) {
       continue;
     }
-    seen.add(key);
+    seen.set(key, absoluteFile);
     files.push(absoluteFile);
 
     for (const dllName of await options.imports(absoluteFile)) {
@@ -82,6 +93,15 @@ export async function assembleWindowsSyclBundle(options) {
   const executable = path.join(options.buildOutput, 'llama-server.exe');
   await requireFile(executable, 'Built SYCL executable llama-server.exe was not found');
 
+  const backendModules = [];
+  for (const name of REQUIRED_LLAMA_BACKEND_MODULES) {
+    const absolute = await findNamedFile(options.buildOutput, name);
+    if (!absolute) {
+      throw new Error(`Required llama.cpp backend module ${name} was not found in ${options.buildOutput}.`);
+    }
+    backendModules.push(absolute);
+  }
+
   const companionFiles = [];
   for (const relative of REQUIRED_SYCL_COMPANIONS) {
     const absolute = path.join(options.oneApiRoot, ...relative.split('/'));
@@ -93,11 +113,20 @@ export async function assembleWindowsSyclBundle(options) {
 
   const licenses = await collectControllingLicenses(options.oneApiRoot, companionFiles);
   const pathDirectories = options.pathDirectories ?? splitSearchPath(options.oneApiPath ?? process.env.PATH);
-  const system32 = path.join(options.systemRoot ?? process.env.SystemRoot ?? 'C:\\Windows', 'System32');
+  const systemRoot = options.systemRoot ?? process.env.SystemRoot ?? 'C:\\Windows';
+  const system32 = path.join(systemRoot, 'System32');
   const vcRuntime = path.join(options.vcToolsRedistDir, 'x64', 'Microsoft.VC143.CRT');
-  const searchDirectories = [options.buildOutput, ...pathDirectories, vcRuntime, system32];
+  const oneApiDirectories = pathDirectories.filter((directory) => !isAtOrBelow(systemRoot, directory));
+  const pathSystemDirectories = pathDirectories.filter((directory) => isAtOrBelow(systemRoot, directory));
+  const searchDirectories = [
+    options.buildOutput,
+    ...oneApiDirectories,
+    vcRuntime,
+    ...pathSystemDirectories,
+    system32,
+  ];
   const closure = await collectDependencyClosure(
-    [...companionFiles.map((file) => file.absolute), executable],
+    [...backendModules, ...companionFiles.map((file) => file.absolute), executable],
     {
       imports: async (absoluteFile) => (
         /\.(?:exe|dll)$/i.test(absoluteFile)
@@ -274,6 +303,14 @@ function splitSearchPath(value) {
 function isBelow(parent, child) {
   const relative = path.relative(path.resolve(parent), path.resolve(child));
   return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
+function isAtOrBelow(parent, child) {
+  return path.resolve(parent) === path.resolve(child) || isBelow(parent, child);
+}
+
+function normalizedSourcePath(value) {
+  return path.resolve(value).toLowerCase();
 }
 
 function toPosix(value) {
