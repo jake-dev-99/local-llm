@@ -13,6 +13,8 @@ import { describeError } from '../errorDetail';
 import { parseFittedContext, parseFreeDeviceMemoryMiB, resolveFitTargetMiB } from './memoryFit';
 import { isFatalWorkerError } from './workerError';
 import { verifiedWorkerPath } from './workerIntegrity';
+import { resolveExecutionBackend } from './workerLaunch';
+import type { WorkerBackend } from './workerManifest';
 
 const STOP_TIMEOUT_MS = 5_000;
 const HEALTH_INTERVAL_MS = 500;
@@ -222,12 +224,17 @@ export class WorkerManager implements vscode.Disposable {
           `Another local worker still holds ${Math.round(orphanBytes / (1024 * 1024))} MiB; reserving that memory as well.`,
         );
       }
+      const config = readConfig(this.context);
+      const backend = resolveExecutionBackend(
+        `${process.platform}-${process.arch}`,
+        config.acceleration,
+      );
       const args = buildWorkerArguments(
         model.filePath,
         port,
         apiKeyFile,
-        readConfig(this.context),
-        process.platform,
+        config,
+        backend,
         orphanBytes,
       );
       child = spawn(executable, args, {
@@ -455,7 +462,7 @@ export function buildWorkerArguments(
   port: number,
   apiKeyFile: string,
   config: import('../domain').WorkerConfig,
-  platform: NodeJS.Platform,
+  backend: WorkerBackend,
   concurrentWorkerBytes?: number,
 ): string[] {
   const batchSize = Math.max(32, Math.floor(config.batchSize));
@@ -487,27 +494,43 @@ export function buildWorkerArguments(
   if (config.contextSize > 0) {
     args.push('--ctx-size', String(config.contextSize));
   }
-  const useMetal = platform === 'darwin' && config.acceleration === 'auto';
-  if (useMetal) {
-    args.push(
-      '--fit',
-      'on',
-      '--fit-target',
-      String(resolveFitTargetMiB({
-        reserveMiB: config.metalMemoryReserveMiB,
-        ...(concurrentWorkerBytes === undefined ? {} : { concurrentWorkerBytes }),
-      })),
-    );
-  } else {
-    args.push(
-      '--fit',
-      'off',
-      '--n-gpu-layers',
-      '0',
-      '--device',
-      'none',
-      '--no-op-offload',
-    );
+  switch (backend) {
+    case 'metal':
+      args.push(
+        '--fit',
+        'on',
+        '--fit-target',
+        String(resolveFitTargetMiB({
+          reserveMiB: config.metalMemoryReserveMiB,
+          ...(concurrentWorkerBytes === undefined ? {} : { concurrentWorkerBytes }),
+        })),
+      );
+      break;
+    case 'sycl':
+      args.push(
+        '--fit',
+        'off',
+        '--n-gpu-layers',
+        '99',
+        '--device',
+        'SYCL0',
+        '--split-mode',
+        'none',
+        '--main-gpu',
+        '0',
+      );
+      break;
+    case 'cpu':
+      args.push(
+        '--fit',
+        'off',
+        '--n-gpu-layers',
+        '0',
+        '--device',
+        'none',
+        '--no-op-offload',
+      );
+      break;
   }
   if (config.cpuThreads > 0) {
     args.push('--threads', String(config.cpuThreads));

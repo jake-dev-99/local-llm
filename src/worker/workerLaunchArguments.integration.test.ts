@@ -8,14 +8,14 @@ type BuildWorkerArguments = (
   port: number,
   apiKeyFile: string,
   config: LocalLlmConfig,
-  platform: NodeJS.Platform,
+  backend: 'metal' | 'sycl' | 'cpu',
   concurrentWorkerBytes?: number,
 ) => string[];
 
 test('an automatic context window omits --ctx-size so llama.cpp can fit the model', async () => {
   const buildArguments = await loadBuildWorkerArguments();
   const args = buildArguments(
-    '/models/qwen.gguf', 60000, '/keys/worker.key', config({ contextSize: 0 }), 'darwin',
+    '/models/qwen.gguf', 60000, '/keys/worker.key', config({ contextSize: 0 }), 'metal',
   );
 
   // Passing --ctx-size at all pins the window. Passing --ctx-size 0 is worse: it sets
@@ -27,7 +27,7 @@ test('an automatic context window omits --ctx-size so llama.cpp can fit the mode
 test('an explicit context window is still passed through unchanged', async () => {
   const buildArguments = await loadBuildWorkerArguments();
   const args = buildArguments(
-    '/models/qwen.gguf', 60000, '/keys/worker.key', config({ contextSize: 32768 }), 'darwin',
+    '/models/qwen.gguf', 60000, '/keys/worker.key', config({ contextSize: 32768 }), 'metal',
   );
 
   assert.deepEqual(valueFor(args, '--ctx-size'), '32768');
@@ -37,7 +37,7 @@ test('the memory margin never drops below the llama.cpp default of 1024 MiB', as
   const buildArguments = await loadBuildWorkerArguments();
   const args = buildArguments(
     '/models/qwen.gguf', 60000, '/keys/worker.key',
-    config({ metalMemoryReserveMiB: 256 }), 'darwin',
+    config({ metalMemoryReserveMiB: 256 }), 'metal',
   );
 
   assert.deepEqual(valueFor(args, '--fit-target'), '1024');
@@ -48,7 +48,7 @@ test('a second worker this extension owns is added to the memory margin', async 
   const sixGiB = 6 * 1024 * 1024 * 1024;
   const args = buildArguments(
     '/models/qwen.gguf', 60000, '/keys/worker.key',
-    config({ metalMemoryReserveMiB: 2048 }), 'darwin', sixGiB,
+    config({ metalMemoryReserveMiB: 2048 }), 'metal', sixGiB,
   );
 
   // llama.cpp measures free device memory as its own Metal budget minus its own
@@ -58,7 +58,7 @@ test('a second worker this extension owns is added to the memory margin', async 
 
 test('Apple auto acceleration uses conservative batches and llama.cpp memory fitting', async () => {
   const buildArguments = await loadBuildWorkerArguments();
-  const args = buildArguments('/models/qwen.gguf', 60000, '/keys/worker.key', config(), 'darwin');
+  const args = buildArguments('/models/qwen.gguf', 60000, '/keys/worker.key', config(), 'metal');
 
   assert.deepEqual(valueFor(args, '--batch-size'), '256');
   assert.deepEqual(valueFor(args, '--ubatch-size'), '64');
@@ -75,7 +75,7 @@ test('CPU execution explicitly disables device offload while retaining bounded b
     60000,
     '/keys/worker.key',
     config({ acceleration: 'cpu' }),
-    'darwin',
+    'cpu',
   );
 
   assert.deepEqual(valueFor(args, '--batch-size'), '256');
@@ -84,6 +84,20 @@ test('CPU execution explicitly disables device offload while retaining bounded b
   assert.deepEqual(valueFor(args, '--n-gpu-layers'), '0');
   assert.deepEqual(valueFor(args, '--device'), 'none');
   assert.equal(args.includes('--no-op-offload'), true);
+});
+
+test('Windows SYCL explicitly selects SYCL0 and requests GPU layers', async () => {
+  const buildArguments = await loadBuildWorkerArguments();
+  const args = buildArguments(
+    '/models/qwen.gguf', 60000, '/keys/worker.key', config({ acceleration: 'auto' }), 'sycl',
+  );
+
+  assert.deepEqual(valueFor(args, '--fit'), 'off');
+  assert.deepEqual(valueFor(args, '--device'), 'SYCL0');
+  assert.deepEqual(valueFor(args, '--n-gpu-layers'), '99');
+  assert.deepEqual(valueFor(args, '--split-mode'), 'none');
+  assert.deepEqual(valueFor(args, '--main-gpu'), '0');
+  assert.equal(args.includes('--no-op-offload'), false);
 });
 
 function config(overrides: Partial<LocalLlmConfig> = {}): LocalLlmConfig {
