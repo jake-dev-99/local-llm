@@ -83,7 +83,13 @@ export function resolveWorkerBundle(manifest: WorkerManifestV2, target: string, 
   const selection = platform.modes[mode];
   const bundle = platform.bundles[selection.bundle];
   if (!bundle) throw new Error(`worker bundle is not declared: ${selection.bundle}`);
-  return { target, bundleName: selection.bundle, backend: selection.backend, executable: bundle.executable, files: bundle.files };
+  return {
+    target,
+    bundleName: selection.bundle,
+    backend: selection.backend,
+    executable: bundle.executable,
+    files: bundle.files.map((file) => ({ ...file })),
+  };
 }
 
 export async function sha256File(filePath: string): Promise<string> {

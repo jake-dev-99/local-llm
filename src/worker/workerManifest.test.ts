@@ -34,6 +34,16 @@ test('Darwin auto and cpu reuse one file bundle with different backends', () => 
     resolveWorkerBundle(manifest, 'darwin-arm64', 'cpu').executable);
 });
 
+test('resolved bundle files are isolated from the manifest', () => {
+  const manifest = parseWorkerManifest(validManifest());
+  const resolved = resolveWorkerBundle(manifest, 'win32-x64', 'auto');
+  resolved.files[0]!.path = 'resources/workers/win32-x64/sycl/changed.exe';
+  assert.equal(
+    resolveWorkerBundle(manifest, 'win32-x64', 'auto').files[0]!.path,
+    'resources/workers/win32-x64/sycl/llama-server.exe',
+  );
+});
+
 test('rejects paths outside the selected platform directory', () => {
   const value = validManifest();
   value.platforms['win32-x64'].bundles.sycl.files[0].path = '../sycl8.dll';

@@ -46,3 +46,26 @@ Reviewed the implementation against the brief: exported names and literal unions
 ## Concerns
 
 No blocking concerns. The shell emits an existing `/Users/jake/.zshenv:7: unmatched \`` startup warning during commands; it did not affect test or typecheck results.
+
+## Fix Round 1
+
+Changed `resolveWorkerBundle` to clone each `WorkerFile` record before returning the resolved bundle, preventing callers from mutating manifest state.
+
+Covering test: `resolved bundle files are isolated from the manifest` in `src/worker/workerManifest.test.ts`.
+
+RED evidence (before the fix):
+
+```text
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test src/worker/workerManifest.test.ts
+```
+
+Result: 6 passed, 1 failed. The regression observed `changed.exe` in the subsequent manifest resolution instead of `llama-server.exe`.
+
+GREEN evidence (after the fix):
+
+```text
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test src/worker/workerManifest.test.ts
+npx tsc --noEmit
+```
+
+Result: 7 tests passed, 0 failed; TypeScript check passed.
