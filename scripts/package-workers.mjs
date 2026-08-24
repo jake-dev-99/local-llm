@@ -25,6 +25,9 @@ const GENERAL_IGNORE_ENTRIES = [
 ];
 
 export async function prepareTargetWorkers(root, target) {
+  if (!TARGETS.has(target)) {
+    throw new Error('Worker target must be darwin-arm64 or win32-x64.');
+  }
   const manifestPath = path.join(root, 'resources', 'workers', 'manifest.json');
   const manifest = parseWorkerManifest(JSON.parse(await readFile(manifestPath, 'utf8')));
   await verifyPlatformBundles(root, manifest, target);

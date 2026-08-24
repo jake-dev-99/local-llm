@@ -28,6 +28,14 @@ test('ignore rules exclude the complete other-platform tree', () => {
   assert.equal(targetIgnoreEntries('win32-x64').includes('resources/workers/darwin-arm64/**'), true);
 });
 
+test('target preparation rejects unsupported targets before reading the manifest', async (context) => {
+  const fixture = await packageFixture(context, 'darwin-arm64');
+  await assert.rejects(
+    prepareTargetWorkers(fixture.root, 'linux-x64'),
+    /Worker target must be darwin-arm64 or win32-x64/,
+  );
+});
+
 async function packageFixture(context, target) {
   const root = await mkdtemp(path.join(tmpdir(), 'local-llm-package-workers-'));
   context.after(() => rm(root, { recursive: true, force: true }));

@@ -1,10 +1,11 @@
-import { randomBytes } from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { randomBytes as createRandomBytes } from 'node:crypto';
+import { spawn as spawnProcess } from 'node:child_process';
 import { readFile, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import * as net from 'node:net';
+import { fileURLToPath } from 'node:url';
 
 import {
   parseWorkerManifest,
@@ -16,84 +17,131 @@ import { discoverSycl0 } from '../src/worker/syclDevice.ts';
 const ROOT = path.resolve(import.meta.dirname, '..');
 const STARTUP_TIMEOUT_MS = 10 * 60 * 1_000;
 const HEALTH_INTERVAL_MS = 500;
+const CHAT_TIMEOUT_MS = 60 * 1_000;
 
-async function main() {
-  const { backend, modelPath } = await parseArguments(process.argv.slice(2));
-  const { bundle, executable } = await resolveRequestedBundle(ROOT, backend);
-  const device = backend === 'sycl' ? await discoverSycl0(executable) : undefined;
-  const port = await allocateLoopbackPort();
-  const keyDirectory = await mkdtemp(path.join(tmpdir(), 'local-llm-worker-smoke-'));
-  const apiKey = randomBytes(32).toString('hex');
+export async function runSmokeWorker(args, dependencies = {}) {
+  const options = {
+    root: ROOT,
+    statFile: stat,
+    resolveBundle: resolveRequestedWorkerBundle,
+    discoverSycl: discoverSycl0,
+    allocatePort: allocateLoopbackPort,
+    makeTempDirectory: mkdtemp,
+    randomBytes: createRandomBytes,
+    writeFile,
+    removeDirectory: rm,
+    spawnWorker: spawnProcess,
+    fetchFn: fetch,
+    log: console.log,
+    stderr: process.stderr,
+    startupTimeoutMs: STARTUP_TIMEOUT_MS,
+    healthIntervalMs: HEALTH_INTERVAL_MS,
+    chatTimeoutMs: CHAT_TIMEOUT_MS,
+    ...dependencies,
+  };
+  const { backend, modelPath } = await parseSmokeWorkerArguments(args, options);
+  const { bundle, executable } = await options.resolveBundle(options.root, backend);
+  const device = backend === 'sycl' ? await options.discoverSycl(executable) : undefined;
+  const port = await options.allocatePort();
+  const keyDirectory = await options.makeTempDirectory(path.join(tmpdir(), 'local-llm-worker-smoke-'));
+  const apiKey = options.randomBytes(32).toString('hex');
   const apiKeyFile = path.join(keyDirectory, 'api-key');
+  const spawnAbort = new AbortController();
   let child;
+  let removeSpawnErrorListener = () => undefined;
 
   try {
-    await writeFile(apiKeyFile, `${apiKey}\n`, { mode: 0o600 });
-    const args = buildExtensionEquivalentArguments(modelPath, port, apiKeyFile, backend);
-    child = spawn(executable, args, {
+    await options.writeFile(apiKeyFile, `${apiKey}\n`, { mode: 0o600 });
+    const workerArgs = buildExtensionEquivalentArguments(modelPath, port, apiKeyFile, backend);
+    child = options.spawnWorker(executable, workerArgs, {
       cwd: path.dirname(executable),
       shell: false,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    child.stdout.pipe(process.stderr);
-    child.stderr.pipe(process.stderr);
-
-    await waitUntilHealthy(`http://127.0.0.1:${port}`, child);
-    const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'local',
-        messages: [{ role: 'user', content: 'Reply with OK.' }],
-        stream: false,
-        max_tokens: 1,
-      }),
+    const spawnFailure = observeSpawnError(child, backend, executable);
+    removeSpawnErrorListener = spawnFailure.removeListener;
+    void spawnFailure.promise.catch((error) => {
+      if (!spawnAbort.signal.aborted) spawnAbort.abort(error);
     });
-    const responseBody = await response.text();
+    child.stdout?.pipe(options.stderr);
+    child.stderr?.pipe(options.stderr);
+
+    const baseUrl = `http://127.0.0.1:${port}`;
+    await waitUntilHealthy(baseUrl, child, apiKey, {
+      fetchFn: options.fetchFn,
+      startupTimeoutMs: options.startupTimeoutMs,
+      healthIntervalMs: options.healthIntervalMs,
+      signal: spawnAbort.signal,
+    });
+    throwIfAborted(spawnAbort.signal);
+    const { response, body } = await fetchTextWithTimeout(
+      options.fetchFn,
+      `${baseUrl}/v1/chat/completions`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'local',
+          messages: [{ role: 'user', content: 'Reply with OK.' }],
+          stream: false,
+          max_tokens: 1,
+        }),
+      },
+      options.chatTimeoutMs,
+      spawnAbort.signal,
+      'Chat completion',
+    );
     if (!response.ok) {
-      throw new Error(`Chat completion failed with HTTP ${response.status}: ${responseBody}`);
+      throw new Error(`Chat completion failed with HTTP ${response.status}: ${body}`);
     }
 
-    console.log(`Selected backend: ${bundle.backend}`);
-    console.log(`Executable: ${executable}`);
-    console.log(`Detected device: ${device ? `${device.id}: ${device.description}` : 'CPU (not applicable)'}`);
-    console.log('Health: OK');
-    console.log(`Chat response: HTTP ${response.status}`);
+    options.log(`Selected backend: ${bundle.backend}`);
+    options.log(`Executable: ${executable}`);
+    options.log(`Detected device: ${device ? `${device.id}: ${device.description}` : 'CPU (not applicable)'}`);
+    options.log('Health: OK');
+    options.log(`Chat response: HTTP ${response.status}`);
   } finally {
-    await terminate(child);
-    await rm(keyDirectory, { recursive: true, force: true });
+    try {
+      await terminateWorkerProcess(child);
+    } finally {
+      try {
+        await options.removeDirectory(keyDirectory, { recursive: true, force: true });
+      } finally {
+        removeSpawnErrorListener();
+      }
+    }
   }
 }
 
-async function parseArguments(args) {
+export async function parseSmokeWorkerArguments(args, { statFile = stat } = {}) {
   let backend;
   let modelPath;
   for (let index = 0; index < args.length; index += 2) {
     const flag = args[index];
     const value = args[index + 1];
     if (!value || !['--backend', '--model'].includes(flag)) {
-      throw new Error('Usage: npm run smoke:worker -- --backend sycl|cpu --model /absolute/path/to/model.gguf');
+      throw usageError();
     }
     if (flag === '--backend') backend = value;
     if (flag === '--model') modelPath = value;
   }
   if (!['sycl', 'cpu'].includes(backend) || !modelPath || !path.isAbsolute(modelPath)) {
-    throw new Error('Usage: npm run smoke:worker -- --backend sycl|cpu --model /absolute/path/to/model.gguf');
+    throw usageError();
   }
-  const model = await stat(modelPath);
+  const model = await statFile(modelPath);
   if (!model.isFile()) {
     throw new Error(`Smoke model must be an existing file: ${modelPath}`);
   }
   return { backend, modelPath };
 }
 
-async function resolveRequestedBundle(root, backend) {
+export async function resolveRequestedWorkerBundle(root, backend, { readManifest = readFile } = {}) {
   const manifestPath = path.join(root, 'resources', 'workers', 'manifest.json');
-  const manifest = parseWorkerManifest(JSON.parse(await readFile(manifestPath, 'utf8')));
+  const manifest = parseWorkerManifest(JSON.parse(await readManifest(manifestPath, 'utf8')));
   const bundle = resolveWorkerBundle(manifest, 'win32-x64', backend === 'sycl' ? 'auto' : 'cpu');
   await verifyWorkerBundleFiles(root, bundle);
   return {
@@ -139,33 +187,138 @@ async function allocateLoopbackPort() {
   });
 }
 
-async function waitUntilHealthy(baseUrl, child) {
-  const deadline = Date.now() + STARTUP_TIMEOUT_MS;
+async function waitUntilHealthy(baseUrl, child, apiKey, options) {
+  const deadline = Date.now() + options.startupTimeoutMs;
   while (Date.now() < deadline) {
+    throwIfAborted(options.signal);
     if (child.exitCode !== null || child.killed) {
       throw new Error(`Worker exited while loading the model (code ${child.exitCode ?? 'unknown'}).`);
     }
+    const remainingMs = Math.max(1, deadline - Date.now());
     try {
-      if ((await fetch(`${baseUrl}/health`)).ok) return;
-    } catch {
-      // The worker has not opened the loopback port yet.
+      const response = await fetchWithTimeout(
+        options.fetchFn,
+        `${baseUrl}/health`,
+        { headers: { Authorization: `Bearer ${apiKey}` } },
+        remainingMs,
+        options.signal,
+        'Health request',
+      );
+      if (response.ok) return;
+    } catch (error) {
+      if (options.signal?.aborted) throw options.signal.reason ?? error;
     }
-    await new Promise((resolve) => setTimeout(resolve, HEALTH_INTERVAL_MS));
+    const delayMs = Math.min(options.healthIntervalMs, Math.max(0, deadline - Date.now()));
+    if (delayMs > 0) await delay(delayMs, options.signal);
   }
-  throw new Error(`Timed out after ${STARTUP_TIMEOUT_MS / 1_000} seconds while loading the model.`);
+  throw new Error(`Timed out after ${options.startupTimeoutMs / 1_000} seconds while loading the model.`);
 }
 
-async function terminate(child) {
+async function fetchTextWithTimeout(fetchFn, url, init, timeoutMs, signal, label) {
+  return await withRequestTimeout(async (requestSignal) => {
+    const response = await fetchFn(url, { ...init, signal: requestSignal });
+    return { response, body: await response.text() };
+  }, timeoutMs, signal, label);
+}
+
+async function fetchWithTimeout(fetchFn, url, init, timeoutMs, signal, label) {
+  return await withRequestTimeout(
+    async (requestSignal) => await fetchFn(url, { ...init, signal: requestSignal }),
+    timeoutMs,
+    signal,
+    label,
+  );
+}
+
+async function withRequestTimeout(operation, timeoutMs, signal, label) {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timeoutError = new Error(`${label} timed out after ${timeoutMs / 1_000} seconds.`);
+  const abortFromParent = () => controller.abort(signal.reason);
+  if (signal?.aborted) abortFromParent();
+  else signal?.addEventListener('abort', abortFromParent, { once: true });
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort(timeoutError);
+  }, timeoutMs);
+  try {
+    const result = await operation(controller.signal);
+    throwIfAborted(signal);
+    return result;
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason ?? error;
+    if (timedOut) throw timeoutError;
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', abortFromParent);
+  }
+}
+
+export async function terminateWorkerProcess(child, { termTimeoutMs = 5_000, killTimeoutMs = 5_000 } = {}) {
   if (!child || child.exitCode !== null) return;
   child.kill('SIGTERM');
-  const exited = await new Promise((resolve) => {
-    const timer = setTimeout(() => resolve(false), 5_000);
-    child.once('exit', () => {
-      clearTimeout(timer);
-      resolve(true);
-    });
-  });
-  if (!exited && child.exitCode === null) child.kill('SIGKILL');
+  if (await waitForWorkerExit(child, termTimeoutMs)) return;
+  if (child.exitCode !== null) return;
+  child.kill('SIGKILL');
+  if (await waitForWorkerExit(child, killTimeoutMs)) return;
+  throw new Error('Worker did not exit after SIGKILL.');
 }
 
-await main();
+function observeSpawnError(child, backend, executable) {
+  let rejectSpawnError;
+  const promise = new Promise((_, reject) => {
+    rejectSpawnError = reject;
+  });
+  const onError = (error) => {
+    rejectSpawnError(new Error(`Failed to start ${backend} worker ${executable}: ${describeError(error)}`));
+  };
+  child.on('error', onError);
+  return { promise, removeListener: () => child.off('error', onError) };
+}
+
+function waitForWorkerExit(child, timeoutMs) {
+  if (child.exitCode !== null) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const onExit = () => finish(true);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    const finish = (exited) => {
+      clearTimeout(timer);
+      child.off('exit', onExit);
+      resolve(exited);
+    };
+    child.once('exit', onExit);
+  });
+}
+
+function delay(milliseconds, signal) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, milliseconds);
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      reject(signal.reason ?? new Error('Worker startup was aborted.'));
+    };
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw signal.reason ?? new Error('Worker startup was aborted.');
+}
+
+function describeError(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function usageError() {
+  return new Error('Usage: npm run smoke:worker -- --backend sycl|cpu --model /absolute/path/to/model.gguf');
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  await runSmokeWorker(process.argv.slice(2));
+}
