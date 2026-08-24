@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import process from 'node:process';
 
-import { prepareVsixOutput } from './vsix-output.mjs';
+import { prepareVsceInvocation, prepareVsixOutput } from './vsix-output.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const target = process.argv[2] ?? `${process.platform}-${process.arch}`;
@@ -62,7 +62,7 @@ await writeFile(
 );
 const packageManifest = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
 const output = await prepareVsixOutput(root, packageManifest.version, target);
-await run(path.join(root, 'node_modules', '.bin', 'vsce'), [
+const vsce = prepareVsceInvocation(root, [
   'package',
   '--target', target,
   '--ignoreFile', ignoreFile,
@@ -70,6 +70,7 @@ await run(path.join(root, 'node_modules', '.bin', 'vsce'), [
   '--allow-missing-repository',
   '--out', output,
 ]);
+await run(vsce.command, vsce.args);
 console.log(`Created ${output}`);
 
 async function run(command, args) {
