@@ -184,6 +184,105 @@ test('updates only one version-2 manifest bundle with stable JSON formatting', a
   assert.deepEqual(updated.platforms['win32-x64'].bundles.sycl, bundle);
 });
 
+test('migrates the legacy manifest after CPU and SYCL bundles are published', async (context) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'worker-manifest-migration-'));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const manifestPath = path.join(root, 'resources/workers/manifest.json');
+  const legacyWindowsWorker = path.join(root, 'resources/workers/win32-x64/llama-server.exe');
+  await mkdir(path.dirname(manifestPath), { recursive: true });
+  await mkdir(path.dirname(legacyWindowsWorker), { recursive: true });
+  await writeFile(legacyWindowsWorker, 'legacy worker');
+  await writeFile(manifestPath, `${JSON.stringify({
+    llamaCppCommit: '60eeeb6082c1126bb8bc72902c83123cd056811b',
+    llamaCppBuild: 'b10472',
+    workers: {
+      'darwin-arm64': {
+        path: 'resources/workers/darwin-arm64/llama-server',
+        sha256: 'a'.repeat(64),
+      },
+      'win32-x64': {
+        path: 'resources/workers/win32-x64/llama-server.exe',
+        sha256: 'b'.repeat(64),
+      },
+    },
+  }, null, 2)}\n`);
+  const cpu = {
+    executable: 'resources/workers/win32-x64/cpu/llama-server.exe',
+    files: [{
+      path: 'resources/workers/win32-x64/cpu/llama-server.exe',
+      sha256: 'c'.repeat(64),
+    }],
+  };
+  const sycl = {
+    executable: 'resources/workers/win32-x64/sycl/llama-server.exe',
+    files: [
+      {
+        path: 'resources/workers/win32-x64/sycl/llama-server.exe',
+        sha256: 'd'.repeat(64),
+      },
+      {
+        path: 'resources/workers/win32-x64/sycl/sycl8.dll',
+        sha256: 'e'.repeat(64),
+      },
+    ],
+  };
+
+  await writeUpdatedManifest(root, 'win32-x64', 'cpu', cpu);
+  const intermediate = JSON.parse(await readFile(manifestPath, 'utf8'));
+  assert.equal(intermediate.manifestVersion, undefined);
+  assert.deepEqual(intermediate.workers['win32-x64'], {
+    path: cpu.executable,
+    sha256: cpu.files[0].sha256,
+  });
+
+  await writeUpdatedManifest(root, 'win32-x64', 'sycl', sycl);
+
+  const migrated = JSON.parse(await readFile(manifestPath, 'utf8'));
+  assert.equal(migrated.manifestVersion, 2);
+  assert.deepEqual(migrated.platforms['darwin-arm64'].modes, {
+    auto: { bundle: 'default', backend: 'metal' },
+    cpu: { bundle: 'default', backend: 'cpu' },
+  });
+  assert.deepEqual(migrated.platforms['win32-x64'].modes, {
+    auto: { bundle: 'sycl', backend: 'sycl' },
+    cpu: { bundle: 'cpu', backend: 'cpu' },
+  });
+  assert.deepEqual(migrated.platforms['win32-x64'].bundles, { sycl, cpu });
+  await assert.rejects(readFile(legacyWindowsWorker), { code: 'ENOENT' });
+});
+
+test('rejects a legacy SYCL publish until the CPU bundle is isolated', async (context) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'worker-manifest-sycl-first-'));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const manifestPath = path.join(root, 'resources/workers/manifest.json');
+  await mkdir(path.dirname(manifestPath), { recursive: true });
+  await writeFile(manifestPath, `${JSON.stringify({
+    llamaCppCommit: '60eeeb6082c1126bb8bc72902c83123cd056811b',
+    llamaCppBuild: 'b10472',
+    workers: {
+      'darwin-arm64': {
+        path: 'resources/workers/darwin-arm64/llama-server',
+        sha256: 'a'.repeat(64),
+      },
+      'win32-x64': {
+        path: 'resources/workers/win32-x64/llama-server.exe',
+        sha256: 'b'.repeat(64),
+      },
+    },
+  }, null, 2)}\n`);
+
+  await assert.rejects(
+    writeUpdatedManifest(root, 'win32-x64', 'sycl', {
+      executable: 'resources/workers/win32-x64/sycl/llama-server.exe',
+      files: [{
+        path: 'resources/workers/win32-x64/sycl/llama-server.exe',
+        sha256: 'd'.repeat(64),
+      }],
+    }),
+    /Build with --backend all or publish cpu before sycl/,
+  );
+});
+
 function fakeOptions(imports) {
   return {
     imports: async (file) => imports.get(path.basename(file)) ?? [],

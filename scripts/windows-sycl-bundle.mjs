@@ -1,7 +1,7 @@
 import { cp, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { replaceWorkerBundle, sha256File } from '../src/worker/workerManifest.ts';
+import { parseWorkerManifest, replaceWorkerBundle, sha256File } from '../src/worker/workerManifest.ts';
 
 export const REQUIRED_SYCL_COMPANIONS = [
   'compiler/latest/bin/sycl8.dll',
@@ -184,8 +184,83 @@ export async function assembleWindowsSyclBundle(options) {
 export async function writeUpdatedManifest(root, target, bundleName, bundle) {
   const manifestPath = path.join(root, 'resources', 'workers', 'manifest.json');
   const current = JSON.parse(await readFile(manifestPath, 'utf8'));
-  const updated = replaceWorkerBundle(current, target, bundleName, bundle);
+  const updated = current.manifestVersion === 2
+    ? replaceWorkerBundle(current, target, bundleName, bundle)
+    : updateLegacyManifest(current, target, bundleName, bundle);
   await writeFile(manifestPath, `${JSON.stringify(updated, null, 2)}\n`);
+  if (target === 'win32-x64' && bundleName === 'sycl') {
+    await rm(path.join(root, 'resources', 'workers', 'win32-x64', 'llama-server.exe'), { force: true });
+  }
+}
+
+function updateLegacyManifest(current, target, bundleName, bundle) {
+  const workers = legacyWorkers(current);
+  if (bundleName === 'cpu') {
+    workers[target] = legacyEntryFromBundle(bundle);
+    return current;
+  }
+  if (target !== 'win32-x64' || bundleName !== 'sycl') {
+    throw new Error(`Cannot publish ${target} ${bundleName} into the legacy worker manifest.`);
+  }
+
+  const darwin = legacyWorkerBundle(workers, 'darwin-arm64');
+  const cpu = legacyWorkerBundle(workers, 'win32-x64');
+  if (!cpu.executable.startsWith('resources/workers/win32-x64/cpu/')) {
+    throw new Error(
+      'The legacy Windows CPU worker has not been published into its isolated bundle. Build with --backend all or publish cpu before sycl.',
+    );
+  }
+  return parseWorkerManifest({
+    manifestVersion: 2,
+    llamaCppCommit: current.llamaCppCommit,
+    llamaCppBuild: current.llamaCppBuild,
+    platforms: {
+      'darwin-arm64': {
+        modes: {
+          auto: { bundle: 'default', backend: 'metal' },
+          cpu: { bundle: 'default', backend: 'cpu' },
+        },
+        bundles: { default: darwin },
+      },
+      'win32-x64': {
+        modes: {
+          auto: { bundle: 'sycl', backend: 'sycl' },
+          cpu: { bundle: 'cpu', backend: 'cpu' },
+        },
+        bundles: { sycl: bundle, cpu },
+      },
+    },
+  });
+}
+
+function legacyWorkers(manifest) {
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest) ||
+      !manifest.workers || typeof manifest.workers !== 'object' || Array.isArray(manifest.workers)) {
+    throw new Error('Legacy worker manifest must contain a workers object.');
+  }
+  return manifest.workers;
+}
+
+function legacyEntryFromBundle(bundle) {
+  const executable = bundle?.executable;
+  const file = Array.isArray(bundle?.files)
+    ? bundle.files.find((candidate) => candidate?.path === executable)
+    : undefined;
+  if (typeof executable !== 'string' || !file || typeof file.sha256 !== 'string') {
+    throw new Error('Published worker bundle must hash its executable.');
+  }
+  return { path: executable, sha256: file.sha256 };
+}
+
+function legacyWorkerBundle(workers, target) {
+  const entry = workers[target];
+  if (!entry || typeof entry.path !== 'string' || typeof entry.sha256 !== 'string') {
+    throw new Error(`Legacy worker manifest has no valid ${target} entry.`);
+  }
+  return {
+    executable: entry.path,
+    files: [{ path: entry.path, sha256: entry.sha256 }],
+  };
 }
 
 async function collectControllingLicenses(oneApiRoot, companionFiles) {
