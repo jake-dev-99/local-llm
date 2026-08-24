@@ -27,13 +27,13 @@ The prototype supports:
 Install the VSIX that matches the computer:
 
 ```shell
-code --install-extension local-llm-engine-0.3.4-darwin-arm64.vsix --force
+code --install-extension dist/vsix/darwin-arm64/local-llm-engine-0.3.4-darwin-arm64.vsix --force
 ```
 
 or:
 
 ```shell
-code --install-extension local-llm-engine-0.3.4-win32-x64.vsix --force
+code --install-extension dist/vsix/win32-x64/local-llm-engine-0.3.4-win32-x64.vsix --force
 ```
 
 Reload VS Code after upgrading from an earlier prototype. Installed models live
@@ -198,9 +198,11 @@ npm test
 npm run typecheck
 npm run build
 npm run build:worker
-npm run package:vsix -- darwin-arm64
-npm run package:vsix -- win32-x64
+npm run package -- darwin-arm64
+npm run package -- win32-x64
 ```
+
+Each packaged extension is written to `dist/vsix/<target>/`.
 
 The worker is pinned to llama.cpp commit
 `60eeeb6082c1126bb8bc72902c83123cd056811b` (build `b10472`). The checked-in

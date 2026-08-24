@@ -221,12 +221,12 @@
   },
   "scripts": {
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
-    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test src/**/*.test.ts",
+    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test src/**/*.test.ts scripts/**/*.test.mjs",
     "typecheck": "tsc --noEmit",
     "build": "node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",
     "build:worker": "node scripts/build-worker.mjs",
-    "package:vsix": "node scripts/package-vsix.mjs",
+    "package": "node scripts/package-vsix.mjs",
     "vscode:prepublish": "npm run typecheck && npm run build"
   },
   "devDependencies": {

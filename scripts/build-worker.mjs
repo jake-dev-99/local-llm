@@ -24,8 +24,8 @@ if (crossCompilingWindows && !llvmMingwRoot) {
   );
 }
 
-const source = path.join(root, '.build', 'llama.cpp');
-const buildDirectory = path.join(root, '.build', `llama.cpp-${platform}`);
+const source = path.join(root, 'build', 'llama.cpp');
+const buildDirectory = path.join(root, 'build', `llama.cpp-${platform}`);
 const destination = path.join(
   root,
   'resources',

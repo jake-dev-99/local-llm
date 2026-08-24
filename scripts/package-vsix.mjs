@@ -5,6 +5,8 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import process from 'node:process';
 
+import { prepareVsixOutput } from './vsix-output.mjs';
+
 const root = path.resolve(import.meta.dirname, '..');
 const target = process.argv[2] ?? `${process.platform}-${process.arch}`;
 if (!['darwin-arm64', 'win32-x64'].includes(target)) {
@@ -31,14 +33,14 @@ if (workerSha256.toLowerCase() !== workerEntry.sha256?.toLowerCase()) {
 }
 
 await run(process.execPath, ['esbuild.mjs']);
-const packageDirectory = path.join(root, '.build');
+const packageDirectory = path.join(root, 'build');
 await mkdir(packageDirectory, { recursive: true });
 const ignoreFile = path.join(packageDirectory, `.vscodeignore-${target}`);
 const otherTarget = target === 'darwin-arm64' ? 'win32-x64' : 'darwin-arm64';
 await writeFile(
   ignoreFile,
   [
-    '.build/**',
+    'build/**',
     '.git/**',
     '.gitignore',
     '.vscodeignore',
@@ -46,6 +48,7 @@ await writeFile(
     '.agents/**',
     '.codex/**',
     '**/.DS_Store',
+    'dist/vsix/**',
     'docs/**',
     'node_modules/**',
     'src/**',
@@ -58,7 +61,7 @@ await writeFile(
   ].join('\n'),
 );
 const packageManifest = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
-const output = path.join(root, `local-llm-engine-${packageManifest.version}-${target}.vsix`);
+const output = await prepareVsixOutput(root, packageManifest.version, target);
 await run(path.join(root, 'node_modules', '.bin', 'vsce'), [
   'package',
   '--target', target,
