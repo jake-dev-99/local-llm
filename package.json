@@ -157,7 +157,7 @@
             "cpu"
           ],
           "default": "auto",
-          "description": "Use Metal automatically on Apple Silicon, or force CPU inference."
+          "description": "Use Metal on Apple Silicon or Intel SYCL on x64 Windows automatically. Select cpu to force the bundled CPU worker. SYCL failures are reported and never fall back automatically."
         },
         "localLlm.batchSize": {
           "type": "integer",

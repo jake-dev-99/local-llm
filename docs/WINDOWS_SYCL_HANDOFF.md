@@ -8,13 +8,14 @@ Do not continue this work from `main`. The implementation is on:
 codex/windows-sycl-worker
 ```
 
-The completed and reviewed Tasks 1 through 5 end at commit `3849eeb`. This handoff checkpoint also contains a regression-tested fix for the legacy-to-version-2 manifest transition that the native `--backend all` build requires. The branch contains:
+The completed and reviewed Tasks 1 through 5 end at commit `3849eeb`. The branch now also contains the source-side Task 6 production wiring and generation diagnostics. The native Windows artifacts still have to be built on Windows before the migration is complete. The branch contains:
 
 - the version-2 multi-bundle worker manifest contract;
 - isolated Windows CPU and SYCL build orchestration;
 - self-contained SYCL dependency, license, and hash assembly;
 - strict `SYCL0` discovery with no automatic CPU fallback;
-- target package verification; and
+- target package verification;
+- visible request failures, 30-second stream-stall warnings, and 60-second long-generation warnings; and
 - the explicit CPU/SYCL smoke command.
 
 The handoff checkpoint is verified on macOS with the full source test suite, typecheck, and build. That is not a Windows artifact or hardware result.
@@ -24,7 +25,7 @@ Everything needed to continue is committed to this branch. Do not depend on `.su
 - [`docs/superpowers/specs/2026-08-24-windows-sycl-worker-design.md`](superpowers/specs/2026-08-24-windows-sycl-worker-design.md)
 - [`docs/superpowers/plans/2026-08-24-windows-sycl-worker.md`](superpowers/plans/2026-08-24-windows-sycl-worker.md)
 
-Continue at **Task 6: Native Windows build and atomic production migration**, then complete Task 7 and the final whole-branch review.
+Continue at the native Windows build below. Do not reimplement the Task 6 source wiring; it is already on this branch. The build must generate the real version-2 manifest and native bundles before packaging, then the Task 7 hardware gates and final whole-branch review remain.
 
 ## Check out the correct branch on Windows
 
@@ -103,18 +104,18 @@ resources/workers/win32-x64/sycl/licenses/**
 
 Also confirm `resources/workers/manifest.json` is version 2 and hashes every file in both Windows bundles.
 
-## Complete the atomic production migration
+## Complete the native half of the production migration
 
-Follow Task 6 Steps 3 through 9 in the committed implementation plan. The migration is one unit:
+The source-side production wiring is already committed. It:
 
-1. add failing production integration tests;
-2. replace `verifiedWorkerPath` with bundle-aware verification;
-3. make Windows `auto` select the SYCL bundle;
-4. make Windows `cpu` select only the CPU bundle;
-5. run `SYCL0` discovery before spawning the SYCL worker;
-6. never catch a SYCL failure and retry with CPU;
-7. make packaging verify both Windows bundles; and
-8. commit the generated native artifacts and production wiring together.
+1. verifies the selected bundle and every declared file;
+2. makes Windows `auto` select the SYCL bundle;
+3. makes Windows `cpu` select only the CPU bundle;
+4. runs `SYCL0` discovery before spawning the SYCL worker;
+5. never catches a SYCL failure and retries with CPU; and
+6. makes packaging verify both Windows bundles.
+
+The checked-in version-1 manifest is intentionally incompatible with that production wiring. Run the `--backend all` build first; it atomically creates both native bundles and migrates the manifest to version 2. Do not run the package command against the pre-build checkout.
 
 The CPU worker is an explicit user-selected mode only. A missing DLL, missing `SYCL0`, or failed SYCL startup must fail loudly before any CPU worker is launched.
 

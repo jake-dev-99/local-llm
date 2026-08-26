@@ -2,19 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   prepareWorkerLaunch,
-  resolveExecutionBackend,
   type LaunchableWorkerBundle,
 } from './workerLaunch.ts';
-
-test('an incomplete Windows auto build fails instead of silently running CPU', () => {
-  assert.equal(resolveExecutionBackend('darwin-arm64', 'auto'), 'metal');
-  assert.equal(resolveExecutionBackend('darwin-arm64', 'cpu'), 'cpu');
-  assert.throws(
-    () => resolveExecutionBackend('win32-x64', 'auto'),
-    /Windows SYCL.*not enabled.*refuses to fall back.*localLlm\.acceleration.*cpu/is,
-  );
-  assert.equal(resolveExecutionBackend('win32-x64', 'cpu'), 'cpu');
-});
 
 test('prepares a SYCL bundle only after it reports SYCL0', async () => {
   const bundle = syclBundle();

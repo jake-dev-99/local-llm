@@ -36,6 +36,17 @@ test('target preparation rejects unsupported targets before reading the manifest
   );
 });
 
+test('an unbuilt legacy manifest explains how to generate the required bundles', async (context) => {
+  const fixture = await packageFixture(context, 'win32-x64');
+  const manifestPath = path.join(fixture.root, 'resources', 'workers', 'manifest.json');
+  await writeFile(manifestPath, JSON.stringify({ workers: {} }));
+
+  await assert.rejects(
+    prepareTargetWorkers(fixture.root, 'win32-x64'),
+    /build:worker.*--target win32-x64.*--backend all/is,
+  );
+});
+
 async function packageFixture(context, target) {
   const root = await mkdtemp(path.join(tmpdir(), 'local-llm-package-workers-'));
   context.after(() => rm(root, { recursive: true, force: true }));

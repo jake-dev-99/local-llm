@@ -12,10 +12,11 @@ import { LlamaClient } from './llamaClient';
 import { describeError } from '../errorDetail';
 import { parseFittedContext, parseFreeDeviceMemoryMiB, resolveFitTargetMiB } from './memoryFit';
 import { isFatalWorkerError } from './workerError';
-import { verifiedWorkerPath } from './workerIntegrity';
-import { resolveExecutionBackend } from './workerLaunch';
+import { verifiedWorkerBundle } from './workerIntegrity';
+import { prepareWorkerLaunch } from './workerLaunch';
 import type { WorkerBackend } from './workerManifest';
 import { createWorkerDiagnostics } from './workerDiagnostics';
+import { discoverSycl0 } from './syclDevice';
 
 const STOP_TIMEOUT_MS = 5_000;
 const HEALTH_INTERVAL_MS = 500;
@@ -192,7 +193,25 @@ export class WorkerManager implements vscode.Disposable {
     this.setState({ kind: 'starting', modelId: model.id });
     try {
       throwIfAborted(signal);
-      const executable = await this.workerExecutable();
+      const config = readConfig(this.context);
+      const target = `${process.platform}-${process.arch}`;
+      const launch = await prepareWorkerLaunch({
+        target,
+        mode: config.acceleration,
+        resolveBundle: (workerTarget, mode) => verifiedWorkerBundle(
+          this.context.extensionUri.fsPath,
+          workerTarget,
+          mode,
+        ),
+        discoverSycl: discoverSycl0,
+      });
+      const executable = launch.bundle.executablePath;
+      const backend = launch.backend;
+      if (launch.syclDevice) {
+        this.logger.info(
+          `Windows SYCL preflight passed: ${launch.syclDevice.id} (${launch.syclDevice.description}).`,
+        );
+      }
       await access(executable, fsConstants.X_OK).catch(() => {
         throw new Error(
           `Bundled local worker is missing or not executable: ${executable}. Install the VSIX for this operating system and architecture.`,
@@ -226,11 +245,6 @@ export class WorkerManager implements vscode.Disposable {
           `Another local worker still holds ${Math.round(orphanBytes / (1024 * 1024))} MiB; reserving that memory as well.`,
         );
       }
-      const config = readConfig(this.context);
-      const backend = resolveExecutionBackend(
-        `${process.platform}-${process.arch}`,
-        config.acceleration,
-      );
       const args = buildWorkerArguments(
         model.filePath,
         port,
@@ -240,7 +254,7 @@ export class WorkerManager implements vscode.Disposable {
         orphanBytes,
       );
       this.logger.info(
-        `Starting local worker: target=${process.platform}-${process.arch} ` +
+        `Starting local worker: target=${target} bundle=${launch.bundle.bundleName} ` +
         `backend=${backend} model=${model.name} context=${config.contextSize || 'auto'} ` +
         `batch=${config.batchSize}/${config.microBatchSize} threads=${config.cpuThreads || 'auto'}.`,
       );
@@ -309,21 +323,6 @@ export class WorkerManager implements vscode.Disposable {
       this.setState({ kind: 'failed', modelId: model.id, message });
       throw error;
     }
-  }
-
-  private async workerExecutable(): Promise<string> {
-    const supported =
-      (process.platform === 'darwin' && process.arch === 'arm64') ||
-      (process.platform === 'win32' && process.arch === 'x64');
-    if (!supported) {
-      throw new Error(
-        `Unsupported platform ${process.platform}-${process.arch}. This PoC supports darwin-arm64 and win32-x64.`,
-      );
-    }
-    return verifiedWorkerPath(
-      this.context.extensionUri.fsPath,
-      `${process.platform}-${process.arch}`,
-    );
   }
 
   private async waitUntilHealthy(

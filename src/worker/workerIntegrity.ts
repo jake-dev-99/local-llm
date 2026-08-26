@@ -1,53 +1,35 @@
-import { createHash } from 'node:crypto';
-import { createReadStream } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import * as path from 'node:path';
+import {
+  parseWorkerManifest,
+  resolveWorkerBundle,
+  verifyWorkerBundleFiles,
+  type AccelerationMode,
+  type ResolvedWorkerBundle,
+} from './workerManifest.ts';
 
-interface WorkerManifestEntry {
-  path: string;
-  sha256: string;
+export interface VerifiedWorkerBundle extends ResolvedWorkerBundle {
+  executablePath: string;
 }
 
-interface WorkerManifest {
-  workers?: Record<string, WorkerManifestEntry>;
-}
-
-export async function verifiedWorkerPath(
+export async function verifiedWorkerBundle(
   extensionPath: string,
   target: string,
-): Promise<string> {
+  mode: AccelerationMode,
+): Promise<VerifiedWorkerBundle> {
   const manifestPath = path.join(extensionPath, 'resources', 'workers', 'manifest.json');
-  let manifest: WorkerManifest;
+  let manifest;
   try {
-    manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as WorkerManifest;
+    manifest = parseWorkerManifest(JSON.parse(await readFile(manifestPath, 'utf8')));
   } catch (error) {
     throw new Error(
       `Bundled worker manifest is missing or invalid: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
-  const entry = manifest.workers?.[target];
-  const requiredPrefix = `resources/workers/${target}/`;
-  if (
-    !entry ||
-    !entry.path.startsWith(requiredPrefix) ||
-    !/^[a-f0-9]{64}$/i.test(entry.sha256)
-  ) {
-    throw new Error(`Bundled worker manifest has no valid ${target} entry.`);
-  }
-  const workerPath = path.join(extensionPath, ...entry.path.split('/'));
-  const actualSha256 = await sha256File(workerPath);
-  if (actualSha256.toLowerCase() !== entry.sha256.toLowerCase()) {
-    throw new Error(
-      `Bundled ${target} worker failed its SHA-256 integrity check. Reinstall the extension from a trusted VSIX.`,
-    );
-  }
-  return workerPath;
-}
-
-export async function sha256File(filePath: string): Promise<string> {
-  const hash = createHash('sha256');
-  for await (const chunk of createReadStream(filePath)) {
-    hash.update(chunk as Buffer);
-  }
-  return hash.digest('hex');
+  const bundle = resolveWorkerBundle(manifest, target, mode);
+  await verifyWorkerBundleFiles(extensionPath, bundle);
+  return {
+    ...bundle,
+    executablePath: path.join(extensionPath, ...bundle.executable.split('/')),
+  };
 }
