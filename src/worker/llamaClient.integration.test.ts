@@ -20,6 +20,12 @@ interface TestLlamaClient {
 type TestLlamaClientConstructor = new (
   baseUrl: string,
   apiKey: string,
+  diagnostics?: {
+    info(message: string): void;
+    warn(message: string): void;
+    stallWarningMilliseconds?: number;
+    longGenerationWarningMilliseconds?: number;
+  },
 ) => TestLlamaClient;
 
 test('the worker client rejects non-loopback addresses', async () => {
@@ -682,6 +688,128 @@ test('a broken connection names the endpoint and the underlying cause', async ()
       },
     );
   } finally {
+    await close(server);
+  }
+});
+
+test('a stalled generation reports request milestones and a visible warning without logging the prompt', async () => {
+  const server = createServer((request, response) => {
+    if (request.url === '/v1/chat/completions/input_tokens') {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end('{"input_tokens":7}');
+      return;
+    }
+    if (request.url === '/v1/chat/completions') {
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.flushHeaders();
+      setTimeout(() => {
+        response.end(
+          'data: {"choices":[{"delta":{"content":"OK"}}]}\n\n' +
+          'data: [DONE]\n\n',
+        );
+      }, 40);
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+  await listen(server);
+
+  try {
+    const address = server.address() as AddressInfo;
+    const LlamaClient = await loadLlamaClient();
+    const info: string[] = [];
+    const warnings: string[] = [];
+    const client = new LlamaClient(
+      `http://127.0.0.1:${address.port}`,
+      'test-key',
+      {
+        info: (message) => info.push(message),
+        warn: (message) => warnings.push(message),
+        stallWarningMilliseconds: 10,
+      },
+    );
+    const events: ChatStreamEvent[] = [];
+
+    const result = await client.chat({
+      messages: [{ role: 'user', content: 'SECRET PROMPT CONTENT' }],
+      toolChoice: 'none',
+      inputTokenBudget: 100,
+      maxTokens: 16,
+      temperature: 0,
+    }, (event) => events.push(event));
+
+    assert.equal(result.toolCallCount, 0);
+    assert.deepEqual(events, [{ kind: 'text', text: 'OK' }]);
+    assert.equal(info.some((message) => /chat-\d+ start.*messages=1.*tools=0.*maxOutputTokens=16/i.test(message)), true);
+    assert.equal(info.some((message) => /chat-\d+ response headers.*elapsed=/i.test(message)), true);
+    assert.equal(info.some((message) => /chat-\d+ first stream data.*elapsed=/i.test(message)), true);
+    assert.equal(info.some((message) => /chat-\d+ complete.*outputCharacters=2.*toolCalls=0.*elapsed=/i.test(message)), true);
+    assert.equal(warnings.some((message) => /chat-\d+.*no stream data.*10 ms/i.test(message)), true);
+    assert.equal([...info, ...warnings].some((message) => message.includes('SECRET PROMPT CONTENT')), false);
+    await client.dispose();
+  } finally {
+    server.closeAllConnections();
+    await close(server);
+  }
+});
+
+test('a long generation warns even while worker stream data is flowing', async () => {
+  const server = createServer((request, response) => {
+    if (request.url === '/v1/chat/completions/input_tokens') {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end('{"input_tokens":7}');
+      return;
+    }
+    if (request.url === '/v1/chat/completions') {
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.flushHeaders();
+      let emitted = 0;
+      const interval = setInterval(() => {
+        emitted += 1;
+        response.write('data: {"choices":[{"delta":{"content":"x"}}]}\n\n');
+        if (emitted === 6) {
+          clearInterval(interval);
+          response.end('data: [DONE]\n\n');
+        }
+      }, 5);
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+  await listen(server);
+
+  try {
+    const address = server.address() as AddressInfo;
+    const LlamaClient = await loadLlamaClient();
+    const warnings: string[] = [];
+    const client = new LlamaClient(
+      `http://127.0.0.1:${address.port}`,
+      'test-key',
+      {
+        info: () => undefined,
+        warn: (message) => warnings.push(message),
+        stallWarningMilliseconds: 100,
+        longGenerationWarningMilliseconds: 10,
+      },
+    );
+
+    await client.chat({
+      messages: [{ role: 'user', content: 'hello' }],
+      toolChoice: 'none',
+      inputTokenBudget: 100,
+      maxTokens: 16,
+      temperature: 0,
+    }, () => undefined);
+
+    assert.equal(
+      warnings.some((message) => /chat-\d+ still running after 10 ms.*streaming can be buffered/i.test(message)),
+      true,
+    );
+    await client.dispose();
+  } finally {
+    server.closeAllConnections();
     await close(server);
   }
 });

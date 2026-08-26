@@ -15,6 +15,7 @@ import { isFatalWorkerError } from './workerError';
 import { verifiedWorkerPath } from './workerIntegrity';
 import { resolveExecutionBackend } from './workerLaunch';
 import type { WorkerBackend } from './workerManifest';
+import { createWorkerDiagnostics } from './workerDiagnostics';
 
 const STOP_TIMEOUT_MS = 5_000;
 const HEALTH_INTERVAL_MS = 500;
@@ -184,6 +185,7 @@ export class WorkerManager implements vscode.Disposable {
     signal?: AbortSignal,
   ): Promise<LlamaClient> {
     const startGeneration = this.generation;
+    const startedAt = Date.now();
     let child: ChildProcessWithoutNullStreams | undefined;
     let client: LlamaClient | undefined;
     this.requestedStop = false;
@@ -237,6 +239,11 @@ export class WorkerManager implements vscode.Disposable {
         backend,
         orphanBytes,
       );
+      this.logger.info(
+        `Starting local worker: target=${process.platform}-${process.arch} ` +
+        `backend=${backend} model=${model.name} context=${config.contextSize || 'auto'} ` +
+        `batch=${config.batchSize}/${config.microBatchSize} threads=${config.cpuThreads || 'auto'}.`,
+      );
       child = spawn(executable, args, {
         cwd: pathDirectory(executable),
         shell: false,
@@ -245,6 +252,9 @@ export class WorkerManager implements vscode.Disposable {
       });
       child.stdin.end();
       this.child = child;
+      this.logger.info(
+        `Local worker spawned: pid=${child.pid ?? 'unknown'} backend=${backend}. Waiting for health.`,
+      );
       child.stdout.setEncoding('utf8');
       child.stderr.setEncoding('utf8');
       child.stdout.on('data', (data: string) => this.logWorkerOutput(data));
@@ -262,7 +272,7 @@ export class WorkerManager implements vscode.Disposable {
       client = new LlamaClient(
         `http://127.0.0.1:${port}`,
         apiKey,
-        (message) => this.logger.info(message),
+        createWorkerDiagnostics(this.logger),
       );
       await Promise.race([
         this.waitUntilHealthy(client, child, signal),
@@ -275,7 +285,10 @@ export class WorkerManager implements vscode.Disposable {
 
       this.currentClient = client;
       this.setState({ kind: 'ready', modelId: model.id, port });
-      this.logger.info(`Local model ready: ${model.name}.`);
+      this.logger.info(
+        `Local model ready: ${model.name}; backend=${backend}; ` +
+        `startupElapsed=${Date.now() - startedAt} ms.`,
+      );
       return client;
     } catch (error) {
       if (child && this.child === child) {
@@ -359,7 +372,7 @@ export class WorkerManager implements vscode.Disposable {
 
     const model = this.currentModel;
     const message = `Local worker exited unexpectedly (code ${code ?? 'none'}, signal ${signal ?? 'none'}).`;
-    this.logger.error(message);
+    this.logger.error(message, undefined, true);
     if (!model) {
       this.setState({ kind: 'failed', message });
       return;
@@ -398,7 +411,7 @@ export class WorkerManager implements vscode.Disposable {
       }
       await this.run(model, 'utility', async () => undefined);
     } catch (error) {
-      this.logger.error('Automatic local worker restart failed', error);
+      this.logger.error('Automatic local worker restart failed', error, true);
     }
   }
 

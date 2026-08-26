@@ -244,7 +244,7 @@ implements vscode.LanguageModelChatProvider<LocalLanguageModelInformation>, vsco
       if (token.isCancellationRequested || isAbortError(error)) {
         throw new vscode.CancellationError();
       }
-      this.logger.error(`Local chat request failed for ${installed.name}`, error);
+      this.logger.error(`Local chat request failed for ${installed.name}`, error, true);
       throw error;
     } finally {
       cancellation.dispose();

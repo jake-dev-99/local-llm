@@ -61,16 +61,30 @@ export interface ChatResult {
  */
 export type NativeToolCallSupport = 'unknown' | 'available' | 'unavailable';
 
+export interface LlamaClientDiagnostics {
+  info(message: string): void;
+  warn(message: string): void;
+  stallWarningMilliseconds?: number;
+  longGenerationWarningMilliseconds?: number;
+}
+
+interface ChatTrace {
+  id: string;
+  startedAt: number;
+  visibleWarningShown: boolean;
+}
+
 export class LlamaClient {
   private modelProfile: WorkerModelProfile | undefined;
   private nativeToolCalls: NativeToolCallSupport = 'unknown';
   private readonly pool: Pool;
   private readonly tokenCounts = new Map<string, number>();
+  private chatSequence = 0;
 
   constructor(
     readonly baseUrl: string,
     private readonly apiKey: string,
-    private readonly log?: (message: string) => void,
+    private readonly diagnostics?: LlamaClientDiagnostics,
   ) {
     assertLoopbackWorkerUrl(baseUrl);
     this.pool = new Pool(baseUrl, {
@@ -172,6 +186,53 @@ export class LlamaClient {
   ): Promise<ChatResult> {
     const tools = request.tools ?? [];
     const toolChoice = request.toolChoice ?? 'auto';
+    const trace: ChatTrace = {
+      id: `chat-${++this.chatSequence}`,
+      startedAt: Date.now(),
+      visibleWarningShown: false,
+    };
+    this.diagnostics?.info(
+      `${trace.id} start: messages=${request.messages.length} tools=${tools.length} ` +
+      `toolChoice=${toolChoice} maxOutputTokens=${request.maxTokens}.`,
+    );
+
+    const longWarningMilliseconds =
+      this.diagnostics?.longGenerationWarningMilliseconds ?? 60_000;
+    const longWarningTimer = this.diagnostics && longWarningMilliseconds > 0
+      ? setTimeout(() => {
+        if (!trace.visibleWarningShown) {
+          trace.visibleWarningShown = true;
+          this.diagnostics?.warn(
+            `${trace.id} still running after ${longWarningMilliseconds} ms. ` +
+            'Worker streaming can be buffered during tool selection; open the Local LLM logs for live milestones.',
+          );
+        }
+      }, longWarningMilliseconds)
+      : undefined;
+    let result: ChatResult;
+    try {
+      result = await this.executeChat(request, onEvent, trace, signal);
+    } finally {
+      if (longWarningTimer) {
+        clearTimeout(longWarningTimer);
+      }
+    }
+    this.diagnostics?.info(
+      `${trace.id} complete: inputTokens=${result.inputTokens} ` +
+      `outputCharacters=${result.textCharacters} toolCalls=${result.toolCallCount} ` +
+      `elapsed=${Date.now() - trace.startedAt} ms.`,
+    );
+    return result;
+  }
+
+  private async executeChat(
+    request: ChatRequest,
+    onEvent: (event: ChatStreamEvent) => void,
+    trace: ChatTrace,
+    signal?: AbortSignal,
+  ): Promise<ChatResult> {
+    const tools = request.tools ?? [];
+    const toolChoice = request.toolChoice ?? 'auto';
     if (toolChoice === 'required' && tools.length === 0) {
       throw new Error('The caller required a tool call but supplied no tool definitions.');
     }
@@ -182,13 +243,15 @@ export class LlamaClient {
     // native tool_calls channel. Once a model has demonstrated that, its native
     // generation is discarded every turn, so stop paying for it.
     if (toolProtocolEnabled && this.nativeToolCalls === 'unavailable') {
-      return this.schemaConstrainedDecision(request, tools, toolChoice, 0, onEvent, signal);
+      return this.schemaConstrainedDecision(request, tools, toolChoice, 0, onEvent, trace, signal);
     }
 
     const nativeEvents: ChatStreamEvent[] = [];
     const nativeResult = await this.streamNativeChat(
       request,
       (event) => nativeEvents.push(event),
+      trace,
+      'native',
       signal,
     );
     const nativeAutomaticFinal = toolChoice === 'auto' &&
@@ -206,7 +269,7 @@ export class LlamaClient {
 
     if (toolChoice === 'required') {
       this.nativeToolCalls = 'unavailable';
-      this.log?.(
+      this.diagnostics?.info(
         'This model returned no required native tool call; using schema-constrained decisions for this runtime fingerprint.',
       );
     }
@@ -216,6 +279,7 @@ export class LlamaClient {
       toolChoice,
       nativeResult.textCharacters,
       onEvent,
+      trace,
       signal,
     );
   }
@@ -226,12 +290,14 @@ export class LlamaClient {
     toolChoice: NonNullable<ChatRequest['toolChoice']>,
     textCharacters: number,
     onEvent: (event: ChatStreamEvent) => void,
+    trace: ChatTrace,
     signal?: AbortSignal,
   ): Promise<ChatResult> {
     const fallback = await this.schemaConstrainedFallback(
       request,
       tools,
       toolChoice === 'required',
+      trace,
       signal,
     );
     if (fallback.decision.kind === 'tool') {
@@ -255,6 +321,8 @@ export class LlamaClient {
     return this.streamNativeChat(
       { ...withoutTools, toolChoice: 'none' },
       onEvent,
+      trace,
+      'final',
       signal,
     );
   }
@@ -262,6 +330,8 @@ export class LlamaClient {
   private async streamNativeChat(
     request: ChatRequest,
     onEvent: (event: ChatStreamEvent) => void,
+    trace: ChatTrace,
+    stage: string,
     signal?: AbortSignal,
   ): Promise<ChatResult> {
     const tools = request.tools ?? [];
@@ -273,7 +343,7 @@ export class LlamaClient {
       )
       : request.maxTokens;
     if (toolChoice === 'required' && outputTokenLimit < request.maxTokens) {
-      this.log?.(
+      this.diagnostics?.info(
         `Required tool generation output limit: ${outputTokenLimit} tokens (chat limit ${request.maxTokens}).`,
       );
     }
@@ -294,15 +364,23 @@ export class LlamaClient {
       ),
     );
     Object.assign(body, withTools({}, measured.tools, workerToolChoice));
-    this.log?.(
-      `Prompt budget: ${measured.inputTokens}/${request.inputTokenBudget} input tokens with ${tools.length} tool${tools.length === 1 ? '' : 's'}.`,
+    this.diagnostics?.info(
+      `${trace.id} prompt budget (${stage}): ${measured.inputTokens}/${request.inputTokenBudget} ` +
+      `input tokens with ${tools.length} tool${tools.length === 1 ? '' : 's'}.`,
     );
 
-    const response = await this.request('/v1/chat/completions', {
-      method: 'POST',
-      body: JSON.stringify(body),
-      ...requestSignal(signal),
-    });
+    const response = await this.withStallWarning(
+      trace,
+      `no response headers for the ${stage} generation`,
+      () => this.request('/v1/chat/completions', {
+        method: 'POST',
+        body: JSON.stringify(body),
+        ...requestSignal(signal),
+      }),
+    );
+    this.diagnostics?.info(
+      `${trace.id} response headers (${stage}): elapsed=${Date.now() - trace.startedAt} ms.`,
+    );
     if (!response.body) {
       throw new Error('The local worker returned an empty streaming response.');
     }
@@ -314,8 +392,19 @@ export class LlamaClient {
     let buffer = '';
     let bufferedText = '';
     let textCharacters = 0;
+    let firstStreamData = true;
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await this.withStallWarning(
+        trace,
+        `no stream data for the ${stage} generation`,
+        () => reader.read(),
+      );
+      if (firstStreamData && value && value.byteLength > 0) {
+        firstStreamData = false;
+        this.diagnostics?.info(
+          `${trace.id} first stream data (${stage}): elapsed=${Date.now() - trace.startedAt} ms.`,
+        );
+      }
       buffer += decoder.decode(value, { stream: !done });
       const frames = buffer.split(/\r?\n\r?\n/);
       buffer = frames.pop() ?? '';
@@ -370,6 +459,7 @@ export class LlamaClient {
     request: ChatRequest,
     tools: readonly ChatTool[],
     toolRequired: boolean,
+    trace: ChatTrace,
     signal?: AbortSignal,
   ): Promise<{ decision: ToolDecision; inputTokens: number }> {
     const maxTokens = Math.min(
@@ -399,15 +489,27 @@ export class LlamaClient {
         `The schema-constrained fallback requires ${inputTokens} input tokens, but the local model input budget is ${request.inputTokenBudget}.`,
       );
     }
-    this.log?.(
+    this.diagnostics?.info(
       `Native tool output was unavailable; using one schema-constrained ${toolRequired ? 'required' : 'automatic'} decision.`,
     );
-    const response = await this.request('/v1/chat/completions', {
-      method: 'POST',
-      body: JSON.stringify(body),
-      ...requestSignal(signal),
-    });
-    const content = await this.readStreamedContent(response, '/v1/chat/completions');
+    const response = await this.withStallWarning(
+      trace,
+      'no response headers for the schema decision',
+      () => this.request('/v1/chat/completions', {
+        method: 'POST',
+        body: JSON.stringify(body),
+        ...requestSignal(signal),
+      }),
+    );
+    this.diagnostics?.info(
+      `${trace.id} response headers (schema decision): elapsed=${Date.now() - trace.startedAt} ms.`,
+    );
+    const content = await this.readStreamedContent(
+      response,
+      '/v1/chat/completions',
+      trace,
+      'schema decision',
+    );
     if (!content.trim()) {
       throw new Error(
         'The schema-constrained fallback returned no decision. The worker streamed an empty response.',
@@ -529,7 +631,12 @@ export class LlamaClient {
    * headers until the whole answer exists, and slow local generation outlives the
    * 300 second headers timeout built into Node's fetch.
    */
-  private async readStreamedContent(response: WorkerResponse, path: string): Promise<string> {
+  private async readStreamedContent(
+    response: WorkerResponse,
+    path: string,
+    trace: ChatTrace,
+    stage: string,
+  ): Promise<string> {
     if (!response.body) {
       throw new Error(`Local worker request ${path} returned an empty streaming response.`);
     }
@@ -537,6 +644,7 @@ export class LlamaClient {
     const decoder = new TextDecoder();
     let buffer = '';
     let content = '';
+    let firstStreamData = true;
     const consume = (frame: string): void => {
       const data = frame
         .split(/\r?\n/)
@@ -558,7 +666,17 @@ export class LlamaClient {
       content += chunk.choices?.[0]?.delta?.content ?? '';
     };
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await this.withStallWarning(
+        trace,
+        `no stream data for the ${stage}`,
+        () => reader.read(),
+      );
+      if (firstStreamData && value && value.byteLength > 0) {
+        firstStreamData = false;
+        this.diagnostics?.info(
+          `${trace.id} first stream data (${stage}): elapsed=${Date.now() - trace.startedAt} ms.`,
+        );
+      }
       buffer += decoder.decode(value, { stream: !done });
       const frames = buffer.split(/\r?\n\r?\n/);
       buffer = frames.pop() ?? '';
@@ -573,6 +691,29 @@ export class LlamaClient {
       consume(buffer);
     }
     return content;
+  }
+
+  private async withStallWarning<T>(
+    trace: ChatTrace,
+    condition: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const warningMilliseconds = this.diagnostics?.stallWarningMilliseconds ?? 30_000;
+    if (!this.diagnostics || trace.visibleWarningShown || warningMilliseconds <= 0) {
+      return operation();
+    }
+    const timer = setTimeout(() => {
+      trace.visibleWarningShown = true;
+      this.diagnostics?.warn(
+        `${trace.id} stalled: ${condition} after ${warningMilliseconds} ms. ` +
+        'Generation is still running; open the Local LLM logs for request milestones.',
+      );
+    }, warningMilliseconds);
+    try {
+      return await operation();
+    } finally {
+      clearTimeout(timer);
+    }
   }
 }
 

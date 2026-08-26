@@ -6,10 +6,13 @@ import {
   type LaunchableWorkerBundle,
 } from './workerLaunch.ts';
 
-test('current production execution selection keeps Windows auto on CPU', () => {
+test('an incomplete Windows auto build fails instead of silently running CPU', () => {
   assert.equal(resolveExecutionBackend('darwin-arm64', 'auto'), 'metal');
   assert.equal(resolveExecutionBackend('darwin-arm64', 'cpu'), 'cpu');
-  assert.equal(resolveExecutionBackend('win32-x64', 'auto'), 'cpu');
+  assert.throws(
+    () => resolveExecutionBackend('win32-x64', 'auto'),
+    /Windows SYCL.*not enabled.*refuses to fall back.*localLlm\.acceleration.*cpu/is,
+  );
   assert.equal(resolveExecutionBackend('win32-x64', 'cpu'), 'cpu');
 });
 

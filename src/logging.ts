@@ -16,9 +16,10 @@ export class LocalLlmLogger implements vscode.Disposable {
    * The cause chain and the stack are the difference between a report that can be
    * acted on and one that cannot, so neither is ever suppressed.
    */
-  error(message: string, error?: unknown): void {
+  error(message: string, error?: unknown, visible = false): void {
     const detail = error === undefined ? '' : `: ${describeError(error)}`;
-    this.write('ERROR', `${message}${detail}`);
+    const fullMessage = `${message}${detail}`;
+    this.write('ERROR', fullMessage);
     const stack = errorStack(error);
     if (stack) {
       for (const line of stack.split(/\r?\n/).slice(1)) {
@@ -27,11 +28,29 @@ export class LocalLlmLogger implements vscode.Disposable {
         }
       }
     }
+    if (visible) {
+      void vscode.window.showErrorMessage(`Local LLM: ${fullMessage}`, 'Show Logs').then((action) => {
+        if (action === 'Show Logs') {
+          this.show();
+        }
+      });
+    }
   }
 
   info(message: string): void {
     if (this.level !== 'error') {
       this.write('INFO', message);
+    }
+  }
+
+  warn(message: string, visible = false): void {
+    this.write('WARN', message);
+    if (visible) {
+      void vscode.window.showWarningMessage(`Local LLM: ${message}`, 'Show Logs').then((action) => {
+        if (action === 'Show Logs') {
+          this.show();
+        }
+      });
     }
   }
 
