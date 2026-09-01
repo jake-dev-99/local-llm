@@ -7,12 +7,21 @@ import { sha256File } from '../src/worker/workerManifest.ts';
 import { cmakeOptionsForBuild, parseWorkerBuildOptions } from './worker-build-options.mjs';
 import { assembleWindowsSyclBundle, writeUpdatedManifest } from './windows-sycl-bundle.mjs';
 import { loadOneApiEnvironment, resolveOneApiFiles } from './windows-oneapi.mjs';
+import { resolveVisualStudioBuildTools } from './windows-vs-tools.mjs';
 
 const LLAMA_CPP_COMMIT = '60eeeb6082c1126bb8bc72902c83123cd056811b';
 const root = path.resolve(import.meta.dirname, '..');
 const hostTarget = `${process.platform}-${process.arch}`;
 const options = parseWorkerBuildOptions(process.argv.slice(2), hostTarget);
 const source = path.join(root, 'build', 'llama.cpp');
+const windowsTools = hostTarget === 'win32-x64'
+  ? await resolveVisualStudioBuildTools(process.env)
+  : undefined;
+
+if (windowsTools) {
+  console.log(`[worker-build] Using Visual Studio CMake: ${windowsTools.cmake}`);
+  console.log(`[worker-build] Using Visual Studio Ninja: ${windowsTools.ninja}`);
+}
 
 if (!(await exists(path.join(source, '.git')))) {
   await run('git', ['clone', '--filter=blob:none', 'https://github.com/ggml-org/llama.cpp.git', source]);
@@ -26,26 +35,41 @@ for (const backend of backends) {
   const environment = backend === 'sycl'
     ? await loadOneApiEnvironment(process.env)
     : process.env;
-  builds.push(await buildWorker({ ...options, backend, hostTarget, environment }));
+  builds.push(await buildWorker({
+    ...options,
+    backend,
+    hostTarget,
+    environment,
+    cmakePath: windowsTools?.cmake,
+    ninjaPath: windowsTools?.ninja,
+  }));
 }
 for (const build of builds) {
   await publishWorker(build);
 }
 
-async function buildWorker({ target, backend, hostTarget: buildHostTarget, environment }) {
+async function buildWorker({
+  target,
+  backend,
+  hostTarget: buildHostTarget,
+  environment,
+  cmakePath,
+  ninjaPath,
+}) {
   const buildDirectory = workerBuildDirectory(target, backend);
   const cmakeOptions = cmakeOptionsForBuild({
     target,
     backend,
     hostTarget: buildHostTarget,
     llvmMingwRoot: environment.LOCAL_LLM_LLVM_MINGW_ROOT,
-    oneApiEnvironment: environment,
+    ninjaPath,
   });
+  const cmake = cmakePath || 'cmake';
 
   await rm(buildDirectory, { recursive: true, force: true });
-  await run('cmake', ['-S', source, '-B', buildDirectory, ...cmakeOptions], root, environment);
+  await run(cmake, ['-S', source, '-B', buildDirectory, ...cmakeOptions], root, environment);
   await run(
-    'cmake',
+    cmake,
     ['--build', buildDirectory, '--config', 'Release', '--target', 'llama-server', '--parallel'],
     root,
     environment,

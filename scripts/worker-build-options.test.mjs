@@ -19,13 +19,28 @@ test('SYCL is native-Windows-only and uses the pinned backend flags', () => {
     target: 'win32-x64',
     backend: 'sycl',
     hostTarget: 'win32-x64',
-    oneApiEnvironment: {},
+    ninjaPath: 'C:\\Visual Studio\\CMake\\Ninja\\ninja.exe',
   });
   assert.equal(flags.includes('-DGGML_SYCL=ON'), true);
   assert.equal(flags.includes('-DGGML_SYCL_F16=ON'), false);
   assert.equal(flags.includes('-DBUILD_SHARED_LIBS=ON'), true);
   assert.equal(flags.includes('-DCMAKE_C_COMPILER=cl'), true);
   assert.equal(flags.includes('-DCMAKE_CXX_COMPILER=icx'), true);
+  assert.equal(
+    flags.includes('-DCMAKE_MAKE_PROGRAM=C:\\Visual Studio\\CMake\\Ninja\\ninja.exe'),
+    true,
+  );
+});
+
+test('SYCL configuration fails before spawning CMake when Ninja was not resolved', () => {
+  assert.throws(
+    () => cmakeOptionsForBuild({
+      target: 'win32-x64',
+      backend: 'sycl',
+      hostTarget: 'win32-x64',
+    }),
+    /Visual Studio Ninja path is required/,
+  );
 });
 
 test('Windows CPU cross-build keeps the llvm-mingw toolchain flags', () => {

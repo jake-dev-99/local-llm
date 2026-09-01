@@ -58,11 +58,15 @@ export function parseWorkerBuildOptions(argv, hostTarget) {
   return { target, backend };
 }
 
-export function cmakeOptionsForBuild({ target, backend, hostTarget, llvmMingwRoot }) {
+export function cmakeOptionsForBuild({ target, backend, hostTarget, llvmMingwRoot, ninjaPath }) {
   if (backend === 'sycl') {
+    if (!ninjaPath) {
+      throw new Error('Visual Studio Ninja path is required for the Windows SYCL worker build.');
+    }
     return [
       ...commonCmakeOptions,
       '-G', 'Ninja',
+      `-DCMAKE_MAKE_PROGRAM=${ninjaPath}`,
       '-DBUILD_SHARED_LIBS=ON',
       '-DGGML_STATIC=OFF',
       '-DGGML_BACKEND_DL=ON',

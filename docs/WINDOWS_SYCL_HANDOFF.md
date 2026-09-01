@@ -63,10 +63,13 @@ The build machine needs:
 
 - x64 Windows 11;
 - Node.js 22 or newer;
-- Visual Studio 2022 C++ build tools;
-- CMake and Ninja;
+- Visual Studio 2022 C++ build tools, including the **C++ CMake tools for Windows** component;
 - Intel oneAPI 2025.3.3, including Deep Learning Essentials; and
 - the Level Zero 1.28.2 SDK.
+
+The Visual Studio CMake component supplies both `cmake.exe` and `ninja.exe`. They do not need to
+be on `PATH`: the worker build locates the Visual Studio installation with `vswhere.exe`, verifies
+both executable paths before cloning or compiling llama.cpp, and passes the absolute paths directly.
 
 The installed VSIX must not require those developer tools. Required runtime DLLs, SPIR-V files, and controlling licenses are copied into the SYCL worker bundle.
 
@@ -74,12 +77,16 @@ Run these preflight checks from Git Bash or zsh:
 
 ```bash
 node --version
-cmake --version
+"/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe" -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.CMake.Project -find 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
+"/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe" -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.CMake.Project -find 'Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe'
 cmd.exe /d /s /c 'if exist "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" (exit /b 0) else (exit /b 1)'
-cmd.exe /d /s /c 'call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" intel64 --force >nul && where cl && where icx && where ninja'
+cmd.exe /d /s /c 'call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" intel64 --force >nul && where cl && where icx'
 ```
 
-Do not proceed until `setvars.bat`, `cl`, `icx`, and `ninja` all resolve.
+Do not proceed until both `vswhere.exe` searches print an executable path and `setvars.bat`, `cl`,
+and `icx` all resolve. If Visual Studio is installed somewhere else, the build still discovers its
+installation path automatically; only the optional manual `vswhere.exe` checks above use the default
+installer location.
 
 ## Build the real CPU and SYCL bundles
 
