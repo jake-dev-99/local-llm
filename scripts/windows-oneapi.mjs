@@ -1,10 +1,9 @@
-import { execFile } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { access } from 'node:fs/promises';
-import { promisify } from 'node:util';
 import path from 'node:path';
 
-const execFileAsync = promisify(execFile);
 const defaultOneApiRoot = 'C:\\Program Files (x86)\\Intel\\oneAPI';
+const maxEnvironmentOutputBytes = 10 * 1024 * 1024;
 
 export function parseWindowsEnvironment(stdout) {
   const environment = {};
@@ -21,22 +20,71 @@ export function parseWindowsEnvironment(stdout) {
   return environment;
 }
 
-export async function loadOneApiEnvironment(baseEnv) {
+export async function loadOneApiEnvironment(baseEnv, dependencies = {}) {
+  const accessFile = dependencies.accessFile ?? access;
+  const runCmdScript = dependencies.runCmdScript ?? runWindowsCmdScript;
   const oneApiRoot = baseEnv.ONEAPI_ROOT || defaultOneApiRoot;
   const setvarsPath = path.win32.join(oneApiRoot, 'setvars.bat');
   try {
-    await access(setvarsPath);
+    await accessFile(setvarsPath);
   } catch {
     throw new Error(`oneAPI bootstrap batch file was not found: ${setvarsPath}`);
   }
 
-  const command = `call "${setvarsPath}" intel64 --force >nul && set`;
-  const { stdout } = await execFileAsync('cmd.exe', ['/d', '/s', '/c', command], {
-    env: baseEnv,
-    windowsHide: true,
-    maxBuffer: 10 * 1024 * 1024,
-  });
+  const script = [
+    `@call "${setvarsPath}" intel64 --force >nul`,
+    '@if errorlevel 1 exit /b %errorlevel%',
+    '@set',
+    '@exit /b 0',
+  ].join('\r\n');
+  const { stdout } = await runCmdScript(script, baseEnv);
   return { ...baseEnv, ...parseWindowsEnvironment(stdout) };
+}
+
+export async function runWindowsCmdScript(script, environment, spawnProcess = spawn) {
+  return await new Promise((resolve, reject) => {
+    const child = spawnProcess('cmd.exe', ['/d', '/q'], {
+      env: environment,
+      windowsHide: true,
+      shell: false,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    let outputBytes = 0;
+    let outputError;
+    const capture = (stream, chunk) => {
+      outputBytes += Buffer.byteLength(chunk);
+      if (outputBytes > maxEnvironmentOutputBytes) {
+        outputError ??= new Error('oneAPI environment output exceeded 10 MiB.');
+        child.kill();
+        return stream;
+      }
+      return stream + chunk;
+    };
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+      stdout = capture(stdout, chunk);
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr = capture(stderr, chunk);
+    });
+    child.once('error', reject);
+    child.once('close', (code) => {
+      if (outputError) {
+        reject(outputError);
+      } else if (code === 0) {
+        resolve({ stdout, stderr });
+      } else {
+        const detail = stderr.trim();
+        reject(new Error(
+          `oneAPI bootstrap cmd.exe exited with code ${code ?? 'unknown'}${detail ? `: ${detail}` : '.'}`,
+        ));
+      }
+    });
+    child.stdin.end(`${script}\r\n`);
+  });
 }
 
 export function resolveOneApiFiles(environment) {
