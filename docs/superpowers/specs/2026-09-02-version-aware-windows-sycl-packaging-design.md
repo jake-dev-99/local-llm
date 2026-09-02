@@ -1,7 +1,7 @@
 # Version-Aware Windows SYCL Packaging Design
 
 Date: 2026-09-02
-Status: Proposed
+Status: Approved
 
 ## Summary
 
@@ -74,17 +74,17 @@ The bundler will use three complementary sources of truth:
    the actual versioned DLL names imported by those roots and by every copied
    non-system DLL.
 3. **Semantic dynamic resources.** The active oneAPI compiler directories are
-   searched for the Unified Runtime loader, Level Zero adapter variants, and
-   SYCL device resource files that are loaded at runtime and may not occur in
-   PE imports.
+   searched for the Unified Runtime loader. Level Zero adapter variants and
+   SYCL device resource files that are loaded dynamically are selected beside
+   that loader and may not occur in PE imports.
 
 The semantic dynamic resource rules express runtime roles rather than release
 filenames:
 
 - exactly one active Unified Runtime loader named `ur_loader.dll`;
 - one or more Level Zero adapters matching `ur_adapter_level_zero*.dll`;
-- every installed `libsycl-*.spv` resource adjacent to the selected SYCL
-  runtime; and
+- every installed `libsycl-*.spv` resource adjacent to the selected Unified
+  Runtime loader; and
 - the Windows Unified Runtime proxy loader when it is present in the active
   compiler runtime directory.
 
