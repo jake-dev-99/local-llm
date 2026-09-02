@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { cp, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -58,7 +59,12 @@ export async function collectDependencyClosure(roots, options) {
     files.push(absoluteFile);
 
     for (const dllName of await options.imports(absoluteFile)) {
-      const resolved = await options.resolve(dllName);
+      let resolved;
+      try {
+        resolved = await options.resolve(dllName);
+      } catch (error) {
+        throw new Error(`${error.message} Imported by ${absoluteFile}.`, { cause: error });
+      }
       if (options.isSystemDependency(dllName, resolved)) {
         continue;
       }
@@ -75,7 +81,7 @@ export async function collectDependencyClosure(roots, options) {
   return files;
 }
 
-export async function assembleWindowsSyclBundle(options) {
+export async function prepareWindowsSyclBundle(options) {
   if (!options.environment || typeof options.environment !== 'object' || Array.isArray(options.environment)) {
     throw new Error('Windows SYCL bundle assembly requires an environment record.');
   }
@@ -99,15 +105,14 @@ export async function assembleWindowsSyclBundle(options) {
   const systemRoot = options.systemRoot ?? process.env.SystemRoot ?? 'C:\\Windows';
   const system32 = path.join(systemRoot, 'System32');
   const vcRuntime = path.join(options.vcToolsRedistDir, 'x64', 'Microsoft.VC143.CRT');
-  const oneApiDirectories = pathDirectories.filter((directory) => !isAtOrBelow(systemRoot, directory));
   const pathSystemDirectories = pathDirectories.filter((directory) => isAtOrBelow(systemRoot, directory));
-  const activeDirectories = activeOneApiRuntimeDirectories(options.oneApiRoot, oneApiDirectories);
+  const activeDirectories = activeOneApiRuntimeDirectories(options.oneApiRoot, pathDirectories);
+  const systemDirectories = uniqueSourcePaths([...pathSystemDirectories, system32]);
   const searchDirectories = [
     options.buildOutput,
-    ...oneApiDirectories,
+    ...activeDirectories,
     vcRuntime,
-    ...pathSystemDirectories,
-    system32,
+    ...systemDirectories,
   ];
   const excludedSystemDependencies = new Set();
   const closureOptions = {
@@ -116,9 +121,15 @@ export async function assembleWindowsSyclBundle(options) {
         ? parseDumpbinDependents(await options.runDumpbin(absoluteFile))
         : []
     ),
-    resolve: resolveFrom(searchDirectories),
+    resolve: resolveFromTiers([
+      { label: 'build output', directories: [options.buildOutput] },
+      { label: 'active oneAPI', directories: activeDirectories, rejectAmbiguous: true },
+      { label: 'VC redistributable', directories: [vcRuntime] },
+      { label: 'Windows system', directories: systemDirectories },
+    ]),
     isSystemDependency: (dllName, absoluteFile) => {
-      const excluded = isSystemDependencyName(dllName) || (absoluteFile ? isBelow(system32, absoluteFile) : false);
+      const excluded = isSystemDependencyName(dllName)
+        || (absoluteFile ? systemDirectories.some((directory) => isAtOrBelow(directory, absoluteFile)) : false);
       if (excluded) {
         excludedSystemDependencies.add(dllName);
       }
@@ -178,28 +189,274 @@ export async function assembleWindowsSyclBundle(options) {
     await verifyStagedSyclBundle({
       staging,
       systemRoot,
+      oneApiRoot: options.oneApiRoot,
       baseEnvironment: options.environment,
       runProcess: options.runProcess,
     });
     const bundle = await describeStagedBundle(options.root, options.destination, staging);
-    await rm(options.destination, { recursive: true, force: true });
-    await rename(staging, options.destination);
-    return bundle;
+    return {
+      bundleName: 'sycl',
+      bundle,
+      destination: options.destination,
+      staging,
+    };
   } catch (error) {
     await rm(staging, { recursive: true, force: true });
     throw error;
   }
 }
 
-export async function writeUpdatedManifest(root, target, bundleName, bundle) {
+export async function publishWindowsWorkerBuilds({
+  root, target, builds, fileOperations, log = console.log,
+}) {
+  if (!Array.isArray(builds) || builds.length === 0) {
+    throw new Error('Windows worker publication requires at least one completed build.');
+  }
+  const prepared = [];
+  try {
+    for (const build of builds) {
+      if (build.backend === 'cpu') {
+        prepared.push(await prepareWindowsCpuBundle({
+          root,
+          binary: build.binary,
+          destination: build.destination,
+        }));
+      } else if (build.backend === 'sycl') {
+        prepared.push(await prepareWindowsSyclBundle({
+          ...build.bundleOptions,
+          root,
+          buildOutput: path.dirname(build.binary),
+          destination: build.destination,
+        }));
+      } else {
+        throw new Error(`Unsupported Windows worker backend for publication: ${build.backend}.`);
+      }
+    }
+    await publishPreparedWindowsBundles({
+      root,
+      target,
+      prepared,
+      fileOperations,
+      log,
+    });
+    return Object.fromEntries(prepared.map(({ bundleName, bundle }) => [bundleName, bundle]));
+  } finally {
+    await Promise.all(prepared.map(({ staging }) => rm(staging, { recursive: true, force: true })));
+  }
+}
+
+async function prepareWindowsCpuBundle({ root, binary, destination }) {
+  await requireFile(binary, 'Built CPU executable llama-server.exe was not found');
+  await mkdir(path.dirname(destination), { recursive: true });
+  const staging = await mkdtemp(path.join(path.dirname(destination), '.cpu-stage-'));
+  try {
+    await cp(binary, path.join(staging, 'llama-server.exe'));
+    return {
+      bundleName: 'cpu',
+      bundle: await describeStagedBundle(root, destination, staging),
+      destination,
+      staging,
+    };
+  } catch (error) {
+    await rm(staging, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+async function publishPreparedWindowsBundles({
+  root, target, prepared, fileOperations, log,
+}) {
+  const fs = {
+    mkdir,
+    mkdtemp,
+    readFile,
+    rename,
+    rm,
+    stat,
+    writeFile,
+    ...fileOperations,
+  };
   const manifestPath = path.join(root, 'resources', 'workers', 'manifest.json');
-  const current = JSON.parse(await readFile(manifestPath, 'utf8'));
-  const updated = current.manifestVersion === 2
-    ? replaceWorkerBundle(current, target, bundleName, bundle)
-    : updateLegacyManifest(current, target, bundleName, bundle);
-  await writeFile(manifestPath, `${JSON.stringify(updated, null, 2)}\n`);
-  if (target === 'win32-x64' && bundleName === 'sycl') {
-    await rm(path.join(root, 'resources', 'workers', 'win32-x64', 'llama-server.exe'), { force: true });
+  const current = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+  const prospective = createUpdatedWorkerManifest(
+    current,
+    target,
+    Object.fromEntries(prepared.map(({ bundleName, bundle }) => [bundleName, bundle])),
+  );
+  const serialized = `${JSON.stringify(prospective, null, 2)}\n`;
+  validateProspectiveManifest(JSON.parse(serialized));
+
+  const manifestParent = path.dirname(manifestPath);
+  await fs.mkdir(manifestParent, { recursive: true });
+  const manifestStageDirectory = await fs.mkdtemp(path.join(manifestParent, '.manifest-stage-'));
+  const stagedManifest = path.join(manifestStageDirectory, 'manifest.json');
+  const directoryStates = prepared.map((publication) => ({
+    ...publication,
+    backup: uniqueBackupPath(publication.destination),
+    backedUp: false,
+    published: false,
+  }));
+  const manifestState = {
+    backup: uniqueBackupPath(manifestPath),
+    backedUp: false,
+    published: false,
+  };
+  const legacyWorker = path.join(root, 'resources', 'workers', 'win32-x64', 'llama-server.exe');
+  const legacyState = {
+    backup: uniqueBackupPath(legacyWorker),
+    retired: false,
+  };
+  let committed = false;
+  try {
+    await fs.writeFile(stagedManifest, serialized);
+    const stagedContents = await fs.readFile(stagedManifest, 'utf8');
+    if (stagedContents !== serialized) {
+      throw new Error('Staged worker manifest did not preserve the prospective manifest bytes.');
+    }
+    validateProspectiveManifest(JSON.parse(stagedContents));
+
+    try {
+      for (const state of directoryStates) {
+        if (await pathExists(state.destination, fs)) {
+          await fs.rename(state.destination, state.backup);
+          state.backedUp = true;
+        }
+        await fs.rename(state.staging, state.destination);
+        state.published = true;
+      }
+
+      if (current.manifestVersion !== 2 && prospective.manifestVersion === 2
+          && await pathExists(legacyWorker, fs)) {
+        await fs.rename(legacyWorker, legacyState.backup);
+        legacyState.retired = true;
+      }
+
+      await fs.rename(manifestPath, manifestState.backup);
+      manifestState.backedUp = true;
+      await fs.rename(stagedManifest, manifestPath);
+      manifestState.published = true;
+      committed = true;
+    } catch (error) {
+      const rollbackErrors = await rollbackPublication({
+        fs,
+        directoryStates,
+        manifestPath,
+        manifestState,
+        legacyWorker,
+        legacyState,
+      });
+      if (rollbackErrors.length > 0) {
+        throw new Error(
+          `${error.message} Rollback also failed: ${rollbackErrors.map((failure) => failure.message).join('; ')}`,
+          { cause: error },
+        );
+      }
+      throw error;
+    }
+  } finally {
+    await fs.rm(manifestStageDirectory, { recursive: true, force: true });
+    if (committed) {
+      const cleanup = [
+        ...directoryStates.filter((state) => state.backedUp).map((state) => state.backup),
+        ...(manifestState.backedUp ? [manifestState.backup] : []),
+        ...(legacyState.retired ? [legacyState.backup] : []),
+      ];
+      const results = await Promise.allSettled(
+        cleanup.map((backup) => fs.rm(backup, { recursive: true, force: true })),
+      );
+      for (const result of results) {
+        if (result.status === 'rejected') {
+          log(`[worker-publish] Backup cleanup failed after successful publication: ${result.reason}`);
+        }
+      }
+    }
+  }
+}
+
+async function rollbackPublication({
+  fs, directoryStates, manifestPath, manifestState, legacyWorker, legacyState,
+}) {
+  const errors = [];
+  await attemptRollback(errors, async () => {
+    if (manifestState.published) {
+      await fs.rm(manifestPath, { force: true });
+    }
+    if (manifestState.backedUp) {
+      await fs.rename(manifestState.backup, manifestPath);
+    }
+  });
+  await attemptRollback(errors, async () => {
+    if (legacyState.retired) {
+      await fs.rename(legacyState.backup, legacyWorker);
+    }
+  });
+  for (const state of [...directoryStates].reverse()) {
+    await attemptRollback(errors, async () => {
+      if (state.published) {
+        await fs.rm(state.destination, { recursive: true, force: true });
+      }
+      if (state.backedUp) {
+        await fs.rename(state.backup, state.destination);
+      }
+    });
+  }
+  return errors;
+}
+
+async function attemptRollback(errors, operation) {
+  try {
+    await operation();
+  } catch (error) {
+    errors.push(error);
+  }
+}
+
+function updatedManifestForBundles(current, target, prepared) {
+  let updated = JSON.parse(JSON.stringify(current));
+  const ordered = [...prepared].sort((left, right) => (
+    left.bundleName === right.bundleName ? 0 : left.bundleName === 'cpu' ? -1 : 1
+  ));
+  for (const { bundleName, bundle } of ordered) {
+    updated = updated.manifestVersion === 2
+      ? replaceWorkerBundle(updated, target, bundleName, bundle)
+      : updateLegacyManifest(updated, target, bundleName, bundle);
+  }
+  validateProspectiveManifest(updated);
+  return updated;
+}
+
+export function createUpdatedWorkerManifest(current, target, bundles) {
+  return updatedManifestForBundles(
+    current,
+    target,
+    Object.entries(bundles).map(([bundleName, bundle]) => ({ bundleName, bundle })),
+  );
+}
+
+function validateProspectiveManifest(manifest) {
+  if (manifest.manifestVersion === 2) {
+    parseWorkerManifest(manifest);
+    return;
+  }
+  const workers = legacyWorkers(manifest);
+  for (const target of Object.keys(workers)) {
+    legacyWorkerBundle(workers, target);
+  }
+}
+
+function uniqueBackupPath(target) {
+  return path.join(path.dirname(target), `.${path.basename(target)}.backup-${randomUUID()}`);
+}
+
+async function pathExists(value, fs) {
+  try {
+    await fs.stat(value);
+    return true;
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return false;
+    }
+    throw error;
   }
 }
 
@@ -367,16 +624,40 @@ function classifyOneApiFiles(oneApiRoot, files) {
   });
 }
 
-function resolveFrom(searchDirectories) {
+function resolveFromTiers(tiers) {
   return async (dllName) => {
-    for (const directory of searchDirectories) {
-      const found = await findNamedFile(directory, dllName);
-      if (found) {
-        return found;
+    for (const tier of tiers) {
+      const candidates = [];
+      for (const directory of tier.directories) {
+        const found = await findNamedFile(directory, dllName);
+        if (found && !candidates.some((candidate) => normalizedSourcePath(candidate) === normalizedSourcePath(found))) {
+          candidates.push(found);
+        }
+      }
+      if (tier.rejectAmbiguous && candidates.length > 1) {
+        throw new Error(
+          `Ambiguous ${tier.label} dependency ${dllName}; distinct candidates: ${candidates.join(', ')}.`,
+        );
+      }
+      if (candidates.length > 0) {
+        return candidates[0];
       }
     }
     return undefined;
   };
+}
+
+function uniqueSourcePaths(values) {
+  const unique = [];
+  const seen = new Set();
+  for (const value of values) {
+    const normalized = normalizedSourcePath(value);
+    if (!seen.has(normalized)) {
+      seen.add(normalized);
+      unique.push(value);
+    }
+  }
+  return unique;
 }
 
 async function findNamedFile(directory, name) {

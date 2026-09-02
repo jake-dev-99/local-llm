@@ -3,9 +3,8 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import process from 'node:process';
 
-import { sha256File } from '../src/worker/workerManifest.ts';
 import { cmakeOptionsForBuild, parseWorkerBuildOptions } from './worker-build-options.mjs';
-import { assembleWindowsSyclBundle, writeUpdatedManifest } from './windows-sycl-bundle.mjs';
+import { publishWindowsWorkerBuilds } from './windows-sycl-bundle.mjs';
 import { identifyOneApiCompiler, loadOneApiEnvironment, resolveOneApiFiles } from './windows-oneapi.mjs';
 import { resolveVisualStudioBuildTools } from './windows-vs-tools.mjs';
 
@@ -60,8 +59,12 @@ for (const backend of backends) {
     ninjaPath: windowsTools?.ninja,
   }));
 }
-for (const build of builds) {
-  await publishWorker(build);
+if (options.target === 'win32-x64') {
+  await publishWindowsWorkers(builds);
+} else {
+  for (const build of builds) {
+    await publishWorker(build);
+  }
 }
 
 async function buildWorker({
@@ -95,45 +98,51 @@ async function buildWorker({
   return { target, backend, environment, buildDirectory, binary };
 }
 
-async function publishWorker({ target, backend, environment, binary }) {
-  const destination = workerDestination(target, backend);
-  if (target === 'win32-x64' && backend === 'sycl') {
-    const oneApi = resolveOneApiFiles(environment);
-    const bundle = await assembleWindowsSyclBundle({
+async function publishWindowsWorkers(completedBuilds) {
+  const syclBuild = completedBuilds.find((build) => build.backend === 'sycl');
+  let syclBundleOptions;
+  if (syclBuild) {
+    const oneApi = resolveOneApiFiles(syclBuild.environment);
+    syclBundleOptions = {
       root,
-      buildOutput: path.dirname(binary),
-      destination: path.dirname(destination),
       oneApiRoot: oneApi.oneApiRoot,
       vcToolsRedistDir: oneApi.vcToolsRedistDir,
-      oneApiPath: environmentValue(environment, 'PATH'),
-      systemRoot: environmentValue(environment, 'SystemRoot'),
-      environment,
+      oneApiPath: environmentValue(syclBuild.environment, 'PATH'),
+      systemRoot: environmentValue(syclBuild.environment, 'SystemRoot'),
+      environment: syclBuild.environment,
       runProcess: captureProcess,
       runDumpbin: async (absoluteFile) => await capture(
         'dumpbin',
         ['/nologo', '/dependents', absoluteFile],
         root,
-        environment,
+        syclBuild.environment,
       ),
-    });
-    await writeUpdatedManifest(root, target, backend, bundle);
-  } else {
-    if (target === 'win32-x64') {
-      await rm(path.dirname(destination), { recursive: true, force: true });
-    }
-    await mkdir(path.dirname(destination), { recursive: true });
-    await cp(binary, destination);
-    if (target === 'win32-x64') {
-      const relative = toPosix(path.relative(root, destination));
-      await writeUpdatedManifest(root, target, backend, {
-        executable: relative,
-        files: [{ path: relative, sha256: await sha256File(destination) }],
-      });
-    }
+    };
   }
-  if (target === 'darwin-arm64') {
-    await chmod(destination, 0o755);
+
+  await publishWindowsWorkerBuilds({
+    root,
+    target: 'win32-x64',
+    builds: completedBuilds.map((build) => ({
+      backend: build.backend,
+      binary: build.binary,
+      destination: path.dirname(workerDestination(build.target, build.backend)),
+      bundleOptions: build.backend === 'sycl' ? syclBundleOptions : undefined,
+    })),
+  });
+  for (const build of completedBuilds) {
+    const destination = workerDestination(build.target, build.backend);
+    console.log(
+      `Bundled llama.cpp ${LLAMA_CPP_COMMIT} ${build.backend} worker at ${destination}`,
+    );
   }
+}
+
+async function publishWorker({ target, backend, binary }) {
+  const destination = workerDestination(target, backend);
+  await mkdir(path.dirname(destination), { recursive: true });
+  await cp(binary, destination);
+  await chmod(destination, 0o755);
   console.log(`Bundled llama.cpp ${LLAMA_CPP_COMMIT} ${backend} worker at ${destination}`);
 }
 
@@ -224,10 +233,6 @@ function cleanBuildEnvironment(environment) {
 function environmentValue(environment, name) {
   const key = Object.keys(environment).find((candidate) => candidate.toLowerCase() === name.toLowerCase());
   return key ? environment[key] : undefined;
-}
-
-function toPosix(value) {
-  return value.split(path.sep).join('/');
 }
 
 async function exists(value) {

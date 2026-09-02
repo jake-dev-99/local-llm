@@ -112,12 +112,17 @@ system dependencies.
 Before publishing the bundle, the build runs the staged
 `llama-server.exe --list-devices` with oneAPI development paths and variables
 removed. The build fails unless that isolated process reports `SYCL0`. A
-failure leaves the prior bundle and worker manifest unchanged; do not copy a
-missing DLL manually or switch to the CPU bundle implicitly.
+failure leaves the prior CPU bundle, SYCL bundle, and worker manifest
+unchanged; do not copy a missing DLL manually or switch to the CPU bundle
+implicitly.
 
 This must build locally from the pinned llama.cpp source. Do not substitute an upstream release archive or fabricate the SYCL files.
 
-The checked-in manifest is intentionally still version 1 before this command. The build publishes the isolated CPU entry first, then migrates to version 2 only when the SYCL bundle is assembled. If the command fails, do not hand-edit hashes or claim that migration completed.
+The checked-in manifest is intentionally still version 1 before this command.
+The build completes CPU and SYCL staging plus the clean `SYCL0` gate first,
+then publishes both directories and the version-2 manifest as one recoverable
+transaction. If any publication step fails, it restores the prior directories
+and manifest; do not hand-edit hashes or claim that migration completed.
 
 Before changing production runtime selection, confirm the build produced:
 

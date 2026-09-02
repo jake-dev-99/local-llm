@@ -1,14 +1,15 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rename as fsRename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
 import {
-  assembleWindowsSyclBundle,
   collectDependencyClosure,
+  createUpdatedWorkerManifest,
   parseDumpbinDependents,
-  writeUpdatedManifest,
+  prepareWindowsSyclBundle,
+  publishWindowsWorkerBuilds,
 } from './windows-sycl-bundle.mjs';
 
 test('parses only DLL names from dumpbin dependent output', () => {
@@ -53,7 +54,7 @@ test('rejects distinct source files that flatten to the same DLL name', async ()
 
 test('copies dynamically loaded llama.cpp CPU and SYCL backend modules', async (context) => {
   const fixture = await syclFixture(context);
-  const bundle = await assembleWindowsSyclBundle(fixture.options);
+  const { bundle } = await prepareWindowsSyclBundle(fixture.options);
   for (const name of ['ggml-cpu.dll', 'ggml-sycl.dll']) {
     assert.equal(bundle.files.some((file) => file.path.endsWith(`/${name}`)), true);
   }
@@ -63,7 +64,7 @@ test('fails before publishing when a required llama.cpp backend module is missin
   const fixture = await syclFixture(context);
   await rm(fixture.build('ggml-cpu.dll'));
   await assert.rejects(
-    assembleWindowsSyclBundle(fixture.options),
+    prepareWindowsSyclBundle(fixture.options),
     /Required llama\.cpp backend module ggml-cpu\.dll was not found/,
   );
 });
@@ -85,17 +86,17 @@ test('copies the VC redistributable CRT instead of a PATH System32 copy', async 
       : ''
   );
 
-  await assembleWindowsSyclBundle(fixture.options);
+  const prepared = await prepareWindowsSyclBundle(fixture.options);
 
   assert.equal(
-    await readFile(path.join(fixture.options.destination, 'VCRUNTIME140.dll'), 'utf8'),
+    await readFile(path.join(prepared.staging, 'VCRUNTIME140.dll'), 'utf8'),
     'redistributable CRT',
   );
 });
 
 test('bundles renamed SYCL and MKL runtimes from actual dependency closure', async (context) => {
   const fixture = await syclFixture(context);
-  const bundle = await assembleWindowsSyclBundle(fixture.options);
+  const { bundle } = await prepareWindowsSyclBundle(fixture.options);
   for (const name of ['sycl42.dll', 'mkl_sycl_blas.42.dll', 'mkl_core.42.dll']) {
     assert.equal(bundle.files.some((file) => file.path.endsWith(`/${name}`)), true);
   }
@@ -106,14 +107,51 @@ test('reports the importing file for an unresolved non-system dependency', async
   const fixture = await syclFixture(context);
   fixture.imports.set('ggml-sycl.dll', ['missing-runtime.dll']);
   await assert.rejects(
-    assembleWindowsSyclBundle(fixture.options),
+    prepareWindowsSyclBundle(fixture.options),
     /missing-runtime\.dll imported by .*ggml-sycl\.dll.*searched/is,
+  );
+});
+
+test('does not resolve a non-system dependency from an unrelated PATH directory', async (context) => {
+  const fixture = await syclFixture(context);
+  const unrelated = path.join(fixture.options.root, 'unrelated-sdk/bin');
+  await mkdir(unrelated, { recursive: true });
+  await writeFile(path.join(unrelated, 'decoy-runtime.dll'), 'unrelated PATH DLL');
+  fixture.options.pathDirectories = [...fixture.options.pathDirectories, unrelated];
+  fixture.imports.set('ggml-sycl.dll', ['decoy-runtime.dll']);
+
+  await assert.rejects(
+    prepareWindowsSyclBundle(fixture.options),
+    (error) => {
+      assert.match(error.message, /decoy-runtime\.dll imported by .*ggml-sycl\.dll.*could not be resolved/is);
+      assert.doesNotMatch(error.message, /unrelated-sdk/);
+      return true;
+    },
+  );
+});
+
+test('rejects distinct dependency candidates within the active oneAPI tier', async (context) => {
+  const fixture = await syclFixture(context);
+  const [compilerBin, mklBin] = fixture.options.pathDirectories;
+  await writeFile(path.join(compilerBin, 'duplicate-runtime.dll'), 'compiler copy');
+  await writeFile(path.join(mklBin, 'duplicate-runtime.dll'), 'mkl copy');
+  fixture.imports.set('ggml-sycl.dll', ['duplicate-runtime.dll']);
+
+  await assert.rejects(
+    prepareWindowsSyclBundle(fixture.options),
+    (error) => {
+      assert.match(error.message, /Ambiguous active oneAPI dependency duplicate-runtime\.dll/i);
+      assert.match(error.message, /compiler.*2026\.1.*bin.*duplicate-runtime\.dll/is);
+      assert.match(error.message, /mkl.*2026\.1.*bin.*duplicate-runtime\.dll/is);
+      assert.match(error.message, /imported by .*ggml-sycl\.dll/is);
+      return true;
+    },
   );
 });
 
 test('collects licenses for Intel files found only through PE closure', async (context) => {
   const fixture = await syclFixture(context);
-  const bundle = await assembleWindowsSyclBundle(fixture.options);
+  const { bundle } = await prepareWindowsSyclBundle(fixture.options);
   assert.equal(bundle.files.some((file) => file.path.includes('/licenses/compiler/')), true);
   assert.equal(bundle.files.some((file) => file.path.includes('/licenses/mkl/')), true);
 });
@@ -122,7 +160,7 @@ test('logs the active runtime scope, selected resources, resolved files, and sys
   const fixture = await syclFixture(context);
   const messages = [];
   fixture.options.log = (message) => messages.push(message);
-  await assembleWindowsSyclBundle(fixture.options);
+  await prepareWindowsSyclBundle(fixture.options);
   const output = messages.join('\n');
   assert.match(output, /oneAPI root:.*oneapi/is);
   assert.match(output, /active oneAPI runtime directory:.*compiler.*2026\.1.*bin/is);
@@ -137,19 +175,19 @@ test('does not run the PE dependency inspector on SPIR-V companion data', async 
     assert.match(absoluteFile, /\.(?:exe|dll)$/i);
     return '';
   };
-  await assembleWindowsSyclBundle(fixture.options);
+  await prepareWindowsSyclBundle(fixture.options);
 });
 
-test('replaces only the exact sycl destination directory', async (context) => {
+test('stages the SYCL bundle without changing the explicit CPU directory', async (context) => {
   const fixture = await syclFixture(context);
   await writeFile(path.join(fixture.cpuDirectory, 'llama-server.exe'), 'cpu');
-  await assembleWindowsSyclBundle(fixture.options);
+  await prepareWindowsSyclBundle(fixture.options);
   assert.equal(await readFile(path.join(fixture.cpuDirectory, 'llama-server.exe'), 'utf8'), 'cpu');
 });
 
 test('copies controlling licenses and returns sorted hashes for every file', async (context) => {
   const fixture = await syclFixture(context);
-  const bundle = await assembleWindowsSyclBundle(fixture.options);
+  const { bundle } = await prepareWindowsSyclBundle(fixture.options);
   const paths = bundle.files.map((file) => file.path);
   assert.deepEqual(paths, [...paths].sort());
   assert.equal(paths.some((file) => file.includes('/licenses/compiler/license.txt')), true);
@@ -161,7 +199,7 @@ test('requires controlling license material for every copied oneAPI component', 
   const fixture = await syclFixture(context);
   await rm(path.join(fixture.options.oneApiRoot, 'mkl/2026.1/licensing'), { recursive: true });
   await assert.rejects(
-    assembleWindowsSyclBundle(fixture.options),
+    prepareWindowsSyclBundle(fixture.options),
     /No controlling license material was found for oneAPI component mkl/,
   );
 });
@@ -175,7 +213,10 @@ test('keeps the published bundle when staged verification reports a DLL-load fai
     stderr: 'The code execution cannot proceed because sycl42.dll was not found.',
   });
 
-  await assert.rejects(assembleWindowsSyclBundle(fixture.options), /clean-environment launch exited with code 3221225781/);
+  await assert.rejects(
+    prepareWindowsSyclBundle(fixture.options),
+    /clean-environment launch exited with code 3221225781/,
+  );
   assert.equal(await readFile(existing, 'utf8'), 'existing bundle');
 });
 
@@ -184,20 +225,117 @@ test('keeps the published bundle when staged verification does not report SYCL0'
   const existing = await existingBundleFile(fixture.options.destination);
   fixture.options.runProcess = async () => ({ code: 0, stdout: 'CPU0: Generic CPU', stderr: '' });
 
-  await assert.rejects(assembleWindowsSyclBundle(fixture.options), /device discovery did not report SYCL0/);
+  await assert.rejects(prepareWindowsSyclBundle(fixture.options), /device discovery did not report SYCL0/);
   assert.equal(await readFile(existing, 'utf8'), 'existing bundle');
 });
 
-test('updates only one version-2 manifest bundle with stable JSON formatting', async (context) => {
+test('backend all leaves CPU, SYCL, and manifest byte-identical when the clean SYCL gate fails', async (context) => {
+  const fixture = await publicationFixture(context);
+  const before = await publicationSnapshot(fixture);
+  fixture.syclOptions.runProcess = async () => ({
+    code: 3221225781,
+    stdout: '',
+    stderr: 'staged SYCL runtime could not load',
+  });
+
+  await assert.rejects(
+    publishWindowsWorkerBuilds(fixture.options()),
+    /clean-environment launch exited with code 3221225781/,
+  );
+
+  assert.deepEqual(await publicationSnapshot(fixture), before);
+});
+
+test('rolls back CPU, SYCL, and manifest when a destination rename fails', async (context) => {
+  const fixture = await publicationFixture(context);
+  const before = await publicationSnapshot(fixture);
+  let injected = false;
+
+  await assert.rejects(
+    publishWindowsWorkerBuilds(fixture.options({
+      fileOperations: {
+        rename: async (source, destination) => {
+          if (!injected && path.basename(source).startsWith('.sycl-stage-')
+              && destination === fixture.syclDirectory) {
+            injected = true;
+            throw new Error('simulated destination rename failure');
+          }
+          await fsRename(source, destination);
+        },
+      },
+    })),
+    /simulated destination rename failure/,
+  );
+
+  assert.equal(injected, true);
+  assert.deepEqual(await publicationSnapshot(fixture), before);
+});
+
+test('a SYCL-only atomic manifest write failure leaves CPU, SYCL, and manifest byte-identical', async (context) => {
+  const fixture = await publicationFixture(context);
+  const before = await publicationSnapshot(fixture);
+  let injected = false;
+
+  await assert.rejects(
+    publishWindowsWorkerBuilds(fixture.options({
+      backends: ['sycl'],
+      fileOperations: {
+        rename: async (source, destination) => {
+          if (!injected && source.includes('.manifest-stage-') && destination === fixture.manifestPath) {
+            injected = true;
+            throw new Error('simulated manifest write failure');
+          }
+          await fsRename(source, destination);
+        },
+      },
+    })),
+    /simulated manifest write failure/,
+  );
+
+  assert.equal(injected, true);
+  assert.deepEqual(await publicationSnapshot(fixture), before);
+});
+
+test('publishes CPU, SYCL, and their validated manifest together', async (context) => {
+  const fixture = await publicationFixture(context);
+
+  const published = await publishWindowsWorkerBuilds(fixture.options());
+
+  assert.equal(await readFile(path.join(fixture.cpuDirectory, 'llama-server.exe'), 'utf8'), 'new CPU worker');
+  assert.equal(await readFile(path.join(fixture.syclDirectory, 'llama-server.exe'), 'utf8'), 'llama-server.exe');
+  const manifest = JSON.parse(await readFile(fixture.manifestPath, 'utf8'));
+  assert.deepEqual(manifest.platforms['win32-x64'].bundles.cpu, published.cpu);
+  assert.deepEqual(manifest.platforms['win32-x64'].bundles.sycl, published.sycl);
+  await assert.rejects(readFile(path.join(fixture.cpuDirectory, 'cpu-resource.bin')), { code: 'ENOENT' });
+  await assert.rejects(readFile(path.join(fixture.syclDirectory, 'old-runtime.dll')), { code: 'ENOENT' });
+});
+
+test('backend all transaction migrates the legacy manifest and retires its Windows worker', async (context) => {
+  const fixture = await publicationFixture(context);
+  const legacyWorker = path.join(path.dirname(fixture.cpuDirectory), 'llama-server.exe');
+  await writeFile(fixture.manifestPath, `${JSON.stringify(legacyManifest(), null, 2)}\n`);
+  await writeFile(legacyWorker, 'legacy Windows worker');
+
+  const published = await publishWindowsWorkerBuilds(fixture.options());
+
+  const manifest = JSON.parse(await readFile(fixture.manifestPath, 'utf8'));
+  assert.equal(manifest.manifestVersion, 2);
+  assert.deepEqual(manifest.platforms['win32-x64'].bundles, {
+    sycl: published.sycl,
+    cpu: published.cpu,
+  });
+  await assert.rejects(readFile(legacyWorker), { code: 'ENOENT' });
+});
+
+test('updates only one version-2 manifest bundle', async (context) => {
   const fixture = await syclFixture(context);
-  const bundle = await assembleWindowsSyclBundle(fixture.options);
-  const manifestPath = path.join(fixture.options.root, 'resources/workers/manifest.json');
+  const { bundle } = await prepareWindowsSyclBundle(fixture.options);
   const hash = '0'.repeat(64);
   const cpu = {
     executable: 'resources/workers/win32-x64/cpu/llama-server.exe',
     files: [{ path: 'resources/workers/win32-x64/cpu/llama-server.exe', sha256: hash }],
   };
-  await writeFile(manifestPath, `${JSON.stringify({
+  const current = {
     manifestVersion: 2,
     llamaCppCommit: '60eeeb6082c1126bb8bc72902c83123cd056811b',
     llamaCppBuild: 'b10472',
@@ -210,39 +348,15 @@ test('updates only one version-2 manifest bundle with stable JSON formatting', a
         bundles: { sycl: cpu, cpu },
       },
     },
-  }, null, 2)}\n`);
+  };
 
-  await writeUpdatedManifest(fixture.options.root, 'win32-x64', 'sycl', bundle);
-
-  const serialized = await readFile(manifestPath, 'utf8');
-  const updated = JSON.parse(serialized);
-  assert.equal(serialized.endsWith('\n'), true);
+  const updated = createUpdatedWorkerManifest(current, 'win32-x64', { sycl: bundle });
   assert.deepEqual(updated.platforms['win32-x64'].bundles.cpu, cpu);
   assert.deepEqual(updated.platforms['win32-x64'].bundles.sycl, bundle);
+  assert.deepEqual(current.platforms['win32-x64'].bundles.sycl, cpu);
 });
 
-test('migrates the legacy manifest after CPU and SYCL bundles are published', async (context) => {
-  const root = await mkdtemp(path.join(tmpdir(), 'worker-manifest-migration-'));
-  context.after(() => rm(root, { recursive: true, force: true }));
-  const manifestPath = path.join(root, 'resources/workers/manifest.json');
-  const legacyWindowsWorker = path.join(root, 'resources/workers/win32-x64/llama-server.exe');
-  await mkdir(path.dirname(manifestPath), { recursive: true });
-  await mkdir(path.dirname(legacyWindowsWorker), { recursive: true });
-  await writeFile(legacyWindowsWorker, 'legacy worker');
-  await writeFile(manifestPath, `${JSON.stringify({
-    llamaCppCommit: '60eeeb6082c1126bb8bc72902c83123cd056811b',
-    llamaCppBuild: 'b10472',
-    workers: {
-      'darwin-arm64': {
-        path: 'resources/workers/darwin-arm64/llama-server',
-        sha256: 'a'.repeat(64),
-      },
-      'win32-x64': {
-        path: 'resources/workers/win32-x64/llama-server.exe',
-        sha256: 'b'.repeat(64),
-      },
-    },
-  }, null, 2)}\n`);
+test('migrates the legacy manifest after CPU and SYCL bundles are prepared', () => {
   const cpu = {
     executable: 'resources/workers/win32-x64/cpu/llama-server.exe',
     files: [{
@@ -258,23 +372,20 @@ test('migrates the legacy manifest after CPU and SYCL bundles are published', as
         sha256: 'd'.repeat(64),
       },
       {
-        path: 'resources/workers/win32-x64/sycl/sycl8.dll',
+        path: 'resources/workers/win32-x64/sycl/sycl42.dll',
         sha256: 'e'.repeat(64),
       },
     ],
   };
 
-  await writeUpdatedManifest(root, 'win32-x64', 'cpu', cpu);
-  const intermediate = JSON.parse(await readFile(manifestPath, 'utf8'));
+  const intermediate = createUpdatedWorkerManifest(legacyManifest(), 'win32-x64', { cpu });
   assert.equal(intermediate.manifestVersion, undefined);
   assert.deepEqual(intermediate.workers['win32-x64'], {
     path: cpu.executable,
     sha256: cpu.files[0].sha256,
   });
 
-  await writeUpdatedManifest(root, 'win32-x64', 'sycl', sycl);
-
-  const migrated = JSON.parse(await readFile(manifestPath, 'utf8'));
+  const migrated = createUpdatedWorkerManifest(intermediate, 'win32-x64', { sycl });
   assert.equal(migrated.manifestVersion, 2);
   assert.deepEqual(migrated.platforms['darwin-arm64'].modes, {
     auto: { bundle: 'default', backend: 'metal' },
@@ -285,37 +396,17 @@ test('migrates the legacy manifest after CPU and SYCL bundles are published', as
     cpu: { bundle: 'cpu', backend: 'cpu' },
   });
   assert.deepEqual(migrated.platforms['win32-x64'].bundles, { sycl, cpu });
-  await assert.rejects(readFile(legacyWindowsWorker), { code: 'ENOENT' });
 });
 
-test('rejects a legacy SYCL publish until the CPU bundle is isolated', async (context) => {
-  const root = await mkdtemp(path.join(tmpdir(), 'worker-manifest-sycl-first-'));
-  context.after(() => rm(root, { recursive: true, force: true }));
-  const manifestPath = path.join(root, 'resources/workers/manifest.json');
-  await mkdir(path.dirname(manifestPath), { recursive: true });
-  await writeFile(manifestPath, `${JSON.stringify({
-    llamaCppCommit: '60eeeb6082c1126bb8bc72902c83123cd056811b',
-    llamaCppBuild: 'b10472',
-    workers: {
-      'darwin-arm64': {
-        path: 'resources/workers/darwin-arm64/llama-server',
-        sha256: 'a'.repeat(64),
-      },
-      'win32-x64': {
-        path: 'resources/workers/win32-x64/llama-server.exe',
-        sha256: 'b'.repeat(64),
-      },
-    },
-  }, null, 2)}\n`);
-
-  await assert.rejects(
-    writeUpdatedManifest(root, 'win32-x64', 'sycl', {
+test('rejects a legacy SYCL publish until the CPU bundle is isolated', () => {
+  assert.throws(
+    () => createUpdatedWorkerManifest(legacyManifest(), 'win32-x64', { sycl: {
       executable: 'resources/workers/win32-x64/sycl/llama-server.exe',
       files: [{
         path: 'resources/workers/win32-x64/sycl/llama-server.exe',
         sha256: 'd'.repeat(64),
       }],
-    }),
+    } }),
     /Build with --backend all or publish cpu before sycl/,
   );
 });
@@ -393,4 +484,118 @@ async function existingBundleFile(destination) {
   const existing = path.join(destination, 'existing.txt');
   await writeFile(existing, 'existing bundle');
   return existing;
+}
+
+async function publicationFixture(context) {
+  const sycl = await syclFixture(context);
+  const syclDirectory = sycl.options.destination;
+  const cpuDirectory = sycl.cpuDirectory;
+  const manifestPath = path.join(sycl.options.root, 'resources/workers/manifest.json');
+  const cpuBinary = path.join(sycl.options.root, 'new-cpu/llama-server.exe');
+  await mkdir(syclDirectory, { recursive: true });
+  await mkdir(path.dirname(cpuBinary), { recursive: true });
+  await writeFile(path.join(cpuDirectory, 'llama-server.exe'), Buffer.from([0, 1, 2, 3]));
+  await writeFile(path.join(cpuDirectory, 'cpu-resource.bin'), Buffer.from([4, 5, 6]));
+  await writeFile(path.join(syclDirectory, 'llama-server.exe'), Buffer.from([7, 8, 9]));
+  await writeFile(path.join(syclDirectory, 'old-runtime.dll'), Buffer.from([10, 11, 12]));
+  await writeFile(cpuBinary, 'new CPU worker');
+  const oldCpu = manifestBundle('cpu', ['llama-server.exe', 'cpu-resource.bin'], 'a');
+  const oldSycl = manifestBundle('sycl', ['llama-server.exe', 'old-runtime.dll'], 'b');
+  await mkdir(path.dirname(manifestPath), { recursive: true });
+  await writeFile(manifestPath, Buffer.from(`${JSON.stringify({
+    manifestVersion: 2,
+    llamaCppCommit: '60eeeb6082c1126bb8bc72902c83123cd056811b',
+    llamaCppBuild: 'b10472',
+    platforms: {
+      'win32-x64': {
+        modes: {
+          auto: { bundle: 'sycl', backend: 'sycl' },
+          cpu: { bundle: 'cpu', backend: 'cpu' },
+        },
+        bundles: { cpu: oldCpu, sycl: oldSycl },
+      },
+    },
+  }, null, 4)}\n`, 'utf8'));
+
+  return {
+    cpuDirectory,
+    manifestPath,
+    syclDirectory,
+    syclOptions: sycl.options,
+    options({ backends = ['cpu', 'sycl'], fileOperations } = {}) {
+      const builds = [];
+      if (backends.includes('cpu')) {
+        builds.push({ backend: 'cpu', binary: cpuBinary, destination: cpuDirectory });
+      }
+      if (backends.includes('sycl')) {
+        builds.push({
+          backend: 'sycl',
+          binary: sycl.build('llama-server.exe'),
+          destination: syclDirectory,
+          bundleOptions: this.syclOptions,
+        });
+      }
+      return {
+        root: sycl.options.root,
+        target: 'win32-x64',
+        builds,
+        fileOperations,
+      };
+    },
+  };
+}
+
+function manifestBundle(name, files, hashCharacter) {
+  const root = `resources/workers/win32-x64/${name}`;
+  return {
+    executable: `${root}/llama-server.exe`,
+    files: files.map((file, index) => ({
+      path: `${root}/${file}`,
+      sha256: String.fromCharCode(hashCharacter.charCodeAt(0) + index).repeat(64),
+    })),
+  };
+}
+
+function legacyManifest() {
+  return {
+    llamaCppCommit: '60eeeb6082c1126bb8bc72902c83123cd056811b',
+    llamaCppBuild: 'b10472',
+    workers: {
+      'darwin-arm64': {
+        path: 'resources/workers/darwin-arm64/llama-server',
+        sha256: 'a'.repeat(64),
+      },
+      'win32-x64': {
+        path: 'resources/workers/win32-x64/llama-server.exe',
+        sha256: 'b'.repeat(64),
+      },
+    },
+  };
+}
+
+async function publicationSnapshot(fixture) {
+  return {
+    cpu: await directorySnapshot(fixture.cpuDirectory),
+    sycl: await directorySnapshot(fixture.syclDirectory),
+    manifest: await readFile(fixture.manifestPath),
+  };
+}
+
+async function directorySnapshot(root) {
+  const files = [];
+  async function visit(directory) {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const absolute = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await visit(absolute);
+      } else if (entry.isFile()) {
+        files.push([
+          path.relative(root, absolute).split(path.sep).join('/'),
+          (await readFile(absolute)).toString('base64'),
+        ]);
+      }
+    }
+  }
+  await visit(root);
+  return files.sort(([left], [right]) => left.localeCompare(right));
 }

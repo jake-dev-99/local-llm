@@ -5,7 +5,8 @@ const LEVEL_ZERO_ADAPTER = /^ur_adapter_level_zero.*\.dll$/i;
 const SYCL_DEVICE_RESOURCE = /^libsycl-.*\.spv$/i;
 const DEVELOPMENT_KEYS = new Set([
   'CMPLR_ROOT', 'CPATH', 'CMAKE_PREFIX_PATH', 'DNNLROOT', 'INCLUDE', 'LIB',
-  'LIBPATH', 'MKLROOT', 'TBBROOT', 'TCM_ROOT', 'UMF_ROOT',
+  'LIBPATH', 'LIBRARY_PATH', 'MKLROOT', 'NLSPATH', 'PKG_CONFIG_PATH', 'TBBROOT',
+  'TCM_ROOT', 'UMF_ROOT', 'UR_ADAPTERS_FORCE_LOAD', 'UR_ADAPTERS_SEARCH_PATH',
 ]);
 
 export function activeOneApiRuntimeDirectories(oneApiRoot, pathDirectories) {
@@ -38,11 +39,17 @@ export async function discoverSyclDynamicResources(activeDirectories) {
     .map((name) => path.join(runtimeDirectory, name));
 }
 
-export function createSyclVerificationEnvironment(baseEnvironment, { staging, systemRoot }) {
+export function createSyclVerificationEnvironment(baseEnvironment, { staging, systemRoot, oneApiRoot }) {
+  if (typeof oneApiRoot !== 'string' || oneApiRoot.length === 0) {
+    throw new Error('SYCL staged verification requires the active oneAPI root.');
+  }
   const clean = { ...baseEnvironment };
   for (const key of Object.keys(clean)) {
     const normalized = key.toUpperCase();
-    if (normalized === 'PATH' || normalized.startsWith('ONEAPI_') || DEVELOPMENT_KEYS.has(normalized)) {
+    if (normalized === 'PATH'
+        || normalized.startsWith('ONEAPI_')
+        || DEVELOPMENT_KEYS.has(normalized)
+        || valueReferencesRoot(clean[key], oneApiRoot)) {
       delete clean[key];
     }
   }
@@ -51,10 +58,10 @@ export function createSyclVerificationEnvironment(baseEnvironment, { staging, sy
 }
 
 export async function verifyStagedSyclBundle({
-  staging, systemRoot, baseEnvironment, runProcess,
+  staging, systemRoot, oneApiRoot, baseEnvironment, runProcess,
 }) {
   const executable = path.win32.join(staging, 'llama-server.exe');
-  const env = createSyclVerificationEnvironment(baseEnvironment, { staging, systemRoot });
+  const env = createSyclVerificationEnvironment(baseEnvironment, { staging, systemRoot, oneApiRoot });
   const result = await runProcess(executable, ['--list-devices'], { cwd: staging, env });
   const output = [result.stdout, result.stderr].filter(Boolean).join('\n').trim();
   if (result.code !== 0) {
@@ -107,6 +114,20 @@ function isAtOrBelow(root, candidate) {
   const normalizedCandidate = normalizeAbsolutePath(candidate);
   return normalizedCandidate === normalizedRoot
     || normalizedCandidate.startsWith(`${normalizedRoot}/`);
+}
+
+function valueReferencesRoot(value, root) {
+  if (!root || typeof value !== 'string') {
+    return false;
+  }
+  const entries = value.includes(';')
+    ? value.split(';')
+    : (/^[A-Za-z]:[\\/]/.test(value) ? [value] : value.split(':'));
+  return entries.some((entry) => {
+    const candidate = entry.trim().replace(/^(['"])(.*)\1$/, '$2');
+    return (path.win32.isAbsolute(candidate) || path.posix.isAbsolute(candidate))
+      && isAtOrBelow(root, candidate);
+  });
 }
 
 function normalizeAbsolutePath(value) {

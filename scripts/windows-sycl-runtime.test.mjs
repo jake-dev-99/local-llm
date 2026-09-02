@@ -57,12 +57,21 @@ test('staged verification removes oneAPI development paths and variables', async
   await verifyStagedSyclBundle({
     staging: 'C:\\bundle',
     systemRoot: 'C:\\Windows',
+    oneApiRoot: 'C:\\Intel\\oneAPI',
     baseEnvironment: {
       PATH: 'C:\\Intel\\oneAPI\\compiler\\latest\\bin;C:\\other',
       ONEAPI_ROOT: 'C:\\Intel\\oneAPI',
       CMPLR_ROOT: 'C:\\Intel\\oneAPI\\compiler\\latest',
       LIB: 'C:\\Intel\\lib',
       INCLUDE: 'C:\\Intel\\include',
+      LIBRARY_PATH: 'C:\\Intel\\oneAPI\\compiler\\latest\\lib',
+      nlspath: 'C:\\Intel\\oneAPI\\compiler\\latest\\share\\locale',
+      Pkg_Config_Path: 'C:\\Intel\\oneAPI\\compiler\\latest\\lib\\pkgconfig',
+      ur_adapters_force_load: 'C:\\Intel\\oneAPI\\compiler\\latest\\bin\\ur_adapter_level_zero.dll',
+      Ur_Adapters_Search_Path: 'C:\\Intel\\oneAPI\\compiler\\latest\\bin',
+      CUSTOM_TOOL_ROOT: 'C:\\Intel\\oneAPI\\compiler\\2026.1',
+      MIXED_RUNTIME_PATHS: 'C:\\unrelated;C:\\Intel\\oneAPI\\mkl\\2026.1\\bin',
+      UNRELATED_PATH: 'C:\\unrelated',
       SystemRoot: 'C:\\Windows',
       KEEP_ME: 'yes',
     },
@@ -77,6 +86,14 @@ test('staged verification removes oneAPI development paths and variables', async
   assert.equal(observed.options.env.ONEAPI_ROOT, undefined);
   assert.equal(observed.options.env.CMPLR_ROOT, undefined);
   assert.equal(observed.options.env.LIB, undefined);
+  assert.equal(observed.options.env.LIBRARY_PATH, undefined);
+  assert.equal(observed.options.env.nlspath, undefined);
+  assert.equal(observed.options.env.Pkg_Config_Path, undefined);
+  assert.equal(observed.options.env.ur_adapters_force_load, undefined);
+  assert.equal(observed.options.env.Ur_Adapters_Search_Path, undefined);
+  assert.equal(observed.options.env.CUSTOM_TOOL_ROOT, undefined);
+  assert.equal(observed.options.env.MIXED_RUNTIME_PATHS, undefined);
+  assert.equal(observed.options.env.UNRELATED_PATH, 'C:\\unrelated');
   assert.equal(observed.options.env.KEEP_ME, 'yes');
 });
 
@@ -84,6 +101,7 @@ test('staged verification preserves output when the worker cannot load', async (
   await assert.rejects(verifyStagedSyclBundle({
     staging: 'C:\\bundle',
     systemRoot: 'C:\\Windows',
+    oneApiRoot: 'C:\\Intel\\oneAPI',
     baseEnvironment: {},
     runProcess: async () => ({ code: 3221225781, stdout: '', stderr: 'missing runtime' }),
   }), /clean-environment launch.*3221225781.*missing runtime/is);
@@ -93,9 +111,19 @@ test('staged verification requires SYCL0', async () => {
   await assert.rejects(verifyStagedSyclBundle({
     staging: 'C:\\bundle',
     systemRoot: 'C:\\Windows',
+    oneApiRoot: 'C:\\Intel\\oneAPI',
     baseEnvironment: {},
     runProcess: async () => ({ code: 0, stdout: 'no devices', stderr: '' }),
   }), /did not report SYCL0.*no devices/is);
+});
+
+test('staged verification requires the oneAPI root used to build the worker', async () => {
+  await assert.rejects(verifyStagedSyclBundle({
+    staging: 'C:\\bundle',
+    systemRoot: 'C:\\Windows',
+    baseEnvironment: {},
+    runProcess: async () => ({ code: 0, stdout: 'SYCL0: Intel Arc Graphics', stderr: '' }),
+  }), /requires the active oneAPI root/i);
 });
 
 async function runtimeFixture(context, syclRuntimeName, compilerDirectory = 'compiler/2026.1/bin') {
