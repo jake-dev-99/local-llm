@@ -228,7 +228,7 @@ process output. They must prove:
   enumerated in source;
 - the Unified Runtime loader, all Level Zero adapter variants, and every
   adjacent `.spv` file when present are included as semantic dynamic resources;
-- an absent semantic role fails with the role and search scope;
+- an absent required semantic role fails with the role and search scope;
 - duplicate basenames from separate active component paths fail as ambiguous;
 - unresolved non-system imports identify their importing file;
 - system and driver DLLs are not copied;

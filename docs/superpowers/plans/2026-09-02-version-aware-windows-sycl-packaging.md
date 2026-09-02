@@ -1,5 +1,10 @@
 # Version-Aware Windows SYCL Packaging Implementation Plan
 
+> **Historical plan — amended:** This plan retains its original implementation
+> history. Its mandatory `libsycl-*.spv` requirement is superseded by the
+> approved design: adjacent `.spv` resources are bundled when present,
+> regardless of filename, but their absence is supported.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Package the Windows SYCL worker from its actual oneAPI runtime dependency closure without hard-coding oneAPI 2025.3.3 filenames, and reject any staged bundle that cannot discover `SYCL0` without the oneAPI development environment.

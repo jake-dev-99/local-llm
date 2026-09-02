@@ -310,6 +310,32 @@ test('publishes CPU, SYCL, and their validated manifest together', async (contex
   await assert.rejects(readFile(path.join(fixture.syclDirectory, 'old-runtime.dll')), { code: 'ENOENT' });
 });
 
+test('publishes a no-SPIR-V runtime layout after staged SYCL0 verification', async (context) => {
+  const fixture = await publicationFixture(context);
+  await rm(fixture.runtime('libsycl-fallback-bfloat16.spv'));
+  await rm(fixture.runtime('libsycl-native-bfloat16.spv'));
+  let verification;
+  fixture.syclOptions.runProcess = async (command, args, options) => {
+    verification = { command, args, options };
+    return { code: 0, stdout: 'SYCL0: Intel Arc Graphics', stderr: '' };
+  };
+
+  const published = await publishWindowsWorkerBuilds(fixture.options());
+
+  assert.deepEqual(verification.args, ['--list-devices']);
+  const manifest = JSON.parse(await readFile(fixture.manifestPath, 'utf8'));
+  const files = manifest.platforms['win32-x64'].bundles.sycl.files.map((file) => file.path);
+  assert.deepEqual(manifest.platforms['win32-x64'].bundles.sycl, published.sycl);
+  assert.equal(await readFile(path.join(fixture.syclDirectory, 'ur_loader.dll'), 'utf8'), 'ur_loader.dll');
+  assert.equal(
+    await readFile(path.join(fixture.syclDirectory, 'ur_adapter_level_zero.dll'), 'utf8'),
+    'ur_adapter_level_zero.dll',
+  );
+  assert.equal(files.some((file) => file.endsWith('/ur_loader.dll')), true);
+  assert.equal(files.some((file) => file.endsWith('/ur_adapter_level_zero.dll')), true);
+  assert.equal(files.some((file) => /\.spv$/i.test(file)), false);
+});
+
 test('backend all transaction migrates the legacy manifest and retires its Windows worker', async (context) => {
   const fixture = await publicationFixture(context);
   const legacyWorker = path.join(path.dirname(fixture.cpuDirectory), 'llama-server.exe');
@@ -463,6 +489,7 @@ async function syclFixture(context) {
     cpuDirectory,
     build: (name) => path.join(buildOutput, name),
     imports,
+    runtime: (name) => path.join(compilerBin, name),
     options: {
       root,
       buildOutput,
@@ -520,6 +547,7 @@ async function publicationFixture(context) {
   return {
     cpuDirectory,
     manifestPath,
+    runtime: sycl.runtime,
     syclDirectory,
     syclOptions: sycl.options,
     options({ backends = ['cpu', 'sycl'], fileOperations } = {}) {
