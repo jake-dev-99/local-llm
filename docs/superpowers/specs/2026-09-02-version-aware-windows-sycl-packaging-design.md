@@ -85,8 +85,11 @@ OpenCL or non-Intel adapters are not semantic roots; they are included only if
 the selected roots actually depend on them.
 
 Every discovered DLL root is also passed through recursive PE dependency
-resolution. Discovery fails on ambiguous duplicate basenames from different
-source paths instead of choosing one based on search order.
+resolution. When active oneAPI component paths expose the same basename, the
+bundler compares the candidates by SHA-256. Byte-identical candidates collapse
+to one payload while every represented component remains in license discovery.
+Candidates with different contents fail as ambiguous instead of being selected
+by search order.
 
 ## Runtime search scope
 
@@ -124,10 +127,12 @@ rename only after all gates pass.
 2. Discover semantic runtime DLLs from the active compiler runtime.
 3. Compute recursive PE dependency closure from the executable, backend
    modules, and discovered dynamic DLL roots.
-4. Reject unresolved non-system imports and source filename collisions.
+4. Reject unresolved non-system imports and content-distinct source filename
+   collisions; collapse byte-identical active oneAPI aliases.
 5. Copy the dependency closure into the staging directory.
-6. Classify every copied Intel file by its component directory below
-   `ONEAPI_ROOT` and copy that component's controlling license material.
+6. Classify every copied Intel file and every equivalent oneAPI alias by its
+   component directory below `ONEAPI_ROOT`, then copy each represented
+   component's controlling license material.
 7. Generate the normal bundle description containing the executable and every
    staged file hash.
 8. Run clean-environment verification from the staging directory.
@@ -221,7 +226,9 @@ process output. They must prove:
   as semantic runtime DLLs;
 - a compiler older than oneAPI 2026 is rejected before CMake;
 - an absent required semantic role fails with the role and search scope;
-- duplicate basenames from separate active component paths fail as ambiguous;
+- byte-identical duplicate basenames from separate active component paths
+  collapse to one payload and retain all represented component licenses;
+- duplicate basenames with different contents fail as ambiguous;
 - unresolved non-system imports identify their importing file;
 - system and driver DLLs are not copied;
 - every copied Intel component contributes its controlling license files;

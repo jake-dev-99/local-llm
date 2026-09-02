@@ -80,6 +80,11 @@ and controlling licenses are copied into the SYCL worker bundle. The Intel graph
 a host prerequisite because it supplies the Level Zero loader and GPU driver; a standalone Level
 Zero SDK path is not used by either the build or the installed extension.
 
+oneAPI 2026 can expose the same runtime DLL through more than one active component path. For
+example, `UMF.dll` may appear under both `compiler\latest\bin` and `umf\latest\bin`. The bundler
+compares those candidates by SHA-256: byte-identical copies collapse to one bundled DLL and retain
+license material for every represented component, while different contents fail as ambiguous.
+
 Run these preflight checks from Git Bash or zsh:
 
 ```bash

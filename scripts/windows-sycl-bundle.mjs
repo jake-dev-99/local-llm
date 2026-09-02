@@ -115,6 +115,8 @@ export async function prepareWindowsSyclBundle(options) {
     ...systemDirectories,
   ];
   const excludedSystemDependencies = new Set();
+  const equivalentOneApiSources = new Map();
+  const identicalDependencyGroups = new Map();
   const closureOptions = {
     imports: async (absoluteFile) => (
       /\.(?:exe|dll)$/i.test(absoluteFile)
@@ -123,7 +125,21 @@ export async function prepareWindowsSyclBundle(options) {
     ),
     resolve: resolveFromTiers([
       { label: 'build output', directories: [options.buildOutput] },
-      { label: 'active oneAPI', directories: activeDirectories, rejectAmbiguous: true },
+      {
+        label: 'active oneAPI',
+        directories: activeDirectories,
+        rejectAmbiguous: true,
+        onIdenticalCandidates: ({ dllName, candidates, sha256 }) => {
+          for (const candidate of candidates) {
+            equivalentOneApiSources.set(normalizedSourcePath(candidate), candidate);
+          }
+          identicalDependencyGroups.set(`${dllName.toLowerCase()}:${sha256}`, {
+            dllName,
+            candidates,
+            sha256,
+          });
+        },
+      },
       { label: 'VC redistributable', directories: [vcRuntime] },
       { label: 'Windows system', directories: systemDirectories },
     ]),
@@ -147,7 +163,10 @@ export async function prepareWindowsSyclBundle(options) {
   );
   const licenses = await collectControllingLicenses(
     options.oneApiRoot,
-    classifyOneApiFiles(options.oneApiRoot, bundleSources),
+    classifyOneApiFiles(options.oneApiRoot, [
+      ...bundleSources,
+      ...equivalentOneApiSources.values(),
+    ]),
   );
   log(`[sycl-package] oneAPI root: ${options.oneApiRoot}`);
   for (const directory of activeDirectories) {
@@ -155,6 +174,12 @@ export async function prepareWindowsSyclBundle(options) {
   }
   for (const file of dynamicRuntimeDlls) {
     log(`[sycl-package] dynamic SYCL runtime DLL: ${file}`);
+  }
+  for (const { dllName, candidates, sha256 } of identicalDependencyGroups.values()) {
+    log(
+      `[sycl-package] collapsed byte-identical active oneAPI dependency ${dllName} `
+      + `(sha256 ${sha256}): ${candidates.join(', ')}`,
+    );
   }
   for (const file of bundleSources) {
     log(`[sycl-package] resolved bundle source: ${file}`);
@@ -635,9 +660,13 @@ function resolveFromTiers(tiers) {
         }
       }
       if (tier.rejectAmbiguous && candidates.length > 1) {
-        throw new Error(
-          `Ambiguous ${tier.label} dependency ${dllName}; distinct candidates: ${candidates.join(', ')}.`,
-        );
+        const hashes = await Promise.all(candidates.map((candidate) => sha256File(candidate)));
+        if (new Set(hashes).size > 1) {
+          throw new Error(
+            `Ambiguous ${tier.label} dependency ${dllName}; distinct candidates: ${candidates.join(', ')}.`,
+          );
+        }
+        tier.onIdenticalCandidates?.({ dllName, candidates, sha256: hashes[0] });
       }
       if (candidates.length > 0) {
         return candidates[0];

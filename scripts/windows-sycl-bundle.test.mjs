@@ -149,6 +149,33 @@ test('rejects distinct dependency candidates within the active oneAPI tier', asy
   );
 });
 
+test('collapses byte-identical oneAPI component aliases and retains both component licenses', async (context) => {
+  const fixture = await syclFixture(context);
+  const compilerBin = path.join(fixture.options.oneApiRoot, 'compiler/latest/bin');
+  const umfBin = path.join(fixture.options.oneApiRoot, 'umf/latest/bin');
+  const identicalUmf = Buffer.from('identical oneAPI 2026 UMF runtime');
+  await mkdir(compilerBin, { recursive: true });
+  await writeFile(path.join(compilerBin, 'UMF.dll'), identicalUmf);
+  await mkdir(umfBin, { recursive: true });
+  await writeFile(path.join(umfBin, 'UMF.dll'), identicalUmf);
+  await mkdir(path.join(fixture.options.oneApiRoot, 'umf/latest/licensing'), { recursive: true });
+  await writeFile(
+    path.join(fixture.options.oneApiRoot, 'umf/latest/licensing/license.txt'),
+    'license for umf',
+  );
+  fixture.options.pathDirectories.push(compilerBin, umfBin);
+  fixture.imports.set('ur_adapter_level_zero.dll', ['UMF.dll']);
+  const messages = [];
+  fixture.options.log = (message) => messages.push(message);
+
+  const { bundle } = await prepareWindowsSyclBundle(fixture.options);
+
+  assert.equal(bundle.files.filter((file) => file.path.endsWith('/UMF.dll')).length, 1);
+  assert.equal(bundle.files.some((file) => file.path.includes('/licenses/compiler/')), true);
+  assert.equal(bundle.files.some((file) => file.path.includes('/licenses/umf/')), true);
+  assert.match(messages.join('\n'), /identical active oneAPI dependency UMF\.dll/i);
+});
+
 test('collects licenses for Intel files found only through PE closure', async (context) => {
   const fixture = await syclFixture(context);
   const { bundle } = await prepareWindowsSyclBundle(fixture.options);
