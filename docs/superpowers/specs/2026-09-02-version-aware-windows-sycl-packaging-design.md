@@ -83,8 +83,8 @@ filenames:
 
 - exactly one active Unified Runtime loader named `ur_loader.dll`;
 - one or more Level Zero adapters matching `ur_adapter_level_zero*.dll`;
-- every installed `libsycl-*.spv` resource adjacent to the selected Unified
-  Runtime loader; and
+- every installed adjacent `.spv` resource, regardless of filename, beside the
+  selected Unified Runtime loader; its absence is supported; and
 - the Windows Unified Runtime proxy loader when it is present in the active
   compiler runtime directory.
 
@@ -226,8 +226,8 @@ process output. They must prove:
   `sycl8.dll`;
 - versioned MKL DLL basenames are followed through PE closure rather than
   enumerated in source;
-- the Unified Runtime loader, all Level Zero adapter variants, and adjacent
-  `libsycl-*.spv` files are included as semantic dynamic resources;
+- the Unified Runtime loader, all Level Zero adapter variants, and every
+  adjacent `.spv` file when present are included as semantic dynamic resources;
 - an absent semantic role fails with the role and search scope;
 - duplicate basenames from separate active component paths fail as ambiguous;
 - unresolved non-system imports identify their importing file;

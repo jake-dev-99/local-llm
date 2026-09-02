@@ -2,7 +2,7 @@ import { readdir } from 'node:fs/promises';
 import path from 'node:path';
 
 const LEVEL_ZERO_ADAPTER = /^ur_adapter_level_zero.*\.dll$/i;
-const SYCL_DEVICE_RESOURCE = /^libsycl-.*\.spv$/i;
+const SPIRV_RESOURCE = /\.spv$/i;
 const DEVELOPMENT_KEYS = new Set([
   'CMPLR_ROOT', 'CPATH', 'CMAKE_PREFIX_PATH', 'DNNLROOT', 'INCLUDE', 'LIB',
   'LIBPATH', 'LIBRARY_PATH', 'MKLROOT', 'NLSPATH', 'PKG_CONFIG_PATH', 'TBBROOT',
@@ -37,9 +37,8 @@ export async function discoverSyclDynamicResources(activeDirectories, {
     .filter((entry) => entry.isFile())
     .map((entry) => entry.name);
   const adapters = entries.filter((name) => LEVEL_ZERO_ADAPTER.test(name));
-  const resources = entries.filter((name) => SYCL_DEVICE_RESOURCE.test(name));
+  const resources = entries.filter((name) => SPIRV_RESOURCE.test(name));
   requireRole('Level Zero Unified Runtime adapter', adapters, activeDirectories);
-  requireRole('SYCL device resource (libsycl-*.spv)', resources, activeDirectories);
   const proxy = entries.filter((name) => /^ur_win_proxy_loader\.dll$/i.test(name));
   return [path.basename(loaderFiles[0]), ...adapters, ...resources, ...proxy]
     .sort()

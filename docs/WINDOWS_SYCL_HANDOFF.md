@@ -76,7 +76,8 @@ it to initialize the x64 MSVC and Windows SDK environment, then initializes oneA
 llama.cpp. A missing Windows SDK environment therefore fails before CMake instead of at the linker.
 
 The installed VSIX must not require those developer tools. Required redistributable runtime DLLs,
-SPIR-V files, and controlling licenses are copied into the SYCL worker bundle. The Intel graphics
+controlling licenses, and every adjacent SPIR-V (`.spv`) resource when installed are copied into the
+SYCL worker bundle. A layout with no adjacent `.spv` resources is supported. The Intel graphics
 driver remains a host prerequisite because it supplies the Level Zero loader and GPU driver; a
 standalone Level Zero SDK path is not used by either the build or the installed extension.
 
@@ -130,7 +131,7 @@ Before changing production runtime selection, confirm the build produced:
 resources/workers/win32-x64/cpu/llama-server.exe
 resources/workers/win32-x64/sycl/llama-server.exe
 resources/workers/win32-x64/sycl/*.dll
-resources/workers/win32-x64/sycl/*.spv
+resources/workers/win32-x64/sycl/*.spv (when installed adjacent to ur_loader.dll)
 resources/workers/win32-x64/sycl/licenses/**
 ```
 
