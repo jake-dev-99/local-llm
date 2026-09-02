@@ -139,7 +139,8 @@ export async function prepareWindowsSyclBundle(options) {
   };
   const baseRoots = [...backendModules, executable];
   await collectDependencyClosure(baseRoots, closureOptions);
-  const dynamicResources = await discoverSyclDynamicResources(activeDirectories);
+  const log = options.log ?? console.log;
+  const dynamicResources = await discoverSyclDynamicResources(activeDirectories, { log });
   const dynamicDlls = dynamicResources.filter((file) => /\.dll$/i.test(file));
   const closure = await collectDependencyClosure([...baseRoots, ...dynamicDlls], closureOptions);
   const nonPeResources = dynamicResources.filter((file) => !/\.dll$/i.test(file));
@@ -148,7 +149,6 @@ export async function prepareWindowsSyclBundle(options) {
     options.oneApiRoot,
     classifyOneApiFiles(options.oneApiRoot, bundleSources),
   );
-  const log = options.log ?? console.log;
   log(`[sycl-package] oneAPI root: ${options.oneApiRoot}`);
   for (const directory of activeDirectories) {
     log(`[sycl-package] active oneAPI runtime directory: ${directory}`);

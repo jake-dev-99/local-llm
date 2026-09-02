@@ -17,8 +17,15 @@ export function activeOneApiRuntimeDirectories(oneApiRoot, pathDirectories) {
   return active;
 }
 
-export async function discoverSyclDynamicResources(activeDirectories) {
-  const loaderFiles = await findMatchingFiles(activeDirectories, (name) => /^ur_loader\.dll$/i.test(name));
+export async function discoverSyclDynamicResources(activeDirectories, {
+  log = () => {},
+  readDirectory = readdir,
+} = {}) {
+  const loaderFiles = await findMatchingFiles(
+    activeDirectories,
+    (name) => /^ur_loader\.dll$/i.test(name),
+    { log, readDirectory },
+  );
   if (loaderFiles.length !== 1) {
     throw new Error(
       `Expected exactly one active Unified Runtime loader (ur_loader.dll), found ${loaderFiles.length}. `
@@ -26,7 +33,7 @@ export async function discoverSyclDynamicResources(activeDirectories) {
     );
   }
   const runtimeDirectory = path.dirname(loaderFiles[0]);
-  const entries = (await readdir(runtimeDirectory, { withFileTypes: true }))
+  const entries = (await readDirectoryOrSkip(runtimeDirectory, { log, readDirectory }))
     .filter((entry) => entry.isFile())
     .map((entry) => entry.name);
   const adapters = entries.filter((name) => LEVEL_ZERO_ADAPTER.test(name));
@@ -77,10 +84,10 @@ export async function verifyStagedSyclBundle({
   }
 }
 
-async function findMatchingFiles(directories, predicate) {
+async function findMatchingFiles(directories, predicate, { log, readDirectory }) {
   const matches = [];
   for (const directory of directories) {
-    const entries = await readdir(directory, { withFileTypes: true });
+    const entries = await readDirectoryOrSkip(directory, { log, readDirectory });
     for (const entry of entries) {
       if (entry.isFile() && predicate(entry.name)) {
         matches.push(path.join(directory, entry.name));
@@ -88,6 +95,18 @@ async function findMatchingFiles(directories, predicate) {
     }
   }
   return matches;
+}
+
+async function readDirectoryOrSkip(directory, { log, readDirectory }) {
+  try {
+    return await readDirectory(directory, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      throw error;
+    }
+    log(`[sycl-package] skipped missing active oneAPI runtime directory: ${directory}`);
+    return [];
+  }
 }
 
 function requireRole(role, matches, searchedDirectories) {

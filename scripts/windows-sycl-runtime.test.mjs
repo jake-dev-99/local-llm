@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -50,6 +50,75 @@ test('rejects distinct active Unified Runtime loaders instead of choosing by PAT
     discoverSyclDynamicResources([first.compilerBin, second.compilerBin]),
     /exactly one active Unified Runtime loader.*found 2/is,
   );
+});
+
+test('logs and skips a missing active directory before discovering valid runtime resources', async (context) => {
+  const fixture = await runtimeFixture(context, 'sycl42.dll');
+  const staleDirectory = path.join(path.dirname(fixture.compilerBin), 'lib', 'ocloc');
+  const messages = [];
+  const files = await discoverSyclDynamicResources([staleDirectory, fixture.compilerBin], {
+    log: (message) => messages.push(message),
+  });
+  assert.deepEqual(files.map((file) => path.basename(file)).sort(), [
+    'libsycl-fallback-bfloat16.spv',
+    'libsycl-native-bfloat16.spv',
+    'ur_adapter_level_zero.dll',
+    'ur_adapter_level_zero_v2.dll',
+    'ur_loader.dll',
+    'ur_win_proxy_loader.dll',
+  ].sort());
+  assert.deepEqual(messages, [
+    `[sycl-package] skipped missing active oneAPI runtime directory: ${staleDirectory}`,
+  ]);
+});
+
+test('reports the semantic missing-loader error when every active directory is missing', async (context) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'windows-sycl-runtime-missing-'));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const missingDirectories = [
+    path.join(root, 'compiler', 'latest', 'lib', 'ocloc'),
+    path.join(root, 'compiler', 'latest', 'bin'),
+  ];
+  const messages = [];
+  await assert.rejects(
+    discoverSyclDynamicResources(missingDirectories, { log: (message) => messages.push(message) }),
+    (error) => error.message.startsWith('Expected exactly one active Unified Runtime loader (ur_loader.dll), found 0.')
+      && !error.message.includes('scandir')
+      && !error.message.includes('ENOENT'),
+  );
+  assert.deepEqual(messages, missingDirectories.map(
+    (directory) => `[sycl-package] skipped missing active oneAPI runtime directory: ${directory}`,
+  ));
+});
+
+test('rethrows non-missing filesystem errors while scanning active directories', async () => {
+  const error = Object.assign(new Error('permission denied'), { code: 'EACCES' });
+  await assert.rejects(
+    discoverSyclDynamicResources(['/denied'], { readDirectory: async () => { throw error; } }),
+    (error) => error.code === 'EACCES',
+  );
+});
+
+test('logs and skips a runtime directory that disappears during detailed payload scanning', async (context) => {
+  const fixture = await runtimeFixture(context, 'sycl42.dll');
+  const messages = [];
+  let scanCount = 0;
+  const readDirectory = async (directory, options) => {
+    scanCount += 1;
+    if (scanCount === 2) {
+      const error = new Error(`directory disappeared: ${directory}`);
+      error.code = 'ENOENT';
+      throw error;
+    }
+    return readdir(directory, options);
+  };
+  await assert.rejects(
+    discoverSyclDynamicResources([fixture.compilerBin], { log: (message) => messages.push(message), readDirectory }),
+    /Level Zero Unified Runtime adapter.*Searched:/is,
+  );
+  assert.deepEqual(messages, [
+    `[sycl-package] skipped missing active oneAPI runtime directory: ${fixture.compilerBin}`,
+  ]);
 });
 
 test('staged verification removes oneAPI development paths and variables', async () => {
