@@ -10,48 +10,15 @@ import {
   verifyStagedSyclBundle,
 } from './windows-sycl-runtime.mjs';
 
-test('discovers dynamic Level Zero resources beside the active Unified Runtime loader', async (context) => {
+test('discovers only oneAPI 2026 dynamic runtime DLLs beside the active Unified Runtime loader', async (context) => {
   const fixture = await runtimeFixture(context, 'sycl42.dll');
+  await writeFile(fixture.file('obsolete-device-library.spv'), 'not part of the oneAPI 2026 runtime contract');
   const files = await discoverSyclDynamicResources([fixture.compilerBin]);
-  assert.deepEqual(files.map((file) => path.basename(file)).sort(), [
-    'libsycl-fallback-bfloat16.spv',
-    'libsycl-native-bfloat16.spv',
-    'ur_adapter_level_zero.dll',
-    'ur_adapter_level_zero_v2.dll',
-    'ur_loader.dll',
-    'ur_win_proxy_loader.dll',
-  ].sort());
-});
-
-test('accepts a oneAPI 2026 runtime with no adjacent SPIR-V resources', async (context) => {
-  const fixture = await runtimeFixture(context, 'sycl42.dll');
-  await rm(fixture.file('libsycl-fallback-bfloat16.spv'));
-  await rm(fixture.file('libsycl-native-bfloat16.spv'));
-
-  const files = await discoverSyclDynamicResources([fixture.compilerBin]);
-
   assert.deepEqual(files.map((file) => path.basename(file)).sort(), [
     'ur_adapter_level_zero.dll',
     'ur_adapter_level_zero_v2.dll',
     'ur_loader.dll',
     'ur_win_proxy_loader.dll',
-  ].sort());
-});
-
-test('includes every adjacent SPIR-V resource regardless of filename', async (context) => {
-  const fixture = await runtimeFixture(context, 'sycl42.dll');
-  await writeFile(fixture.file('vendor-device-image.spv'), 'SPIR-V');
-
-  const files = await discoverSyclDynamicResources([fixture.compilerBin]);
-
-  assert.deepEqual(files.map((file) => path.basename(file)).sort(), [
-    'libsycl-fallback-bfloat16.spv',
-    'libsycl-native-bfloat16.spv',
-    'ur_adapter_level_zero.dll',
-    'ur_adapter_level_zero_v2.dll',
-    'ur_loader.dll',
-    'ur_win_proxy_loader.dll',
-    'vendor-device-image.spv',
   ].sort());
 });
 
@@ -92,8 +59,6 @@ test('logs and skips a missing active directory before discovering valid runtime
     log: (message) => messages.push(message),
   });
   assert.deepEqual(files.map((file) => path.basename(file)).sort(), [
-    'libsycl-fallback-bfloat16.spv',
-    'libsycl-native-bfloat16.spv',
     'ur_adapter_level_zero.dll',
     'ur_adapter_level_zero_v2.dll',
     'ur_loader.dll',
@@ -260,8 +225,6 @@ async function runtimeFixture(context, syclRuntimeName, compilerDirectory = 'com
     syclRuntimeName,
     'ur_adapter_level_zero.dll',
     'ur_adapter_level_zero_v2.dll',
-    'libsycl-fallback-bfloat16.spv',
-    'libsycl-native-bfloat16.spv',
     'ur_loader.dll',
     'ur_win_proxy_loader.dll',
   ]) {

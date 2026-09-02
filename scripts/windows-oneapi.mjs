@@ -30,6 +30,12 @@ export async function identifyOneApiCompiler(environment, runProcess) {
   if (!banner || !/intel|oneapi|dpc\+\+/i.test(banner)) {
     throw new Error(`Could not identify Intel oneAPI compiler from icx --version output${output ? `:\n${output}` : '.'}`);
   }
+  const version = banner.match(/\b(\d{4})(?:\.\d+)+\b/);
+  if (!version || Number(version[1]) < 2026) {
+    throw new Error(
+      `Intel oneAPI 2026 or newer is required for the Windows SYCL worker; detected: ${banner}.`,
+    );
+  }
   return banner;
 }
 

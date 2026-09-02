@@ -182,6 +182,17 @@ test('returns the first non-empty Intel compiler banner line', async () => {
   assert.equal(banner, 'Intel(R) oneAPI DPC++/C++ Compiler 2026.1.0');
 });
 
+test('rejects Intel oneAPI compilers older than 2026 before CMake', async () => {
+  await assert.rejects(
+    identifyOneApiCompiler({}, async () => ({
+      code: 0,
+      stdout: 'Intel(R) oneAPI DPC++/C++ Compiler 2025.3.3',
+      stderr: '',
+    })),
+    /oneAPI 2026 or newer is required.*2025\.3\.3/is,
+  );
+});
+
 test('fails before CMake when the active Intel compiler cannot be identified', async () => {
   await assert.rejects(
     identifyOneApiCompiler({}, async () => ({ code: 1, stdout: '', stderr: 'icx failed' })),

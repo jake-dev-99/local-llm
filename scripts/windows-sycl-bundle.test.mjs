@@ -156,7 +156,7 @@ test('collects licenses for Intel files found only through PE closure', async (c
   assert.equal(bundle.files.some((file) => file.path.includes('/licenses/mkl/')), true);
 });
 
-test('logs the active runtime scope, selected resources, resolved files, and system exclusions', async (context) => {
+test('logs the active runtime scope, selected runtime DLLs, resolved files, and system exclusions', async (context) => {
   const fixture = await syclFixture(context);
   const messages = [];
   fixture.options.log = (message) => messages.push(message);
@@ -164,18 +164,9 @@ test('logs the active runtime scope, selected resources, resolved files, and sys
   const output = messages.join('\n');
   assert.match(output, /oneAPI root:.*oneapi/is);
   assert.match(output, /active oneAPI runtime directory:.*compiler.*2026\.1.*bin/is);
-  assert.match(output, /dynamic SYCL resource:.*ur_adapter_level_zero\.dll/is);
+  assert.match(output, /dynamic SYCL runtime DLL:.*ur_adapter_level_zero\.dll/is);
   assert.match(output, /resolved bundle source:.*sycl42\.dll/is);
   assert.match(output, /excluded system dependency:.*KERNEL32\.dll/is);
-});
-
-test('does not run the PE dependency inspector on SPIR-V companion data', async (context) => {
-  const fixture = await syclFixture(context);
-  fixture.options.runDumpbin = async (absoluteFile) => {
-    assert.match(absoluteFile, /\.(?:exe|dll)$/i);
-    return '';
-  };
-  await prepareWindowsSyclBundle(fixture.options);
 });
 
 test('stages the SYCL bundle without changing the explicit CPU directory', async (context) => {
@@ -310,10 +301,9 @@ test('publishes CPU, SYCL, and their validated manifest together', async (contex
   await assert.rejects(readFile(path.join(fixture.syclDirectory, 'old-runtime.dll')), { code: 'ENOENT' });
 });
 
-test('publishes a no-SPIR-V runtime layout after staged SYCL0 verification', async (context) => {
+test('publishes only the oneAPI 2026 runtime contract after staged SYCL0 verification', async (context) => {
   const fixture = await publicationFixture(context);
-  await rm(fixture.runtime('libsycl-fallback-bfloat16.spv'));
-  await rm(fixture.runtime('libsycl-native-bfloat16.spv'));
+  await writeFile(fixture.runtime('obsolete-device-library.spv'), 'not part of the oneAPI 2026 runtime contract');
   let verification;
   fixture.syclOptions.runProcess = async (command, args, options) => {
     verification = { command, args, options };
@@ -463,8 +453,6 @@ async function syclFixture(context) {
     [compilerBin, 'sycl42.dll'],
     [compilerBin, 'ur_loader.dll'],
     [compilerBin, 'ur_adapter_level_zero.dll'],
-    [compilerBin, 'libsycl-fallback-bfloat16.spv'],
-    [compilerBin, 'libsycl-native-bfloat16.spv'],
     [mklBin, 'mkl_sycl_blas.42.dll'],
     [mklBin, 'mkl_core.42.dll'],
   ];

@@ -20,10 +20,10 @@ The completed and reviewed Tasks 1 through 5 end at commit `3849eeb`. The branch
 
 The handoff checkpoint is verified on macOS with the full source test suite, typecheck, and build. That is not a Windows artifact or hardware result.
 
-Everything needed to continue is committed to this branch. Do not depend on `.superpowers/` or another local-only file. The full design and executable plan are:
+Everything needed to continue is committed to this branch. Do not depend on `.superpowers/` or another local-only file. The current designs are:
 
 - [`docs/superpowers/specs/2026-08-24-windows-sycl-worker-design.md`](superpowers/specs/2026-08-24-windows-sycl-worker-design.md)
-- [`docs/superpowers/plans/2026-08-24-windows-sycl-worker.md`](superpowers/plans/2026-08-24-windows-sycl-worker.md)
+- [`docs/superpowers/specs/2026-09-02-version-aware-windows-sycl-packaging-design.md`](superpowers/specs/2026-09-02-version-aware-windows-sycl-packaging-design.md)
 
 Continue at the native Windows build below. Do not reimplement the Task 6 source wiring; it is already on this branch. The build must generate the real version-2 manifest and native bundles before packaging, then the Task 7 hardware gates and final whole-branch review remain.
 
@@ -64,7 +64,7 @@ The build machine needs:
 - x64 Windows 11;
 - Node.js 22 or newer;
 - Visual Studio 2022 C++ build tools, including the **C++ CMake tools for Windows** component;
-- Intel oneAPI, including Deep Learning Essentials; and
+- Intel oneAPI 2026 or newer, including Deep Learning Essentials; and
 - a current Intel Arc Pro graphics driver providing the system Level Zero runtime.
 
 The Visual Studio CMake component supplies both `cmake.exe` and `ninja.exe`. They do not need to
@@ -75,11 +75,10 @@ it to initialize the x64 MSVC and Windows SDK environment, then initializes oneA
 `kernel32.lib` actually exists in the resolved library directories before cloning or compiling
 llama.cpp. A missing Windows SDK environment therefore fails before CMake instead of at the linker.
 
-The installed VSIX must not require those developer tools. Required redistributable runtime DLLs,
-controlling licenses, and every adjacent SPIR-V (`.spv`) resource when installed are copied into the
-SYCL worker bundle. A layout with no adjacent `.spv` resources is supported. The Intel graphics
-driver remains a host prerequisite because it supplies the Level Zero loader and GPU driver; a
-standalone Level Zero SDK path is not used by either the build or the installed extension.
+The installed VSIX must not require those developer tools. Required redistributable runtime DLLs
+and controlling licenses are copied into the SYCL worker bundle. The Intel graphics driver remains
+a host prerequisite because it supplies the Level Zero loader and GPU driver; a standalone Level
+Zero SDK path is not used by either the build or the installed extension.
 
 Run these preflight checks from Git Bash or zsh:
 
@@ -107,7 +106,7 @@ npm run build:worker -- --target win32-x64 --backend all
 The SYCL packager uses the active oneAPI environment that built the worker. It
 does not require a version-specific runtime filename such as `sycl8.dll`.
 Build output lists the Intel compiler banner, active oneAPI runtime directories,
-resolved non-system dependencies, semantic Level Zero resources, and excluded
+resolved non-system dependencies, semantic Level Zero runtime DLLs, and excluded
 system dependencies.
 
 Before publishing the bundle, the build runs the staged
@@ -131,7 +130,6 @@ Before changing production runtime selection, confirm the build produced:
 resources/workers/win32-x64/cpu/llama-server.exe
 resources/workers/win32-x64/sycl/llama-server.exe
 resources/workers/win32-x64/sycl/*.dll
-resources/workers/win32-x64/sycl/*.spv (when installed adjacent to ur_loader.dll)
 resources/workers/win32-x64/sycl/licenses/**
 ```
 

@@ -1,14 +1,14 @@
-# Version-Aware Windows SYCL Packaging Design
+# oneAPI 2026+ Windows SYCL Packaging Design
 
 Date: 2026-09-02
 Status: Approved
 
 ## Summary
 
-Replace the oneAPI 2025.3.3-specific runtime filename list in the Windows SYCL
-bundler with runtime discovery based on the worker that was actually built and
-the active oneAPI environment. Preserve loud failures, per-file hashes,
-license collection, and atomic publication.
+Package the Windows SYCL worker exclusively from a oneAPI 2026-or-newer
+environment, using runtime discovery based on the worker that was actually
+built and the active oneAPI environment. Preserve loud failures, per-file
+hashes, license collection, and atomic publication.
 
 The final gate runs the staged worker with the oneAPI development environment
 removed. Packaging succeeds only when the staged worker loads independently
@@ -21,29 +21,23 @@ an explicit choice, and SYCL failures never trigger CPU fallback.
 
 ## Problem
 
-The current bundler declares exact paths such as
-`compiler/latest/bin/sycl8.dll` in `REQUIRED_SYCL_COMPANIONS`. That list was
-copied from llama.cpp's Windows release workflow, which installs and packages
-oneAPI 2025.3.3. The list is valid inside that controlled workflow but is not a
-version-independent llama.cpp or oneAPI runtime contract.
-
-The local build accepts other oneAPI versions, including 2026.1, while the
-packager still requires the 2025.3.3 filenames. A successful 2026.1 build can
-therefore fail during packaging because a renamed runtime is absent even when
-the equivalent installed runtime is available.
+The supported toolchain begins at oneAPI 2026. The build must reject an older
+compiler before CMake, and the packager must derive versioned runtime DLL names
+from the binaries produced by that supported compiler instead of maintaining a
+filename catalog.
 
 Removing validation is not acceptable. The installed VSIX must not depend on
-oneAPI being present on the extension user's machine, and some Unified Runtime
-adapters and SYCL device resources are loaded dynamically rather than appearing
-in the executable's static PE import table.
+oneAPI being present on the extension user's machine, and Unified Runtime
+adapters are loaded dynamically rather than appearing in the executable's
+static PE import table.
 
 ## Goals
 
 - Package the runtime required by the SYCL worker built with the active oneAPI
   installation without assuming a versioned runtime filename.
 - Continue resolving the complete non-system PE dependency closure.
-- Include the dynamically loaded Unified Runtime Level Zero adapter and SYCL
-  device resources needed for Intel Arc execution.
+- Include the dynamically loaded Unified Runtime loader and Level Zero adapter
+  needed for Intel Arc execution.
 - Prove that the staged worker does not load files from the installed oneAPI
   environment.
 - Fail before replacing a previously valid bundle when dependency discovery,
@@ -54,7 +48,7 @@ in the executable's static PE import table.
 
 ## Non-goals
 
-- Supporting arbitrary oneAPI versions solely because their directory exists.
+- Supporting oneAPI releases older than 2026.
 - Maintaining a catalog of exact DLL filenames for every oneAPI release.
 - Copying entire oneAPI component directories into the VSIX.
 - Bundling Intel graphics drivers or Windows system DLLs.
@@ -73,18 +67,15 @@ The bundler will use three complementary sources of truth:
 2. **Resolved PE dependencies.** `dumpbin /dependents` recursively discovers
    the actual versioned DLL names imported by those roots and by every copied
    non-system DLL.
-3. **Semantic dynamic resources.** The active oneAPI compiler directories are
-   searched for the Unified Runtime loader. Level Zero adapter variants and
-   SYCL device resource files that are loaded dynamically are selected beside
-   that loader and may not occur in PE imports.
+3. **Semantic runtime DLLs.** The active oneAPI compiler directories are
+   searched for the Unified Runtime loader. Level Zero adapter variants are
+   selected beside that loader because they may not occur in PE imports.
 
 The semantic dynamic resource rules express runtime roles rather than release
 filenames:
 
 - exactly one active Unified Runtime loader named `ur_loader.dll`;
 - one or more Level Zero adapters matching `ur_adapter_level_zero*.dll`;
-- every installed adjacent `.spv` resource, regardless of filename, beside the
-  selected Unified Runtime loader; its absence is supported; and
 - the Windows Unified Runtime proxy loader when it is present in the active
   compiler runtime directory.
 
@@ -130,11 +121,11 @@ The bundle remains staged in a temporary sibling directory and is published by
 rename only after all gates pass.
 
 1. Verify the built executable and llama.cpp backend modules.
-2. Discover semantic dynamic resources from the active compiler runtime.
+2. Discover semantic runtime DLLs from the active compiler runtime.
 3. Compute recursive PE dependency closure from the executable, backend
    modules, and discovered dynamic DLL roots.
 4. Reject unresolved non-system imports and source filename collisions.
-5. Copy the closure and non-PE resources into the staging directory.
+5. Copy the dependency closure into the staging directory.
 6. Classify every copied Intel file by its component directory below
    `ONEAPI_ROOT` and copy that component's controlling license material.
 7. Generate the normal bundle description containing the executable and every
@@ -205,14 +196,14 @@ untouched on every failure.
   - pass active oneAPI directories and a process launcher to the bundler; and
   - print phase-oriented diagnostics.
 - `scripts/windows-sycl-bundle.test.mjs`
-  - replace exact-2025 fixtures with version-neutral discovery fixtures;
+  - use oneAPI 2026+ discovery fixtures;
   - cover renamed SYCL and MKL runtime DLLs; and
   - cover clean-environment verification and atomic failure behavior.
 - `scripts/package-workers.test.mjs`
   - stop using `sycl8.dll` as the representative manifest file.
 - `docs/WINDOWS_SYCL_HANDOFF.md`
-  - document supported environment discovery and the native clean-environment
-    hardware gate without naming oneAPI 2025 runtime files.
+  - document the oneAPI 2026+ environment and native clean-environment hardware
+    gate.
 
 The worker manifest schema and runtime selection code do not need to change.
 They already hash arbitrary bundle file lists and enforce no automatic fallback.
@@ -226,8 +217,9 @@ process output. They must prove:
   `sycl8.dll`;
 - versioned MKL DLL basenames are followed through PE closure rather than
   enumerated in source;
-- the Unified Runtime loader, all Level Zero adapter variants, and every
-  adjacent `.spv` file when present are included as semantic dynamic resources;
+- the Unified Runtime loader and all Level Zero adapter variants are included
+  as semantic runtime DLLs;
+- a compiler older than oneAPI 2026 is rejected before CMake;
 - an absent required semantic role fails with the role and search scope;
 - duplicate basenames from separate active component paths fail as ambiguous;
 - unresolved non-system imports identify their importing file;
@@ -266,12 +258,6 @@ be reported separately and will not be described as Windows runtime proof.
 
 ## Rejected approaches
 
-### Pin oneAPI 2025.3.3
-
-This would make the copied upstream filename list internally consistent, but
-it would force the build machine to install an older toolchain and would repeat
-the same migration problem on the next supported upgrade.
-
 ### Copy entire oneAPI runtime directories
 
 This avoids identifying required files but materially inflates the VSIX,
@@ -279,8 +265,8 @@ increases license and security surface, can pull in unrelated adapters, and
 still does not prove the staged worker is independent of the development
 environment.
 
-### Remove explicit companions and use only `dumpbin`
+### Use only `dumpbin`
 
 Static import closure alone cannot reliably identify dynamically loaded
-Unified Runtime adapters and non-PE SYCL device resources. It can produce a
-bundle that passes packaging but fails during device discovery.
+Unified Runtime adapters. It can produce a bundle that passes packaging but
+fails during device discovery.
