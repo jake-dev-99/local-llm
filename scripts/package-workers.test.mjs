@@ -13,7 +13,7 @@ test('Windows packaging requires and verifies both bundles', async (context) => 
   await rm(fixture.syclDll);
   await assert.rejects(
     prepareTargetWorkers(fixture.root, 'win32-x64'),
-    /Worker bundle file is missing.*sycl-runtime\.dll/is,
+    /ENOENT.*sycl-runtime\.dll/is,
   );
 });
 
