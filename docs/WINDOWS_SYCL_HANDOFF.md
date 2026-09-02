@@ -76,14 +76,16 @@ it to initialize the x64 MSVC and Windows SDK environment, then initializes oneA
 llama.cpp. A missing Windows SDK environment therefore fails before CMake instead of at the linker.
 
 The installed VSIX must not require those developer tools. Required redistributable runtime DLLs
-and controlling licenses are copied into the SYCL worker bundle. The Intel graphics driver remains
-a host prerequisite because it supplies the Level Zero loader and GPU driver; a standalone Level
-Zero SDK path is not used by either the build or the installed extension.
+and the complete oneAPI 2026 `ONEAPI_ROOT\licensing` tree are copied into the SYCL worker bundle.
+The packager does not infer license locations from DLL component paths or filter legal files by
+name. A missing or empty root licensing directory fails before publication. The Intel graphics
+driver remains a host prerequisite because it supplies the Level Zero loader and GPU driver; a
+standalone Level Zero SDK path is not used by either the build or the installed extension.
 
 oneAPI 2026 can expose the same runtime DLL through more than one active component path. For
 example, `UMF.dll` may appear under both `compiler\latest\bin` and `umf\latest\bin`. The bundler
-compares those candidates by SHA-256: byte-identical copies collapse to one bundled DLL and retain
-license material for every represented component, while different contents fail as ambiguous.
+compares those candidates by SHA-256: byte-identical copies collapse to one bundled DLL, while
+different contents fail as ambiguous. License packaging is independent of that runtime resolution.
 
 Run these preflight checks from Git Bash or zsh:
 

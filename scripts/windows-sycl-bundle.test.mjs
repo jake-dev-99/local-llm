@@ -149,7 +149,7 @@ test('rejects distinct dependency candidates within the active oneAPI tier', asy
   );
 });
 
-test('collapses byte-identical oneAPI component aliases and retains both component licenses', async (context) => {
+test('collapses byte-identical oneAPI component aliases to one payload', async (context) => {
   const fixture = await syclFixture(context);
   const compilerBin = path.join(fixture.options.oneApiRoot, 'compiler/latest/bin');
   const umfBin = path.join(fixture.options.oneApiRoot, 'umf/latest/bin');
@@ -158,11 +158,6 @@ test('collapses byte-identical oneAPI component aliases and retains both compone
   await writeFile(path.join(compilerBin, 'UMF.dll'), identicalUmf);
   await mkdir(umfBin, { recursive: true });
   await writeFile(path.join(umfBin, 'UMF.dll'), identicalUmf);
-  await mkdir(path.join(fixture.options.oneApiRoot, 'umf/latest/licensing'), { recursive: true });
-  await writeFile(
-    path.join(fixture.options.oneApiRoot, 'umf/latest/licensing/license.txt'),
-    'license for umf',
-  );
   fixture.options.pathDirectories.push(compilerBin, umfBin);
   fixture.imports.set('ur_adapter_level_zero.dll', ['UMF.dll']);
   const messages = [];
@@ -171,16 +166,24 @@ test('collapses byte-identical oneAPI component aliases and retains both compone
   const { bundle } = await prepareWindowsSyclBundle(fixture.options);
 
   assert.equal(bundle.files.filter((file) => file.path.endsWith('/UMF.dll')).length, 1);
-  assert.equal(bundle.files.some((file) => file.path.includes('/licenses/compiler/')), true);
-  assert.equal(bundle.files.some((file) => file.path.includes('/licenses/umf/')), true);
   assert.match(messages.join('\n'), /identical active oneAPI dependency UMF\.dll/i);
 });
 
-test('collects licenses for Intel files found only through PE closure', async (context) => {
+test('packages the complete oneAPI 2026 root licensing tree without component-local mappings', async (context) => {
   const fixture = await syclFixture(context);
+  const rootLicensing = path.join(fixture.options.oneApiRoot, 'licensing/2026.1');
+  await mkdir(path.join(rootLicensing, 'notices'), { recursive: true });
+  await writeFile(path.join(rootLicensing, 'EULA.rtf'), 'oneAPI 2026 terms');
+  await writeFile(path.join(rootLicensing, 'notices', 'dependencies.txt'), 'third-party terms');
+
   const { bundle } = await prepareWindowsSyclBundle(fixture.options);
-  assert.equal(bundle.files.some((file) => file.path.includes('/licenses/compiler/')), true);
-  assert.equal(bundle.files.some((file) => file.path.includes('/licenses/mkl/')), true);
+  const paths = bundle.files.map((file) => file.path);
+
+  assert.equal(paths.some((file) => file.endsWith('/licenses/oneapi/2026.1/EULA.rtf')), true);
+  assert.equal(
+    paths.some((file) => file.endsWith('/licenses/oneapi/2026.1/notices/dependencies.txt')),
+    true,
+  );
 });
 
 test('logs the active runtime scope, selected runtime DLLs, resolved files, and system exclusions', async (context) => {
@@ -190,6 +193,8 @@ test('logs the active runtime scope, selected runtime DLLs, resolved files, and 
   await prepareWindowsSyclBundle(fixture.options);
   const output = messages.join('\n');
   assert.match(output, /oneAPI root:.*oneapi/is);
+  assert.match(output, /oneAPI 2026 licensing directory:.*oneapi.*licensing/is);
+  assert.match(output, /oneAPI license file:.*licensing.*license\.htm/is);
   assert.match(output, /active oneAPI runtime directory:.*compiler.*2026\.1.*bin/is);
   assert.match(output, /dynamic SYCL runtime DLL:.*ur_adapter_level_zero\.dll/is);
   assert.match(output, /resolved bundle source:.*sycl42\.dll/is);
@@ -203,22 +208,34 @@ test('stages the SYCL bundle without changing the explicit CPU directory', async
   assert.equal(await readFile(path.join(fixture.cpuDirectory, 'llama-server.exe'), 'utf8'), 'cpu');
 });
 
-test('copies controlling licenses and returns sorted hashes for every file', async (context) => {
+test('copies the oneAPI root licensing tree and returns sorted hashes for every file', async (context) => {
   const fixture = await syclFixture(context);
   const { bundle } = await prepareWindowsSyclBundle(fixture.options);
   const paths = bundle.files.map((file) => file.path);
   assert.deepEqual(paths, [...paths].sort());
-  assert.equal(paths.some((file) => file.includes('/licenses/compiler/license.txt')), true);
-  assert.equal(paths.some((file) => file.includes('/licenses/mkl/license.txt')), true);
+  assert.equal(paths.some((file) => file.includes('/licenses/oneapi/2026.1/license.htm')), true);
+  assert.equal(paths.some((file) => file.includes('/licenses/oneapi/2026.1/third-party-programs.txt')), true);
   assert.equal(bundle.files.every((file) => /^[0-9a-f]{64}$/.test(file.sha256)), true);
 });
 
-test('requires controlling license material for every copied oneAPI component', async (context) => {
+test('requires the oneAPI 2026 root licensing directory', async (context) => {
   const fixture = await syclFixture(context);
-  await rm(path.join(fixture.options.oneApiRoot, 'mkl/2026.1/licensing'), { recursive: true });
+  await rm(path.join(fixture.options.oneApiRoot, 'licensing'), { recursive: true });
   await assert.rejects(
     prepareWindowsSyclBundle(fixture.options),
-    /No controlling license material was found for oneAPI component mkl/,
+    /oneAPI 2026 licensing directory was not found/,
+  );
+});
+
+test('rejects an empty oneAPI 2026 root licensing directory', async (context) => {
+  const fixture = await syclFixture(context);
+  const licensing = path.join(fixture.options.oneApiRoot, 'licensing');
+  await rm(licensing, { recursive: true });
+  await mkdir(licensing);
+
+  await assert.rejects(
+    prepareWindowsSyclBundle(fixture.options),
+    /oneAPI 2026 licensing directory contains no files/,
   );
 });
 
@@ -487,10 +504,11 @@ async function syclFixture(context) {
     const absolute = path.join(directory, name);
     await mkdir(path.dirname(absolute), { recursive: true });
     await writeFile(absolute, name);
-    const licensing = path.join(path.dirname(path.dirname(absolute)), 'licensing');
-    await mkdir(licensing, { recursive: true });
-    await writeFile(path.join(licensing, 'license.txt'), `license for ${directory}`);
   }
+  const licensing = path.join(oneApiRoot, 'licensing/2026.1');
+  await mkdir(licensing, { recursive: true });
+  await writeFile(path.join(licensing, 'license.htm'), 'oneAPI 2026 license');
+  await writeFile(path.join(licensing, 'third-party-programs.txt'), 'oneAPI 2026 third-party terms');
   const vcRuntime = path.join(root, 'vc-redist/x64/Microsoft.VC143.CRT');
   await mkdir(vcRuntime, { recursive: true });
   await writeFile(path.join(vcRuntime, 'VCRUNTIME140.dll'), 'redistributable CRT');

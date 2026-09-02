@@ -115,7 +115,6 @@ export async function prepareWindowsSyclBundle(options) {
     ...systemDirectories,
   ];
   const excludedSystemDependencies = new Set();
-  const equivalentOneApiSources = new Map();
   const identicalDependencyGroups = new Map();
   const closureOptions = {
     imports: async (absoluteFile) => (
@@ -130,9 +129,6 @@ export async function prepareWindowsSyclBundle(options) {
         directories: activeDirectories,
         rejectAmbiguous: true,
         onIdenticalCandidates: ({ dllName, candidates, sha256 }) => {
-          for (const candidate of candidates) {
-            equivalentOneApiSources.set(normalizedSourcePath(candidate), candidate);
-          }
           identicalDependencyGroups.set(`${dllName.toLowerCase()}:${sha256}`, {
             dllName,
             candidates,
@@ -161,14 +157,10 @@ export async function prepareWindowsSyclBundle(options) {
     [...baseRoots, ...dynamicRuntimeDlls],
     closureOptions,
   );
-  const licenses = await collectControllingLicenses(
-    options.oneApiRoot,
-    classifyOneApiFiles(options.oneApiRoot, [
-      ...bundleSources,
-      ...equivalentOneApiSources.values(),
-    ]),
-  );
+  const licensingDirectory = path.join(options.oneApiRoot, 'licensing');
+  const licenses = await collectOneApiLicensingTree(licensingDirectory);
   log(`[sycl-package] oneAPI root: ${options.oneApiRoot}`);
+  log(`[sycl-package] oneAPI 2026 licensing directory: ${licensingDirectory}`);
   for (const directory of activeDirectories) {
     log(`[sycl-package] active oneAPI runtime directory: ${directory}`);
   }
@@ -183,6 +175,9 @@ export async function prepareWindowsSyclBundle(options) {
   }
   for (const file of bundleSources) {
     log(`[sycl-package] resolved bundle source: ${file}`);
+  }
+  for (const license of licenses) {
+    log(`[sycl-package] oneAPI license file: ${license.absolute}`);
   }
   for (const dependency of [...excludedSystemDependencies].sort()) {
     log(`[sycl-package] excluded system dependency: ${dependency}`);
@@ -206,7 +201,7 @@ export async function prepareWindowsSyclBundle(options) {
       }
     }
     for (const license of licenses) {
-      const output = path.join(staging, 'licenses', license.component, ...license.relative.split('/'));
+      const output = path.join(staging, 'licenses', 'oneapi', ...license.relative.split('/'));
       await mkdir(path.dirname(output), { recursive: true });
       await cp(license.absolute, output);
     }
@@ -555,65 +550,18 @@ function legacyWorkerBundle(workers, target) {
   };
 }
 
-async function collectControllingLicenses(oneApiRoot, companionFiles) {
-  const byComponent = new Map();
-  for (const { component } of companionFiles) {
-    if (!byComponent.has(component)) {
-      byComponent.set(component, []);
-    }
+async function collectOneApiLicensingTree(licensingDirectory) {
+  if (!(await isDirectory(licensingDirectory))) {
+    throw new Error(`oneAPI 2026 licensing directory was not found: ${licensingDirectory}.`);
   }
-
-  for (const component of byComponent.keys()) {
-    const componentRoot = path.join(oneApiRoot, component);
-    const licensing = await nearestLicensingDirectory(
-      path.dirname(companionFiles.find((file) => file.component === component).absolute),
-      componentRoot,
-    );
-    if (!licensing) {
-      throw new Error(`No controlling license material was found for oneAPI component ${component}.`);
-    }
-    const candidates = (await listFiles(licensing)).filter((file) => (
-      /(license|notice|third[-_ ]?party)/i.test(path.basename(file))
-    ));
-    if (candidates.length === 0) {
-      throw new Error(`No controlling license material was found for oneAPI component ${component}.`);
-    }
-
-    const seenHashes = new Set();
-    const seenOutputs = new Map();
-    for (const absolute of candidates.sort()) {
-      const hash = await sha256File(absolute);
-      if (seenHashes.has(hash)) {
-        continue;
-      }
-      seenHashes.add(hash);
-      const relative = toPosix(path.relative(licensing, absolute));
-      const outputKey = relative.toLowerCase();
-      if (seenOutputs.has(outputKey)) {
-        throw new Error(`Controlling license files for oneAPI component ${component} collide at ${relative}.`);
-      }
-      seenOutputs.set(outputKey, absolute);
-      byComponent.get(component).push({ absolute, component, relative });
-    }
+  const files = (await listFiles(licensingDirectory)).sort();
+  if (files.length === 0) {
+    throw new Error(`oneAPI 2026 licensing directory contains no files: ${licensingDirectory}.`);
   }
-
-  return [...byComponent.values()].flat();
-}
-
-async function nearestLicensingDirectory(start, boundary) {
-  let current = path.resolve(start);
-  const resolvedBoundary = path.resolve(boundary);
-  while (current === resolvedBoundary || isBelow(resolvedBoundary, current)) {
-    const candidate = path.join(current, 'licensing');
-    if (await isDirectory(candidate)) {
-      return candidate;
-    }
-    if (current === resolvedBoundary) {
-      break;
-    }
-    current = path.dirname(current);
-  }
-  return undefined;
+  return files.map((absolute) => ({
+    absolute,
+    relative: toPosix(path.relative(licensingDirectory, absolute)),
+  }));
 }
 
 async function describeStagedBundle(root, destination, staging) {
@@ -635,18 +583,6 @@ async function describeStagedBundle(root, destination, staging) {
     throw new Error('The assembled SYCL bundle does not contain llama-server.exe.');
   }
   return { executable, files };
-}
-
-function classifyOneApiFiles(oneApiRoot, files) {
-  return files.flatMap((absolute) => {
-    if (!isAtOrBelow(oneApiRoot, absolute)) return [];
-    const relative = path.relative(oneApiRoot, absolute);
-    const [component] = relative.split(path.sep);
-    if (!component || component === '..') {
-      throw new Error(`Could not identify the oneAPI component for ${absolute}.`);
-    }
-    return [{ absolute, component }];
-  });
 }
 
 function resolveFromTiers(tiers) {

@@ -87,9 +87,9 @@ the selected roots actually depend on them.
 Every discovered DLL root is also passed through recursive PE dependency
 resolution. When active oneAPI component paths expose the same basename, the
 bundler compares the candidates by SHA-256. Byte-identical candidates collapse
-to one payload while every represented component remains in license discovery.
-Candidates with different contents fail as ambiguous instead of being selected
-by search order.
+to one payload. Candidates with different contents fail as ambiguous instead of
+being selected by search order. License discovery is independent of DLL source
+paths.
 
 ## Runtime search scope
 
@@ -113,6 +113,7 @@ The build log records:
 - active oneAPI runtime directories;
 - the selected source path for each semantic role;
 - every PE root and resolved non-system dependency; and
+- the oneAPI 2026 root licensing directory and every copied legal file; and
 - every system dependency intentionally excluded from the bundle.
 
 Paths are diagnostic only. The packaged manifest continues to contain safe
@@ -130,19 +131,18 @@ rename only after all gates pass.
 4. Reject unresolved non-system imports and content-distinct source filename
    collisions; collapse byte-identical active oneAPI aliases.
 5. Copy the dependency closure into the staging directory.
-6. Classify every copied Intel file and every equivalent oneAPI alias by its
-   component directory below `ONEAPI_ROOT`, then copy each represented
-   component's controlling license material.
+6. Require the installer-provided `ONEAPI_ROOT/licensing` directory to contain
+   files, then copy its complete tree without component mapping or filename
+   filtering.
 7. Generate the normal bundle description containing the executable and every
    staged file hash.
 8. Run clean-environment verification from the staging directory.
 9. Replace the destination directory atomically and update the worker manifest.
 
-If an Intel dependency found by PE closure cannot be associated with an
-installed component and its licensing material, assembly fails. Files from the
-worker build output are covered by the existing llama.cpp notice. Microsoft VC
-runtime handling remains unchanged unless inspection shows a current licensing
-gap; such a gap blocks publication rather than being ignored.
+If the oneAPI 2026 root licensing directory is missing or empty, assembly fails.
+Files from the worker build output are covered by the existing llama.cpp notice.
+Microsoft VC runtime handling remains unchanged unless inspection shows a
+current licensing gap; such a gap blocks publication rather than being ignored.
 
 ## Clean-environment verification
 
@@ -227,11 +227,12 @@ process output. They must prove:
 - a compiler older than oneAPI 2026 is rejected before CMake;
 - an absent required semantic role fails with the role and search scope;
 - byte-identical duplicate basenames from separate active component paths
-  collapse to one payload and retain all represented component licenses;
+  collapse to one payload;
 - duplicate basenames with different contents fail as ambiguous;
 - unresolved non-system imports identify their importing file;
 - system and driver DLLs are not copied;
-- every copied Intel component contributes its controlling license files;
+- the complete oneAPI 2026 root licensing tree is copied without component
+  mapping or filename filtering, and a missing or empty tree fails;
 - clean verification receives no oneAPI development paths or variables;
 - clean-launch and missing-SYCL0 failures leave the prior bundle untouched;
 - a successful staged verification publishes atomically and hashes every file;
