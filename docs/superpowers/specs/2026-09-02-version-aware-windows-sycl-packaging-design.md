@@ -158,10 +158,16 @@ The verifier launches the staged `llama-server.exe --list-devices` with:
 - oneAPI, compiler, include, and library environment variables removed; and
 - the current Windows graphics-driver environment left available.
 
-The command must exit successfully and report at least one SYCL GPU device.
-For the current Windows target, the result must include the `SYCL0` device that
-the runtime selects. Output and stderr are captured and included in a failure
-without launching the CPU worker.
+The verifier first launches with `ONEAPI_DEVICE_SELECTOR=level_zero:gpu`. If
+that isolated process crashes, exits unsuccessfully, or reports no `SYCL0`, the
+verifier retries in a separate process with `ONEAPI_DEVICE_SELECTOR=opencl:gpu`
+and `UR_ADAPTERS_FORCE_LOAD` pointed at the staged OpenCL adapter. This prevents
+a broken or unavailable Level Zero path from taking down OpenCL discovery.
+
+One of those commands must exit successfully and report the `SYCL0` device that
+the runtime selects. The selected adapter is logged. Output, stderr, and the
+result of both attempts are included when neither works, without launching the
+CPU worker.
 
 This gate intentionally requires packaging to run on a compatible Intel GPU
 machine. A separate flag to bypass the hardware gate is not part of this
@@ -210,12 +216,19 @@ untouched on every failure.
   - cover clean-environment verification and atomic failure behavior.
 - `scripts/package-workers.test.mjs`
   - stop using `sycl8.dll` as the representative manifest file.
+- `src/worker/syclDevice.ts`, `src/worker/workerLaunch.ts`, and
+  `src/worker/workerManager.ts`
+  - repeat the isolated Level-Zero-first/OpenCL-fallback discovery at runtime;
+  - pass the successful selector and adapter environment to the real worker.
+- `scripts/smoke-worker.mjs`
+  - use the same environment selected by SYCL preflight for model execution.
 - `docs/WINDOWS_SYCL_HANDOFF.md`
   - document the oneAPI 2026+ environment and native clean-environment hardware
     gate.
 
-The worker manifest schema and runtime selection code do not need to change.
-They already hash arbitrary bundle file lists and enforce no automatic fallback.
+The worker manifest schema does not need to change. It already hashes arbitrary
+bundle file lists. Runtime selection retains the no-CPU-fallback contract while
+adding an adapter fallback inside the SYCL backend.
 
 ## Automated verification
 
@@ -238,6 +251,9 @@ process output. They must prove:
 - the complete oneAPI 2026 root licensing tree is copied without component
   mapping or filename filtering, and a missing or empty tree fails;
 - clean verification receives no oneAPI development paths or variables;
+- clean verification tries Level Zero first and then the staged OpenCL adapter;
+- runtime preflight carries the successful SYCL adapter environment into the
+  worker and smoke-test process;
 - clean-launch and missing-SYCL0 failures leave the prior bundle untouched;
 - a successful staged verification publishes atomically and hashes every file;
 - Windows packaging still requires valid SYCL and CPU bundles; and
@@ -254,7 +270,8 @@ On the Intel Arc Windows machine with the active oneAPI 2026.1 environment:
 1. Build both workers with
    `npm run build:worker -- --target win32-x64 --backend all`.
 2. Confirm logs identify oneAPI 2026.1 and never require `sycl8.dll` by name.
-3. Confirm staged clean-environment discovery reports `SYCL0`.
+3. Confirm staged clean-environment discovery reports `SYCL0` and logs whether
+   it selected `level_zero` or `opencl`.
 4. Package the `win32-x64` VSIX and inspect that all manifest-declared files
    are present.
 5. Install into the intended VS Code profile.

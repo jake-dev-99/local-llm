@@ -251,7 +251,7 @@ test('keeps the published bundle when staged verification reports a DLL-load fai
 
   await assert.rejects(
     prepareWindowsSyclBundle(fixture.options),
-    /clean-environment launch exited with code 3221225781/,
+    /clean-environment launch failed.*level_zero.*3221225781.*opencl.*3221225781/is,
   );
   assert.equal(await readFile(existing, 'utf8'), 'existing bundle');
 });
@@ -276,7 +276,7 @@ test('backend all leaves CPU, SYCL, and manifest byte-identical when the clean S
 
   await assert.rejects(
     publishWindowsWorkerBuilds(fixture.options()),
-    /clean-environment launch exited with code 3221225781/,
+    /clean-environment launch failed.*level_zero.*3221225781.*opencl.*3221225781/is,
   );
 
   assert.deepEqual(await publicationSnapshot(fixture), before);
@@ -349,15 +349,23 @@ test('publishes CPU, SYCL, and their validated manifest together', async (contex
 test('publishes only the oneAPI 2026 runtime contract after staged SYCL0 verification', async (context) => {
   const fixture = await publicationFixture(context);
   await writeFile(fixture.runtime('obsolete-device-library.spv'), 'not part of the oneAPI 2026 runtime contract');
-  let verification;
+  const verifications = [];
+  const logs = [];
+  fixture.syclOptions.log = (message) => logs.push(message);
   fixture.syclOptions.runProcess = async (command, args, options) => {
-    verification = { command, args, options };
-    return { code: 0, stdout: 'SYCL0: Intel Arc Graphics', stderr: '' };
+    verifications.push({ command, args, options });
+    return verifications.length === 1
+      ? { code: 3221225477, stdout: '', stderr: '' }
+      : { code: 0, stdout: 'SYCL0: Intel Arc Graphics', stderr: '' };
   };
 
   const published = await publishWindowsWorkerBuilds(fixture.options());
 
-  assert.deepEqual(verification.args, ['--list-devices']);
+  assert.deepEqual(verifications.map(({ args }) => args), [
+    ['--list-devices'],
+    ['--list-devices'],
+  ]);
+  assert.equal(logs.some((message) => /staged SYCL adapter: opencl/i.test(message)), true);
   const manifest = JSON.parse(await readFile(fixture.manifestPath, 'utf8'));
   const files = manifest.platforms['win32-x64'].bundles.sycl.files.map((file) => file.path);
   assert.deepEqual(manifest.platforms['win32-x64'].bundles.sycl, published.sycl);

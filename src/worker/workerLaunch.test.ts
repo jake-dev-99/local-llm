@@ -7,17 +7,27 @@ import {
 
 test('prepares a SYCL bundle only after it reports SYCL0', async () => {
   const bundle = syclBundle();
+  const environment = {
+    KEEP_ME: 'yes',
+    ONEAPI_DEVICE_SELECTOR: 'opencl:gpu',
+    UR_ADAPTERS_FORCE_LOAD: 'C:\\extension\\resources\\workers\\win32-x64\\sycl\\ur_adapter_opencl.dll',
+  };
   const prepared = await prepareWorkerLaunch({
     target: 'win32-x64',
     mode: 'auto',
     resolveBundle: async () => bundle,
-    discoverSycl: async () => ({ id: 'SYCL0', description: 'Intel Arc' }),
+    discoverSycl: async () => ({
+      id: 'SYCL0',
+      description: 'Intel Arc',
+      runtime: { adapter: 'opencl', environment },
+    }),
   });
 
   assert.deepEqual(prepared, {
     bundle,
     backend: 'sycl',
     syclDevice: { id: 'SYCL0', description: 'Intel Arc' },
+    syclRuntime: { adapter: 'opencl', environment },
   });
 });
 

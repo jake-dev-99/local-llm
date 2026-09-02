@@ -40,13 +40,22 @@ test('Windows smoke maps sycl and cpu to their isolated bundles', async (context
 test('SYCL discovery completes before the worker is spawned', async () => {
   const events = [];
   const child = fakeChild({ exitOn: 'SIGTERM' });
+  const environment = {
+    ONEAPI_DEVICE_SELECTOR: 'opencl:gpu',
+    UR_ADAPTERS_FORCE_LOAD: 'C:\\workers\\sycl\\ur_adapter_opencl.dll',
+  };
   await runSmokeWorker(['--backend', 'sycl', '--model', '/models/test.gguf'], smokeDependencies({
     discoverSycl: async () => {
       events.push('discover');
-      return { id: 'SYCL0', description: 'Intel Arc' };
+      return {
+        id: 'SYCL0',
+        description: 'Intel Arc',
+        runtime: { adapter: 'opencl', environment },
+      };
     },
-    spawnWorker: () => {
+    spawnWorker: (_executable, _args, options) => {
       events.push('spawn');
+      assert.deepEqual(options.env, environment);
       return child;
     },
   }));

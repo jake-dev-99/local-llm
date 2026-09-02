@@ -199,6 +199,41 @@ test('staged verification preserves output when the worker cannot load', async (
   }), /clean-environment launch.*3221225781.*missing runtime/is);
 });
 
+test('staged verification retries with the bundled OpenCL adapter after Level Zero crashes', async () => {
+  const attempts = [];
+  const selectedAdapter = await verifyStagedSyclBundle({
+    staging: 'C:\\bundle',
+    systemRoot: 'C:\\Windows',
+    oneApiRoot: 'C:\\Intel\\oneAPI',
+    baseEnvironment: {
+      KEEP_ME: 'yes',
+      ONEAPI_DEVICE_SELECTOR: 'caller-value',
+      UR_ADAPTERS_FORCE_LOAD: 'C:\\outside\\ur_adapter_level_zero.dll',
+    },
+    runProcess: async (_command, _args, options) => {
+      attempts.push(options.env);
+      return attempts.length === 1
+        ? { code: 3221225477, stdout: '', stderr: '' }
+        : { code: 0, stdout: 'SYCL0: Intel Arc Graphics', stderr: '' };
+    },
+  });
+
+  assert.equal(selectedAdapter, 'opencl');
+  assert.deepEqual(attempts, [
+    {
+      KEEP_ME: 'yes',
+      PATH: 'C:\\bundle;C:\\Windows\\System32;C:\\Windows',
+      ONEAPI_DEVICE_SELECTOR: 'level_zero:gpu',
+    },
+    {
+      KEEP_ME: 'yes',
+      PATH: 'C:\\bundle;C:\\Windows\\System32;C:\\Windows',
+      ONEAPI_DEVICE_SELECTOR: 'opencl:gpu',
+      UR_ADAPTERS_FORCE_LOAD: 'C:\\bundle\\ur_adapter_opencl.dll',
+    },
+  ]);
+});
+
 test('staged verification requires SYCL0', async () => {
   await assert.rejects(verifyStagedSyclBundle({
     staging: 'C:\\bundle',

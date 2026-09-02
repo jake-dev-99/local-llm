@@ -206,13 +206,14 @@ export async function prepareWindowsSyclBundle(options) {
       await cp(license.absolute, output);
     }
 
-    await verifyStagedSyclBundle({
+    const selectedAdapter = await verifyStagedSyclBundle({
       staging,
       systemRoot,
       oneApiRoot: options.oneApiRoot,
       baseEnvironment: options.environment,
       runProcess: options.runProcess,
     });
+    log(`[sycl-package] staged SYCL adapter: ${selectedAdapter}`);
     const bundle = await describeStagedBundle(options.root, options.destination, staging);
     return {
       bundleName: 'sycl',

@@ -65,7 +65,7 @@ The build machine needs:
 - Node.js 22 or newer;
 - Visual Studio 2022 C++ build tools, including the **C++ CMake tools for Windows** component;
 - Intel oneAPI 2026 or newer, including Deep Learning Essentials; and
-- a current Intel Arc Pro graphics driver providing the system Level Zero runtime.
+- a current Intel Arc Pro graphics driver providing a Level Zero or OpenCL GPU runtime.
 
 The Visual Studio CMake component supplies both `cmake.exe` and `ninja.exe`. They do not need to
 be on `PATH`: the worker build locates the Visual Studio installation with `vswhere.exe`, verifies
@@ -79,8 +79,8 @@ The installed VSIX must not require those developer tools. Required redistributa
 and the complete oneAPI 2026 `ONEAPI_ROOT\licensing` tree are copied into the SYCL worker bundle.
 The packager does not infer license locations from DLL component paths or filter legal files by
 name. A missing or empty root licensing directory fails before publication. The Intel graphics
-driver remains a host prerequisite because it supplies the Level Zero loader and GPU driver; a
-standalone Level Zero SDK path is not used by either the build or the installed extension.
+driver remains a host prerequisite because it supplies the system GPU interface. A standalone
+Level Zero SDK path is not used by either the build or the installed extension.
 
 oneAPI 2026 can expose the same runtime DLL through more than one active component path. For
 example, `UMF.dll` may appear under both `compiler\latest\bin` and `umf\latest\bin`. The bundler
@@ -113,15 +113,16 @@ npm run build:worker -- --target win32-x64 --backend all
 The SYCL packager uses the active oneAPI environment that built the worker. It
 does not require a version-specific runtime filename such as `sycl8.dll`.
 Build output lists the Intel compiler banner, active oneAPI runtime directories,
-resolved non-system dependencies, semantic Level Zero runtime DLLs, and excluded
-system dependencies.
+resolved non-system dependencies, semantic Level Zero and OpenCL runtime DLLs,
+and excluded system dependencies.
 
 Before publishing the bundle, the build runs the staged
 `llama-server.exe --list-devices` with oneAPI development paths and variables
-removed. The build fails unless that isolated process reports `SYCL0`. A
-failure leaves the prior CPU bundle, SYCL bundle, and worker manifest
-unchanged; do not copy a missing DLL manually or switch to the CPU bundle
-implicitly.
+removed. It tries Level Zero first, then retries in a separate process with only
+the staged OpenCL adapter when Level Zero crashes or reports no GPU. The build
+fails unless one attempt reports `SYCL0`, and logs the selected adapter. A
+failure leaves the prior CPU bundle, SYCL bundle, and worker manifest unchanged;
+do not copy a missing DLL manually or switch to the CPU bundle implicitly.
 
 This must build locally from the pinned llama.cpp source. Do not substitute an upstream release archive or fabricate the SYCL files.
 
@@ -185,9 +186,9 @@ npm run smoke:worker -- --backend sycl --model "$LOCAL_LLM_SMOKE_MODEL"
 npm run smoke:worker -- --backend cpu --model "$LOCAL_LLM_SMOKE_MODEL"
 ```
 
-The SYCL run must report `SYCL0`, load model layers onto it, pass `/health`, and complete the one-token chat request. The CPU run must use the isolated CPU executable and perform no SYCL discovery.
+The SYCL run must report `SYCL0` and the selected adapter, load model layers onto it, pass `/health`, and complete the one-token chat request. The CPU run must use the isolated CPU executable and perform no SYCL discovery.
 
-Then follow Task 7 Step 6 to force an invalid Level Zero selector. The extension must report the SYCL failure and must not launch the CPU executable.
+Then induce a SYCL preflight failure in the disposable test installation. The extension must report both adapter failures and must not launch the CPU executable. Caller-provided selectors are deliberately replaced during preflight, so an invalid selector is no longer a valid failure test.
 
 Install the VSIX into the exact intended existing VS Code profile, not the default profile, using Task 7 Step 4.
 

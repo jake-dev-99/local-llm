@@ -55,6 +55,7 @@ export async function runSmokeWorker(args, dependencies = {}) {
     const workerArgs = buildExtensionEquivalentArguments(modelPath, port, apiKeyFile, backend);
     child = options.spawnWorker(executable, workerArgs, {
       cwd: path.dirname(executable),
+      env: device?.runtime?.environment,
       shell: false,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -100,6 +101,7 @@ export async function runSmokeWorker(args, dependencies = {}) {
     }
 
     options.log(`Selected backend: ${bundle.backend}`);
+    if (device?.runtime) options.log(`Selected SYCL adapter: ${device.runtime.adapter}`);
     options.log(`Executable: ${executable}`);
     options.log(`Detected device: ${device ? `${device.id}: ${device.description}` : 'CPU (not applicable)'}`);
     options.log('Health: OK');

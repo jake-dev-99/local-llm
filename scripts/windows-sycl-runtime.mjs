@@ -67,20 +67,44 @@ export async function verifyStagedSyclBundle({
   staging, systemRoot, oneApiRoot, baseEnvironment, runProcess,
 }) {
   const executable = path.win32.join(staging, 'llama-server.exe');
-  const env = createSyclVerificationEnvironment(baseEnvironment, { staging, systemRoot, oneApiRoot });
-  const result = await runProcess(executable, ['--list-devices'], { cwd: staging, env });
-  const output = [result.stdout, result.stderr].filter(Boolean).join('\n').trim();
-  if (result.code !== 0) {
+  const clean = createSyclVerificationEnvironment(baseEnvironment, { staging, systemRoot, oneApiRoot });
+  const attempts = [
+    {
+      adapter: 'level_zero',
+      env: { ...clean, ONEAPI_DEVICE_SELECTOR: 'level_zero:gpu' },
+    },
+    {
+      adapter: 'opencl',
+      env: {
+        ...clean,
+        ONEAPI_DEVICE_SELECTOR: 'opencl:gpu',
+        UR_ADAPTERS_FORCE_LOAD: path.win32.join(staging, 'ur_adapter_opencl.dll'),
+      },
+    },
+  ];
+  const failures = [];
+  for (const attempt of attempts) {
+    const result = await runProcess(executable, ['--list-devices'], { cwd: staging, env: attempt.env });
+    const output = [result.stdout, result.stderr].filter(Boolean).join('\n').trim();
+    if (result.code === 0 && /(?:^|\s)SYCL0(?:\s|:|$)/m.test(output)) {
+      return attempt.adapter;
+    }
+    failures.push({ adapter: attempt.adapter, result, output });
+  }
+  if (failures.some(({ result }) => result.code === 0)) {
     throw new Error(
-      `SYCL staged clean-environment launch exited with code ${result.code ?? 'unknown'}`
-      + `${output ? `:\n${output}` : '.'}`,
+      `SYCL staged device discovery did not report SYCL0 after trying Level Zero and OpenCL:\n`
+      + failures.map(formatVerificationFailure).join('\n'),
     );
   }
-  if (!/(?:^|\s)SYCL0(?:\s|:|$)/m.test(output)) {
-    throw new Error(
-      `SYCL staged device discovery did not report SYCL0${output ? `:\n${output}` : '.'}`,
-    );
-  }
+  throw new Error(
+    `SYCL staged clean-environment launch failed for Level Zero and OpenCL:\n`
+    + failures.map(formatVerificationFailure).join('\n'),
+  );
+}
+
+function formatVerificationFailure({ adapter, result, output }) {
+  return `${adapter}: exited with code ${result.code ?? 'unknown'}${output ? `:\n${output}` : '.'}`;
 }
 
 async function findMatchingFiles(directories, predicate, { log, readDirectory }) {
