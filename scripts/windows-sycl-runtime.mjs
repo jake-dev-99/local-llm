@@ -2,6 +2,7 @@ import { readdir } from 'node:fs/promises';
 import path from 'node:path';
 
 const LEVEL_ZERO_ADAPTER = /^ur_adapter_level_zero.*\.dll$/i;
+const OPENCL_ADAPTER = /^ur_adapter_opencl.*\.dll$/i;
 const DEVELOPMENT_KEYS = new Set([
   'CMPLR_ROOT', 'CPATH', 'CMAKE_PREFIX_PATH', 'DNNLROOT', 'INCLUDE', 'LIB',
   'LIBPATH', 'LIBRARY_PATH', 'MKLROOT', 'NLSPATH', 'PKG_CONFIG_PATH', 'TBBROOT',
@@ -37,8 +38,9 @@ export async function discoverSyclDynamicResources(activeDirectories, {
     .map((entry) => entry.name);
   const adapters = entries.filter((name) => LEVEL_ZERO_ADAPTER.test(name));
   requireRole('Level Zero Unified Runtime adapter', adapters, activeDirectories);
+  const openclAdapters = entries.filter((name) => OPENCL_ADAPTER.test(name));
   const proxy = entries.filter((name) => /^ur_win_proxy_loader\.dll$/i.test(name));
-  return [path.basename(loaderFiles[0]), ...adapters, ...proxy]
+  return [path.basename(loaderFiles[0]), ...adapters, ...openclAdapters, ...proxy]
     .sort()
     .map((name) => path.join(runtimeDirectory, name));
 }

@@ -197,6 +197,7 @@ test('logs the active runtime scope, selected runtime DLLs, resolved files, and 
   assert.match(output, /oneAPI license file:.*licensing.*license\.htm/is);
   assert.match(output, /active oneAPI runtime directory:.*compiler.*2026\.1.*bin/is);
   assert.match(output, /dynamic SYCL runtime DLL:.*ur_adapter_level_zero\.dll/is);
+  assert.match(output, /dynamic SYCL runtime DLL:.*ur_adapter_opencl\.dll/is);
   assert.match(output, /resolved bundle source:.*sycl42\.dll/is);
   assert.match(output, /excluded system dependency:.*KERNEL32\.dll/is);
 });
@@ -365,8 +366,13 @@ test('publishes only the oneAPI 2026 runtime contract after staged SYCL0 verific
     await readFile(path.join(fixture.syclDirectory, 'ur_adapter_level_zero.dll'), 'utf8'),
     'ur_adapter_level_zero.dll',
   );
+  assert.equal(
+    await readFile(path.join(fixture.syclDirectory, 'ur_adapter_opencl.dll'), 'utf8'),
+    'ur_adapter_opencl.dll',
+  );
   assert.equal(files.some((file) => file.endsWith('/ur_loader.dll')), true);
   assert.equal(files.some((file) => file.endsWith('/ur_adapter_level_zero.dll')), true);
+  assert.equal(files.some((file) => file.endsWith('/ur_adapter_opencl.dll')), true);
   assert.equal(files.some((file) => /\.spv$/i.test(file)), false);
 });
 
@@ -497,6 +503,7 @@ async function syclFixture(context) {
     [compilerBin, 'sycl42.dll'],
     [compilerBin, 'ur_loader.dll'],
     [compilerBin, 'ur_adapter_level_zero.dll'],
+    [compilerBin, 'ur_adapter_opencl.dll'],
     [mklBin, 'mkl_sycl_blas.42.dll'],
     [mklBin, 'mkl_core.42.dll'],
   ];
@@ -516,6 +523,7 @@ async function syclFixture(context) {
     ['llama-server.exe', ['llama-server-impl.dll']],
     ['ggml-sycl.dll', ['sycl42.dll', 'mkl_sycl_blas.42.dll']],
     ['sycl42.dll', ['VCRUNTIME140.dll', 'KERNEL32.dll']],
+    ['ur_adapter_opencl.dll', ['OpenCL.dll', 'VCRUNTIME140.dll']],
     ['mkl_sycl_blas.42.dll', ['mkl_core.42.dll']],
   ]);
   return {

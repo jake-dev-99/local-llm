@@ -17,6 +17,7 @@ test('discovers only oneAPI 2026 dynamic runtime DLLs beside the active Unified 
   assert.deepEqual(files.map((file) => path.basename(file)).sort(), [
     'ur_adapter_level_zero.dll',
     'ur_adapter_level_zero_v2.dll',
+    'ur_adapter_opencl.dll',
     'ur_loader.dll',
     'ur_win_proxy_loader.dll',
   ].sort());
@@ -61,6 +62,7 @@ test('logs and skips a missing active directory before discovering valid runtime
   assert.deepEqual(files.map((file) => path.basename(file)).sort(), [
     'ur_adapter_level_zero.dll',
     'ur_adapter_level_zero_v2.dll',
+    'ur_adapter_opencl.dll',
     'ur_loader.dll',
     'ur_win_proxy_loader.dll',
   ].sort());
@@ -225,6 +227,7 @@ async function runtimeFixture(context, syclRuntimeName, compilerDirectory = 'com
     syclRuntimeName,
     'ur_adapter_level_zero.dll',
     'ur_adapter_level_zero_v2.dll',
+    'ur_adapter_opencl.dll',
     'ur_loader.dll',
     'ur_win_proxy_loader.dll',
   ]) {

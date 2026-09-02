@@ -36,8 +36,8 @@ static PE import table.
 - Package the runtime required by the SYCL worker built with the active oneAPI
   installation without assuming a versioned runtime filename.
 - Continue resolving the complete non-system PE dependency closure.
-- Include the dynamically loaded Unified Runtime loader and Level Zero adapter
-  needed for Intel Arc execution.
+- Include the dynamically loaded Unified Runtime loader and available Intel GPU
+  adapters needed for Level Zero or OpenCL execution on Intel Arc.
 - Prove that the staged worker does not load files from the installed oneAPI
   environment.
 - Fail before replacing a previously valid bundle when dependency discovery,
@@ -68,21 +68,25 @@ The bundler will use three complementary sources of truth:
    the actual versioned DLL names imported by those roots and by every copied
    non-system DLL.
 3. **Semantic runtime DLLs.** The active oneAPI compiler directories are
-   searched for the Unified Runtime loader. Level Zero adapter variants are
-   selected beside that loader because they may not occur in PE imports.
+   searched for the Unified Runtime loader. Level Zero and OpenCL adapter
+   variants are selected beside that loader because they may not occur in PE
+   imports.
 
 The semantic dynamic resource rules express runtime roles rather than release
 filenames:
 
 - exactly one active Unified Runtime loader named `ur_loader.dll`;
 - one or more Level Zero adapters matching `ur_adapter_level_zero*.dll`;
+- every available OpenCL adapter matching `ur_adapter_opencl*.dll`;
 - the Windows Unified Runtime proxy loader when it is present in the active
   compiler runtime directory.
 
 The SYCL runtime DLL itself and math/runtime libraries are obtained through PE
-dependency closure. They are not required by a hard-coded basename. Optional
-OpenCL or non-Intel adapters are not semantic roots; they are included only if
-the selected roots actually depend on them.
+dependency closure. They are not required by a hard-coded basename. OpenCL
+adapters installed beside the active loader are semantic roots so a staged
+bundle can use the Intel GPU when Level Zero is unavailable. CUDA, HIP, and
+other non-Intel adapters are not included unless a selected root depends on
+them.
 
 Every discovered DLL root is also passed through recursive PE dependency
 resolution. When active oneAPI component paths expose the same basename, the
@@ -222,8 +226,8 @@ process output. They must prove:
   `sycl8.dll`;
 - versioned MKL DLL basenames are followed through PE closure rather than
   enumerated in source;
-- the Unified Runtime loader and all Level Zero adapter variants are included
-  as semantic runtime DLLs;
+- the Unified Runtime loader, all Level Zero adapter variants, and available
+  OpenCL adapter variants are included as semantic runtime DLLs;
 - a compiler older than oneAPI 2026 is rejected before CMake;
 - an absent required semantic role fails with the role and search scope;
 - byte-identical duplicate basenames from separate active component paths
