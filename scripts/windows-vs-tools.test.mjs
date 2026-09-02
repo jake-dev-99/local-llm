@@ -39,8 +39,12 @@ test('finds Visual Studio bundled CMake and Ninja without relying on PATH', asyn
       installationPath,
       'Common7', 'IDE', 'CommonExtensions', 'Microsoft', 'CMake', 'Ninja', 'ninja.exe',
     ),
+    developerCommand: path.win32.join(
+      installationPath,
+      'Common7', 'Tools', 'VsDevCmd.bat',
+    ),
   });
-  assert.deepEqual(accessed, [vswherePath, tools.cmake, tools.ninja]);
+  assert.deepEqual(accessed, [vswherePath, tools.cmake, tools.ninja, tools.developerCommand]);
 });
 
 test('fails before CMake with an actionable message when the CMake component is absent', async () => {
@@ -73,6 +77,23 @@ test('reports the exact missing bundled executable', async () => {
       installationPath,
       'Common7', 'IDE', 'CommonExtensions', 'Microsoft', 'CMake', 'Ninja', 'ninja.exe',
     ))}`),
+  );
+});
+
+test('reports the exact missing Visual Studio developer bootstrap', async () => {
+  await assert.rejects(
+    resolveVisualStudioBuildTools(
+      { 'ProgramFiles(x86)': 'C:\\Program Files (x86)' },
+      {
+        accessFile: async (file) => {
+          if (file.endsWith('VsDevCmd.bat')) {
+            throw new Error('missing');
+          }
+        },
+        captureFile: async () => `${installationPath}\r\n`,
+      },
+    ),
+    /Visual Studio developer environment bootstrap executable was not found: .*VsDevCmd\.bat/,
   );
 });
 

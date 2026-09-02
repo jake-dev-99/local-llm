@@ -23,6 +23,7 @@ export function parseWindowsEnvironment(stdout) {
 export async function loadOneApiEnvironment(baseEnv, dependencies = {}) {
   const accessFile = dependencies.accessFile ?? access;
   const runCmdScript = dependencies.runCmdScript ?? runWindowsCmdScript;
+  const visualStudioDeveloperCommand = dependencies.visualStudioDeveloperCommand;
   const oneApiRoot = baseEnv.ONEAPI_ROOT || defaultOneApiRoot;
   const setvarsPath = path.win32.join(oneApiRoot, 'setvars.bat');
   try {
@@ -30,15 +31,44 @@ export async function loadOneApiEnvironment(baseEnv, dependencies = {}) {
   } catch {
     throw new Error(`oneAPI bootstrap batch file was not found: ${setvarsPath}`);
   }
+  if (!visualStudioDeveloperCommand) {
+    throw new Error('Visual Studio developer environment bootstrap path is required for oneAPI.');
+  }
+  try {
+    await accessFile(visualStudioDeveloperCommand);
+  } catch {
+    throw new Error(
+      `Visual Studio developer environment bootstrap was not found: ${visualStudioDeveloperCommand}`,
+    );
+  }
 
   const script = [
+    `@call "${visualStudioDeveloperCommand}" -arch=amd64 -host_arch=amd64 >nul`,
+    '@if errorlevel 1 exit /b %errorlevel%',
     `@call "${setvarsPath}" intel64 --force >nul`,
     '@if errorlevel 1 exit /b %errorlevel%',
     '@set',
     '@exit /b 0',
   ].join('\r\n');
   const { stdout } = await runCmdScript(script, baseEnv);
-  return { ...baseEnv, ...parseWindowsEnvironment(stdout) };
+  const environment = { ...baseEnv, ...parseWindowsEnvironment(stdout) };
+  requireEnvironmentValue(
+    environment,
+    'VSCMD_VER',
+    'Visual Studio developer environment did not initialize (VSCMD_VER is missing).',
+  );
+  requireEnvironmentValue(
+    environment,
+    'LIB',
+    'Visual Studio developer environment is missing LIB, so Windows SDK libraries such as kernel32.lib cannot be linked.',
+  );
+  requireEnvironmentValue(
+    environment,
+    'INCLUDE',
+    'Visual Studio developer environment is missing INCLUDE, so Windows SDK headers cannot be compiled.',
+  );
+  await requireLibrary(environment, 'kernel32.lib', accessFile);
+  return environment;
 }
 
 export async function runWindowsCmdScript(script, environment, spawnProcess = spawn) {
@@ -99,4 +129,30 @@ export function resolveOneApiFiles(environment) {
     throw new Error('oneAPI environment is missing VCToolsRedistDir.');
   }
   return { oneApiRoot, setvarsPath, levelZeroSdkPath, vcToolsRedistDir };
+}
+
+function requireEnvironmentValue(environment, name, message) {
+  const key = Object.keys(environment).find((candidate) => candidate.toLowerCase() === name.toLowerCase());
+  if (!key || !environment[key]) {
+    throw new Error(message);
+  }
+}
+
+async function requireLibrary(environment, library, accessFile) {
+  const key = Object.keys(environment).find((candidate) => candidate.toLowerCase() === 'lib');
+  const directories = environment[key].split(';')
+    .map((directory) => directory.trim().replace(/^"(.*)"$/, '$1'))
+    .filter(Boolean);
+  for (const directory of directories) {
+    try {
+      await accessFile(path.win32.join(directory, library));
+      return;
+    } catch {
+      // Continue through every library directory before reporting the broken SDK environment.
+    }
+  }
+  throw new Error(
+    `${library} was not found in the Visual Studio LIB directories. `
+    + 'Repair or install the Windows 10/11 SDK through Visual Studio Installer.',
+  );
 }

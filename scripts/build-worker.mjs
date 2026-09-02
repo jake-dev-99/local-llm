@@ -21,6 +21,16 @@ const windowsTools = hostTarget === 'win32-x64'
 if (windowsTools) {
   console.log(`[worker-build] Using Visual Studio CMake: ${windowsTools.cmake}`);
   console.log(`[worker-build] Using Visual Studio Ninja: ${windowsTools.ninja}`);
+  console.log(`[worker-build] Using Visual Studio developer bootstrap: ${windowsTools.developerCommand}`);
+}
+
+const syclEnvironment = options.backend === 'sycl' || options.backend === 'all'
+  ? await loadOneApiEnvironment(process.env, {
+      visualStudioDeveloperCommand: windowsTools?.developerCommand,
+    })
+  : undefined;
+if (syclEnvironment) {
+  console.log('[worker-build] Visual Studio x64 and Intel oneAPI environments initialized.');
 }
 
 if (!(await exists(path.join(source, '.git')))) {
@@ -33,7 +43,7 @@ const backends = options.backend === 'all' ? ['cpu', 'sycl'] : [options.backend]
 const builds = [];
 for (const backend of backends) {
   const environment = backend === 'sycl'
-    ? await loadOneApiEnvironment(process.env)
+    ? syclEnvironment
     : process.env;
   builds.push(await buildWorker({
     ...options,

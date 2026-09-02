@@ -43,9 +43,18 @@ export async function resolveVisualStudioBuildTools(environment, dependencies = 
     installationPath,
     'Common7', 'IDE', 'CommonExtensions', 'Microsoft', 'CMake', 'Ninja', 'ninja.exe',
   );
+  const developerCommand = path.win32.join(
+    installationPath,
+    'Common7', 'Tools', 'VsDevCmd.bat',
+  );
   await requireExecutable(accessFile, cmake, 'CMake');
   await requireExecutable(accessFile, ninja, 'Ninja');
-  return { cmake, ninja };
+  await requireExecutable(
+    accessFile,
+    developerCommand,
+    'Visual Studio developer environment bootstrap',
+  );
+  return { cmake, ninja, developerCommand };
 }
 
 async function requireExecutable(accessFile, executable, name) {

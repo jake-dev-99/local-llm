@@ -69,7 +69,11 @@ The build machine needs:
 
 The Visual Studio CMake component supplies both `cmake.exe` and `ninja.exe`. They do not need to
 be on `PATH`: the worker build locates the Visual Studio installation with `vswhere.exe`, verifies
-both executable paths before cloning or compiling llama.cpp, and passes the absolute paths directly.
+both executable paths, and passes the absolute paths directly. It also locates `VsDevCmd.bat`, uses
+it to initialize the x64 MSVC and Windows SDK environment, then initializes oneAPI in the same
+`cmd.exe` session. The build checks `VSCMD_VER`, `LIB`, and `INCLUDE`, then confirms that
+`kernel32.lib` actually exists in the resolved library directories before cloning or compiling
+llama.cpp. A missing Windows SDK environment therefore fails before CMake instead of at the linker.
 
 The installed VSIX must not require those developer tools. Required runtime DLLs, SPIR-V files, and controlling licenses are copied into the SYCL worker bundle.
 
@@ -79,14 +83,15 @@ Run these preflight checks from Git Bash or zsh:
 node --version
 "/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe" -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.CMake.Project -find 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
 "/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe" -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.CMake.Project -find 'Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe'
+"/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe" -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.CMake.Project -find 'Common7\Tools\VsDevCmd.bat'
 cmd.exe /d /s /c 'if exist "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" (exit /b 0) else (exit /b 1)'
-cmd.exe /d /s /c 'call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" intel64 --force >nul && where cl && where icx'
 ```
 
-Do not proceed until both `vswhere.exe` searches print an executable path and `setvars.bat`, `cl`,
-and `icx` all resolve. If Visual Studio is installed somewhere else, the build still discovers its
+Do not proceed until all three `vswhere.exe` searches print a path and the `setvars.bat` existence
+check succeeds. If Visual Studio is installed somewhere else, the build still discovers its
 installation path automatically; only the optional manual `vswhere.exe` checks above use the default
-installer location.
+installer location. The build command itself performs the authoritative developer-environment check
+and prints the exact CMake, Ninja, and `VsDevCmd.bat` paths it uses.
 
 ## Build the real CPU and SYCL bundles
 
