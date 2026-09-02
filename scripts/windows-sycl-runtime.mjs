@@ -101,7 +101,7 @@ async function readDirectoryOrSkip(directory, { log, readDirectory }) {
   try {
     return await readDirectory(directory, { withFileTypes: true });
   } catch (error) {
-    if (error?.code !== 'ENOENT') {
+    if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') {
       throw error;
     }
     log(`[sycl-package] skipped missing active oneAPI runtime directory: ${directory}`);

@@ -72,6 +72,30 @@ test('logs and skips a missing active directory before discovering valid runtime
   ]);
 });
 
+test('logs and skips an ENOTDIR active path before discovering valid runtime resources', async (context) => {
+  const fixture = await runtimeFixture(context, 'sycl42.dll');
+  const stalePath = path.join(path.dirname(fixture.compilerBin), 'lib', 'ocloc');
+  const messages = [];
+  let scanCount = 0;
+  const readDirectory = async (directory, options) => {
+    scanCount += 1;
+    if (scanCount === 1) {
+      const error = new Error(`not a directory: ${directory}`);
+      error.code = 'ENOTDIR';
+      throw error;
+    }
+    return readdir(directory, options);
+  };
+  const files = await discoverSyclDynamicResources([stalePath, fixture.compilerBin], {
+    log: (message) => messages.push(message),
+    readDirectory,
+  });
+  assert.equal(files.some((file) => path.basename(file) === 'ur_loader.dll'), true);
+  assert.deepEqual(messages, [
+    `[sycl-package] skipped missing active oneAPI runtime directory: ${stalePath}`,
+  ]);
+});
+
 test('reports the semantic missing-loader error when every active directory is missing', async (context) => {
   const root = await mkdtemp(path.join(tmpdir(), 'windows-sycl-runtime-missing-'));
   context.after(() => rm(root, { recursive: true, force: true }));
@@ -99,15 +123,15 @@ test('rethrows non-missing filesystem errors while scanning active directories',
   );
 });
 
-test('logs and skips a runtime directory that disappears during detailed payload scanning', async (context) => {
+test('logs and skips an ENOTDIR runtime directory during detailed payload scanning', async (context) => {
   const fixture = await runtimeFixture(context, 'sycl42.dll');
   const messages = [];
   let scanCount = 0;
   const readDirectory = async (directory, options) => {
     scanCount += 1;
     if (scanCount === 2) {
-      const error = new Error(`directory disappeared: ${directory}`);
-      error.code = 'ENOENT';
+      const error = new Error(`not a directory: ${directory}`);
+      error.code = 'ENOTDIR';
       throw error;
     }
     return readdir(directory, options);
