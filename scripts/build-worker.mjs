@@ -99,7 +99,6 @@ async function publishWorker({ target, backend, environment, binary }) {
       destination: path.dirname(destination),
       oneApiRoot: oneApi.oneApiRoot,
       vcToolsRedistDir: oneApi.vcToolsRedistDir,
-      levelZeroSdkPath: oneApi.levelZeroSdkPath,
       oneApiPath: environmentValue(environment, 'PATH'),
       systemRoot: environmentValue(environment, 'SystemRoot'),
       runDumpbin: async (absoluteFile) => await capture(

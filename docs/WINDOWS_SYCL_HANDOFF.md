@@ -64,8 +64,8 @@ The build machine needs:
 - x64 Windows 11;
 - Node.js 22 or newer;
 - Visual Studio 2022 C++ build tools, including the **C++ CMake tools for Windows** component;
-- Intel oneAPI 2025.3.3, including Deep Learning Essentials; and
-- the Level Zero 1.28.2 SDK.
+- Intel oneAPI, including Deep Learning Essentials; and
+- a current Intel Arc Pro graphics driver providing the system Level Zero runtime.
 
 The Visual Studio CMake component supplies both `cmake.exe` and `ninja.exe`. They do not need to
 be on `PATH`: the worker build locates the Visual Studio installation with `vswhere.exe`, verifies
@@ -75,7 +75,10 @@ it to initialize the x64 MSVC and Windows SDK environment, then initializes oneA
 `kernel32.lib` actually exists in the resolved library directories before cloning or compiling
 llama.cpp. A missing Windows SDK environment therefore fails before CMake instead of at the linker.
 
-The installed VSIX must not require those developer tools. Required runtime DLLs, SPIR-V files, and controlling licenses are copied into the SYCL worker bundle.
+The installed VSIX must not require those developer tools. Required redistributable runtime DLLs,
+SPIR-V files, and controlling licenses are copied into the SYCL worker bundle. The Intel graphics
+driver remains a host prerequisite because it supplies the Level Zero loader and GPU driver; a
+standalone Level Zero SDK path is not used by either the build or the installed extension.
 
 Run these preflight checks from Git Bash or zsh:
 

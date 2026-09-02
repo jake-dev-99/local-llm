@@ -331,7 +331,6 @@ async function syclFixture(context) {
       destination,
       oneApiRoot,
       vcToolsRedistDir: path.join(root, 'vc-redist'),
-      levelZeroSdkPath: path.join(root, 'level-zero'),
       runDumpbin: async () => '',
     },
   };

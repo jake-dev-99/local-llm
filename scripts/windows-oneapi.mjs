@@ -120,15 +120,11 @@ export async function runWindowsCmdScript(script, environment, spawnProcess = sp
 export function resolveOneApiFiles(environment) {
   const oneApiRoot = environment.ONEAPI_ROOT || defaultOneApiRoot;
   const setvarsPath = path.win32.join(oneApiRoot, 'setvars.bat');
-  const levelZeroSdkPath = environment.LEVEL_ZERO_V1_SDK_PATH;
-  if (!levelZeroSdkPath) {
-    throw new Error('oneAPI environment is missing LEVEL_ZERO_V1_SDK_PATH.');
-  }
   const vcToolsRedistDir = environment.VCToolsRedistDir;
   if (!vcToolsRedistDir) {
     throw new Error('oneAPI environment is missing VCToolsRedistDir.');
   }
-  return { oneApiRoot, setvarsPath, levelZeroSdkPath, vcToolsRedistDir };
+  return { oneApiRoot, setvarsPath, vcToolsRedistDir };
 }
 
 function requireEnvironmentValue(environment, name, message) {

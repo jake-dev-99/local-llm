@@ -151,25 +151,22 @@ test('cmd transport writes the batch script to stdin instead of a slash-c argume
   assert.equal(input, `${script}\r\n`);
 });
 
-test('ignores cmd pseudo-variables and resolves emitted toolchain paths', () => {
+test('ignores cmd pseudo-variables', () => {
   assert.deepEqual(parseWindowsEnvironment('=C:=C:\\repo\r\nPATH=C:\\bin\r\n'), {
     PATH: 'C:\\bin',
   });
-  assert.deepEqual(resolveOneApiFiles({
-    ONEAPI_ROOT: 'C:\\Intel\\oneAPI',
-    LEVEL_ZERO_V1_SDK_PATH: 'C:\\level-zero',
-    VCToolsRedistDir: 'C:\\VS\\VC\\Redist',
-  }), {
-    oneApiRoot: 'C:\\Intel\\oneAPI',
-    setvarsPath: 'C:\\Intel\\oneAPI\\setvars.bat',
-    levelZeroSdkPath: 'C:\\level-zero',
-    vcToolsRedistDir: 'C:\\VS\\VC\\Redist',
-  });
 });
 
-test('requires the Level Zero SDK from the bootstrapped environment', () => {
-  assert.throws(
-    () => resolveOneApiFiles({ ONEAPI_ROOT: 'C:\\Intel\\oneAPI', VCToolsRedistDir: 'C:\\VS\\VC\\Redist' }),
-    /LEVEL_ZERO_V1_SDK_PATH/,
+test('does not require an unused standalone Level Zero SDK path', () => {
+  assert.deepEqual(
+    resolveOneApiFiles({
+      ONEAPI_ROOT: 'C:\\Intel\\oneAPI',
+      VCToolsRedistDir: 'C:\\VS\\VC\\Redist',
+    }),
+    {
+      oneApiRoot: 'C:\\Intel\\oneAPI',
+      setvarsPath: 'C:\\Intel\\oneAPI\\setvars.bat',
+      vcToolsRedistDir: 'C:\\VS\\VC\\Redist',
+    },
   );
 });
