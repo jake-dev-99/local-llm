@@ -103,6 +103,18 @@ npm ci
 npm run build:worker -- --target win32-x64 --backend all
 ```
 
+The SYCL packager uses the active oneAPI environment that built the worker. It
+does not require a version-specific runtime filename such as `sycl8.dll`.
+Build output lists the Intel compiler banner, active oneAPI runtime directories,
+resolved non-system dependencies, semantic Level Zero resources, and excluded
+system dependencies.
+
+Before publishing the bundle, the build runs the staged
+`llama-server.exe --list-devices` with oneAPI development paths and variables
+removed. The build fails unless that isolated process reports `SYCL0`. A
+failure leaves the prior bundle and worker manifest unchanged; do not copy a
+missing DLL manually or switch to the CPU bundle implicitly.
+
 This must build locally from the pinned llama.cpp source. Do not substitute an upstream release archive or fabricate the SYCL files.
 
 The checked-in manifest is intentionally still version 1 before this command. The build publishes the isolated CPU entry first, then migrates to version 2 only when the SYCL bundle is assembled. If the command fails, do not hand-edit hashes or claim that migration completed.

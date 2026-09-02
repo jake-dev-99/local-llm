@@ -13,7 +13,7 @@ test('Windows packaging requires and verifies both bundles', async (context) => 
   await rm(fixture.syclDll);
   await assert.rejects(
     prepareTargetWorkers(fixture.root, 'win32-x64'),
-    /sycl8\.dll/,
+    /Worker bundle file is missing.*sycl-runtime\.dll/is,
   );
 });
 
@@ -74,7 +74,7 @@ async function packageFixture(context, target) {
           sycl: await workerBundle(
             root,
             'resources/workers/win32-x64/sycl/llama-server.exe',
-            ['resources/workers/win32-x64/sycl/sycl8.dll'],
+            ['resources/workers/win32-x64/sycl/sycl-runtime.dll'],
           ),
           cpu: await workerBundle(root, 'resources/workers/win32-x64/cpu/llama-server.exe'),
         },
@@ -88,7 +88,7 @@ async function packageFixture(context, target) {
   return {
     root,
     target,
-    syclDll: path.join(root, 'resources', 'workers', 'win32-x64', 'sycl', 'sycl8.dll'),
+    syclDll: path.join(root, 'resources', 'workers', 'win32-x64', 'sycl', 'sycl-runtime.dll'),
     windowsDirectory: path.join(root, 'resources', 'workers', 'win32-x64'),
   };
 }
