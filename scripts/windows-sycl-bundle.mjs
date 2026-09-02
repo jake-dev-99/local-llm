@@ -2,28 +2,11 @@ import { cp, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } fr
 import path from 'node:path';
 
 import { parseWorkerManifest, replaceWorkerBundle, sha256File } from '../src/worker/workerManifest.ts';
-
-export const REQUIRED_SYCL_COMPANIONS = [
-  'compiler/latest/bin/sycl8.dll',
-  'compiler/latest/bin/ur_adapter_level_zero.dll',
-  'compiler/latest/bin/ur_adapter_level_zero_v2.dll',
-  'compiler/latest/bin/ur_adapter_opencl.dll',
-  'compiler/latest/bin/ur_loader.dll',
-  'compiler/latest/bin/ur_win_proxy_loader.dll',
-  'compiler/latest/bin/svml_dispmd.dll',
-  'compiler/latest/bin/libmmd.dll',
-  'compiler/latest/bin/libiomp5md.dll',
-  'compiler/latest/bin/libsycl-fallback-bfloat16.spv',
-  'compiler/latest/bin/libsycl-native-bfloat16.spv',
-  'mkl/latest/bin/mkl_sycl_blas.5.dll',
-  'mkl/latest/bin/mkl_core.2.dll',
-  'mkl/latest/bin/mkl_tbb_thread.2.dll',
-  'dnnl/latest/bin/dnnl.dll',
-  'tbb/latest/bin/tbb12.dll',
-  'tcm/latest/bin/tcm.dll',
-  'tcm/latest/bin/libhwloc-15.dll',
-  'umf/latest/bin/umf.dll',
-];
+import {
+  activeOneApiRuntimeDirectories,
+  discoverSyclDynamicResources,
+  verifyStagedSyclBundle,
+} from './windows-sycl-runtime.mjs';
 
 export const REQUIRED_LLAMA_BACKEND_MODULES = [
   'ggml-cpu.dll',
@@ -55,12 +38,12 @@ export function parseDumpbinDependents(output) {
 }
 
 export async function collectDependencyClosure(roots, options) {
-  const queue = [...roots];
+  const queue = roots.map((absoluteFile) => ({ absoluteFile, importedBy: undefined }));
   const files = [];
   const seen = new Map();
 
   while (queue.length > 0) {
-    const absoluteFile = queue.shift();
+    const { absoluteFile } = queue.shift();
     const key = path.basename(absoluteFile).toLowerCase();
     const previous = seen.get(key);
     if (previous && normalizedSourcePath(previous) !== normalizedSourcePath(absoluteFile)) {
@@ -80,9 +63,12 @@ export async function collectDependencyClosure(roots, options) {
         continue;
       }
       if (!resolved) {
-        throw new Error(`Required dependency ${dllName} could not be resolved.`);
+        throw new Error(
+          `Required dependency ${dllName} imported by ${absoluteFile} could not be resolved. `
+          + `Searched: ${options.searchDirectories.join(', ')}.`,
+        );
       }
-      queue.push(resolved);
+      queue.push({ absoluteFile: resolved, importedBy: absoluteFile });
     }
   }
 
@@ -90,6 +76,13 @@ export async function collectDependencyClosure(roots, options) {
 }
 
 export async function assembleWindowsSyclBundle(options) {
+  if (!options.environment || typeof options.environment !== 'object' || Array.isArray(options.environment)) {
+    throw new Error('Windows SYCL bundle assembly requires an environment record.');
+  }
+  if (typeof options.runProcess !== 'function') {
+    throw new Error('Windows SYCL bundle assembly requires a runProcess function.');
+  }
+
   const executable = path.join(options.buildOutput, 'llama-server.exe');
   await requireFile(executable, 'Built SYCL executable llama-server.exe was not found');
 
@@ -102,22 +95,13 @@ export async function assembleWindowsSyclBundle(options) {
     backendModules.push(absolute);
   }
 
-  const companionFiles = [];
-  for (const relative of REQUIRED_SYCL_COMPANIONS) {
-    const absolute = path.join(options.oneApiRoot, ...relative.split('/'));
-    if (!(await isFile(absolute))) {
-      throw new Error(`Required SYCL runtime file ${path.basename(relative)} was not found at ${absolute}.`);
-    }
-    companionFiles.push({ absolute, component: relative.split('/')[0] });
-  }
-
-  const licenses = await collectControllingLicenses(options.oneApiRoot, companionFiles);
   const pathDirectories = options.pathDirectories ?? splitSearchPath(options.oneApiPath ?? process.env.PATH);
   const systemRoot = options.systemRoot ?? process.env.SystemRoot ?? 'C:\\Windows';
   const system32 = path.join(systemRoot, 'System32');
   const vcRuntime = path.join(options.vcToolsRedistDir, 'x64', 'Microsoft.VC143.CRT');
   const oneApiDirectories = pathDirectories.filter((directory) => !isAtOrBelow(systemRoot, directory));
   const pathSystemDirectories = pathDirectories.filter((directory) => isAtOrBelow(systemRoot, directory));
+  const activeDirectories = activeOneApiRuntimeDirectories(options.oneApiRoot, oneApiDirectories);
   const searchDirectories = [
     options.buildOutput,
     ...oneApiDirectories,
@@ -125,35 +109,55 @@ export async function assembleWindowsSyclBundle(options) {
     ...pathSystemDirectories,
     system32,
   ];
-  const closure = await collectDependencyClosure(
-    [...backendModules, ...companionFiles.map((file) => file.absolute), executable],
-    {
-      imports: async (absoluteFile) => (
-        /\.(?:exe|dll)$/i.test(absoluteFile)
-          ? parseDumpbinDependents(await options.runDumpbin(absoluteFile))
-          : []
-      ),
-      resolve: async (dllName) => {
-        for (const directory of searchDirectories) {
-          const found = await findNamedFile(directory, dllName);
-          if (found) {
-            return found;
-          }
-        }
-        return undefined;
-      },
-      isSystemDependency: (dllName, absoluteFile) => (
-        isSystemDependencyName(dllName) || (absoluteFile ? isBelow(system32, absoluteFile) : false)
-      ),
+  const excludedSystemDependencies = new Set();
+  const closureOptions = {
+    imports: async (absoluteFile) => (
+      /\.(?:exe|dll)$/i.test(absoluteFile)
+        ? parseDumpbinDependents(await options.runDumpbin(absoluteFile))
+        : []
+    ),
+    resolve: resolveFrom(searchDirectories),
+    isSystemDependency: (dllName, absoluteFile) => {
+      const excluded = isSystemDependencyName(dllName) || (absoluteFile ? isBelow(system32, absoluteFile) : false);
+      if (excluded) {
+        excludedSystemDependencies.add(dllName);
+      }
+      return excluded;
     },
+    searchDirectories,
+  };
+  const baseRoots = [...backendModules, executable];
+  await collectDependencyClosure(baseRoots, closureOptions);
+  const dynamicResources = await discoverSyclDynamicResources(activeDirectories);
+  const dynamicDlls = dynamicResources.filter((file) => /\.dll$/i.test(file));
+  const closure = await collectDependencyClosure([...baseRoots, ...dynamicDlls], closureOptions);
+  const nonPeResources = dynamicResources.filter((file) => !/\.dll$/i.test(file));
+  const bundleSources = [...closure, ...nonPeResources];
+  const licenses = await collectControllingLicenses(
+    options.oneApiRoot,
+    classifyOneApiFiles(options.oneApiRoot, bundleSources),
   );
+  const log = options.log ?? console.log;
+  log(`[sycl-package] oneAPI root: ${options.oneApiRoot}`);
+  for (const directory of activeDirectories) {
+    log(`[sycl-package] active oneAPI runtime directory: ${directory}`);
+  }
+  for (const file of dynamicResources) {
+    log(`[sycl-package] dynamic SYCL resource: ${file}`);
+  }
+  for (const file of bundleSources) {
+    log(`[sycl-package] resolved bundle source: ${file}`);
+  }
+  for (const dependency of [...excludedSystemDependencies].sort()) {
+    log(`[sycl-package] excluded system dependency: ${dependency}`);
+  }
 
   const parent = path.dirname(options.destination);
   await mkdir(parent, { recursive: true });
   const staging = await mkdtemp(path.join(parent, '.sycl-stage-'));
   try {
     const copiedNames = new Map();
-    for (const source of closure) {
+    for (const source of bundleSources) {
       const name = path.basename(source);
       const key = name.toLowerCase();
       const previous = copiedNames.get(key);
@@ -171,6 +175,12 @@ export async function assembleWindowsSyclBundle(options) {
       await cp(license.absolute, output);
     }
 
+    await verifyStagedSyclBundle({
+      staging,
+      systemRoot,
+      baseEnvironment: options.environment,
+      runProcess: options.runProcess,
+    });
     const bundle = await describeStagedBundle(options.root, options.destination, staging);
     await rm(options.destination, { recursive: true, force: true });
     await rename(staging, options.destination);
@@ -343,6 +353,30 @@ async function describeStagedBundle(root, destination, staging) {
     throw new Error('The assembled SYCL bundle does not contain llama-server.exe.');
   }
   return { executable, files };
+}
+
+function classifyOneApiFiles(oneApiRoot, files) {
+  return files.flatMap((absolute) => {
+    if (!isAtOrBelow(oneApiRoot, absolute)) return [];
+    const relative = path.relative(oneApiRoot, absolute);
+    const [component] = relative.split(path.sep);
+    if (!component || component === '..') {
+      throw new Error(`Could not identify the oneAPI component for ${absolute}.`);
+    }
+    return [{ absolute, component }];
+  });
+}
+
+function resolveFrom(searchDirectories) {
+  return async (dllName) => {
+    for (const directory of searchDirectories) {
+      const found = await findNamedFile(directory, dllName);
+      if (found) {
+        return found;
+      }
+    }
+    return undefined;
+  };
 }
 
 async function findNamedFile(directory, name) {
