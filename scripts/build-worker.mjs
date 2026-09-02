@@ -6,7 +6,7 @@ import process from 'node:process';
 import { sha256File } from '../src/worker/workerManifest.ts';
 import { cmakeOptionsForBuild, parseWorkerBuildOptions } from './worker-build-options.mjs';
 import { assembleWindowsSyclBundle, writeUpdatedManifest } from './windows-sycl-bundle.mjs';
-import { loadOneApiEnvironment, resolveOneApiFiles } from './windows-oneapi.mjs';
+import { identifyOneApiCompiler, loadOneApiEnvironment, resolveOneApiFiles } from './windows-oneapi.mjs';
 import { resolveVisualStudioBuildTools } from './windows-vs-tools.mjs';
 
 const LLAMA_CPP_COMMIT = '60eeeb6082c1126bb8bc72902c83123cd056811b';
@@ -31,6 +31,12 @@ const syclEnvironment = options.backend === 'sycl' || options.backend === 'all'
   : undefined;
 if (syclEnvironment) {
   console.log('[worker-build] Visual Studio x64 and Intel oneAPI environments initialized.');
+}
+const oneApiCompiler = syclEnvironment
+  ? await identifyOneApiCompiler(syclEnvironment, captureProcess)
+  : undefined;
+if (oneApiCompiler) {
+  console.log(`[worker-build] Intel compiler: ${oneApiCompiler}`);
 }
 
 if (!(await exists(path.join(source, '.git')))) {
@@ -101,6 +107,8 @@ async function publishWorker({ target, backend, environment, binary }) {
       vcToolsRedistDir: oneApi.vcToolsRedistDir,
       oneApiPath: environmentValue(environment, 'PATH'),
       systemRoot: environmentValue(environment, 'SystemRoot'),
+      environment,
+      runProcess: captureProcess,
       runDumpbin: async (absoluteFile) => await capture(
         'dumpbin',
         ['/nologo', '/dependents', absoluteFile],
@@ -169,26 +177,37 @@ async function run(command, args, cwd = root, environment = process.env) {
 }
 
 async function capture(command, args, cwd = root, environment = process.env) {
+  const result = await captureProcess(command, args, { cwd, env: environment });
+  if (result.code !== 0) {
+    const detail = result.stderr.trim();
+    throw new Error(
+      `${command} exited with code ${result.code ?? 'unknown'}${detail ? `:\n${detail}` : '.'}`,
+    );
+  }
+  return result.stdout;
+}
+
+async function captureProcess(command, args, options = {}) {
   return await new Promise((resolve, reject) => {
-    const cleanEnvironment = cleanBuildEnvironment(environment);
     const child = spawn(command, args, {
-      cwd,
-      env: cleanEnvironment,
-      stdio: ['ignore', 'pipe', 'inherit'],
+      cwd: options.cwd ?? root,
+      env: cleanBuildEnvironment(options.env ?? process.env),
+      stdio: ['ignore', 'pipe', 'pipe'],
       shell: false,
     });
     let stdout = '';
+    let stderr = '';
     child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
     child.stdout.on('data', (chunk) => {
       stdout += chunk;
     });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+    });
     child.once('error', reject);
-    child.once('exit', (code) => {
-      if (code === 0) {
-        resolve(stdout);
-      } else {
-        reject(new Error(`${command} exited with code ${code ?? 'unknown'}.`));
-      }
+    child.once('close', (code) => {
+      resolve({ code, stdout, stderr });
     });
   });
 }

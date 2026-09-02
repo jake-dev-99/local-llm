@@ -4,6 +4,7 @@ import { PassThrough } from 'node:stream';
 import test from 'node:test';
 
 import {
+  identifyOneApiCompiler,
   loadOneApiEnvironment,
   parseWindowsEnvironment,
   resolveOneApiFiles,
@@ -168,5 +169,22 @@ test('does not require an unused standalone Level Zero SDK path', () => {
       setvarsPath: 'C:\\Intel\\oneAPI\\setvars.bat',
       vcToolsRedistDir: 'C:\\VS\\VC\\Redist',
     },
+  );
+});
+
+test('returns the first non-empty Intel compiler banner line', async () => {
+  const banner = await identifyOneApiCompiler({ KEEP_ME: 'yes' }, async (command, args, options) => {
+    assert.equal(command, 'icx');
+    assert.deepEqual(args, ['--version']);
+    assert.equal(options.env.KEEP_ME, 'yes');
+    return { code: 0, stdout: '\r\nIntel(R) oneAPI DPC++/C++ Compiler 2026.1.0\r\nBuild 1', stderr: '' };
+  });
+  assert.equal(banner, 'Intel(R) oneAPI DPC++/C++ Compiler 2026.1.0');
+});
+
+test('fails before CMake when the active Intel compiler cannot be identified', async () => {
+  await assert.rejects(
+    identifyOneApiCompiler({}, async () => ({ code: 1, stdout: '', stderr: 'icx failed' })),
+    /identify Intel oneAPI compiler.*code 1.*icx failed/is,
   );
 });

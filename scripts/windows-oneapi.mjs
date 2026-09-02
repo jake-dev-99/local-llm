@@ -20,6 +20,19 @@ export function parseWindowsEnvironment(stdout) {
   return environment;
 }
 
+export async function identifyOneApiCompiler(environment, runProcess) {
+  const result = await runProcess('icx', ['--version'], { env: environment });
+  const output = [result.stdout, result.stderr].filter(Boolean).join('\n').trim();
+  if (result.code !== 0) {
+    throw new Error(`Could not identify Intel oneAPI compiler; icx exited with code ${result.code ?? 'unknown'}${output ? `:\n${output}` : '.'}`);
+  }
+  const banner = output.split(/\r?\n/).map((line) => line.trim()).find(Boolean);
+  if (!banner || !/intel|oneapi|dpc\+\+/i.test(banner)) {
+    throw new Error(`Could not identify Intel oneAPI compiler from icx --version output${output ? `:\n${output}` : '.'}`);
+  }
+  return banner;
+}
+
 export async function loadOneApiEnvironment(baseEnv, dependencies = {}) {
   const accessFile = dependencies.accessFile ?? access;
   const runCmdScript = dependencies.runCmdScript ?? runWindowsCmdScript;
