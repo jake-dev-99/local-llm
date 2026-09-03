@@ -53,7 +53,12 @@ export interface InstalledModel {
 export type WorkerState =
   | { kind: 'stopped' }
   | { kind: 'starting'; modelId: string }
-  | { kind: 'ready'; modelId: string; port: number }
+  | {
+      kind: 'ready';
+      modelId: string;
+      port: number;
+      activity?: 'generating-response';
+    }
   | { kind: 'stopping'; modelId: string }
   | { kind: 'failed'; modelId?: string; message: string };
 

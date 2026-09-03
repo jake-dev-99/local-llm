@@ -27,6 +27,15 @@ interface WorkerRequestInit {
 
 interface OpenAiChunk {
   error?: unknown;
+  timings?: {
+    cache_n?: number;
+    prompt_n?: number;
+    prompt_ms?: number;
+    prompt_per_second?: number;
+    predicted_n?: number;
+    predicted_ms?: number;
+    predicted_per_second?: number;
+  };
   choices?: Array<{
     delta?: {
       content?: string;
@@ -45,9 +54,15 @@ interface PendingToolCall {
   arguments: string;
 }
 
+interface ConsumedSseFrame {
+  text: string;
+  timings?: NonNullable<OpenAiChunk['timings']>;
+}
+
 const TOKEN_COUNT_CACHE_MAX_ENTRIES = 4_096;
 const TOKEN_COUNT_CACHE_MAX_TEXT_LENGTH = 32 * 1_024;
 const WORKER_CONNECTION_MAX_REQUESTS = 64;
+const GENERATION_PHASE = '[Generating Response]';
 
 export interface ChatResult {
   inputTokens: number;
@@ -187,13 +202,13 @@ export class LlamaClient {
       startedAt: Date.now(),
     };
     this.diagnostics?.info(
-      `${trace.id} start: messages=${request.messages.length} tools=${tools.length} ` +
+      `${GENERATION_PHASE} ${trace.id} start: messages=${request.messages.length} tools=${tools.length} ` +
       `toolChoice=${toolChoice} maxOutputTokens=${request.maxTokens}.`,
     );
 
     const result = await this.executeChat(request, onEvent, trace, signal);
     this.diagnostics?.info(
-      `${trace.id} complete: inputTokens=${result.inputTokens} ` +
+      `${GENERATION_PHASE} ${trace.id} complete: inputTokens=${result.inputTokens} ` +
       `outputCharacters=${result.textCharacters} toolCalls=${result.toolCallCount} ` +
       `elapsed=${Date.now() - trace.startedAt} ms.`,
     );
@@ -245,7 +260,7 @@ export class LlamaClient {
     if (toolChoice === 'required') {
       this.nativeToolCalls = 'unavailable';
       this.diagnostics?.info(
-        'This model returned no required native tool call; using schema-constrained decisions for this runtime fingerprint.',
+        `${GENERATION_PHASE} This model returned no required native tool call; using schema-constrained decisions for this runtime fingerprint.`,
       );
     }
     return this.schemaConstrainedDecision(
@@ -319,7 +334,7 @@ export class LlamaClient {
       : request.maxTokens;
     if (toolChoice === 'required' && outputTokenLimit < request.maxTokens) {
       this.diagnostics?.info(
-        `Required tool generation output limit: ${outputTokenLimit} tokens (chat limit ${request.maxTokens}).`,
+        `${GENERATION_PHASE} Required tool generation output limit: ${outputTokenLimit} tokens (chat limit ${request.maxTokens}).`,
       );
     }
     const body: Record<string, unknown> = {
@@ -340,7 +355,7 @@ export class LlamaClient {
     );
     Object.assign(body, withTools({}, measured.tools, workerToolChoice));
     this.diagnostics?.info(
-      `${trace.id} prompt budget (${stage}): ${measured.inputTokens}/${request.inputTokenBudget} ` +
+      `${GENERATION_PHASE} ${trace.id} prompt budget (${stage}): ${measured.inputTokens}/${request.inputTokenBudget} ` +
       `input tokens with ${tools.length} tool${tools.length === 1 ? '' : 's'}.`,
     );
 
@@ -350,7 +365,7 @@ export class LlamaClient {
       ...requestSignal(signal),
     });
     this.diagnostics?.info(
-      `${trace.id} response headers (${stage}): elapsed=${Date.now() - trace.startedAt} ms.`,
+      `${GENERATION_PHASE} ${trace.id} response headers (${stage}): elapsed=${Date.now() - trace.startedAt} ms.`,
     );
     if (!response.body) {
       throw new Error('The local worker returned an empty streaming response.');
@@ -369,14 +384,18 @@ export class LlamaClient {
       if (firstStreamData && value && value.byteLength > 0) {
         firstStreamData = false;
         this.diagnostics?.info(
-          `${trace.id} first stream data (${stage}): elapsed=${Date.now() - trace.startedAt} ms.`,
+          `${GENERATION_PHASE} ${trace.id} first stream data (${stage}): elapsed=${Date.now() - trace.startedAt} ms.`,
         );
       }
       buffer += decoder.decode(value, { stream: !done });
       const frames = buffer.split(/\r?\n\r?\n/);
       buffer = frames.pop() ?? '';
       for (const frame of frames) {
-        const text = this.consumeSseFrame(frame, pendingTools);
+        const consumed = this.consumeSseFrame(frame, pendingTools);
+        if (consumed.timings) {
+          this.logTimings(trace, stage, consumed.timings);
+        }
+        const text = consumed.text;
         textCharacters += text.length;
         if (bufferText) {
           bufferedText += text;
@@ -389,7 +408,11 @@ export class LlamaClient {
       }
     }
     if (buffer.trim()) {
-      const text = this.consumeSseFrame(buffer, pendingTools);
+      const consumed = this.consumeSseFrame(buffer, pendingTools);
+      if (consumed.timings) {
+        this.logTimings(trace, stage, consumed.timings);
+      }
+      const text = consumed.text;
       textCharacters += text.length;
       if (bufferText) {
         bufferedText += text;
@@ -457,7 +480,7 @@ export class LlamaClient {
       );
     }
     this.diagnostics?.info(
-      `Native tool output was unavailable; using one schema-constrained ${toolRequired ? 'required' : 'automatic'} decision.`,
+      `${GENERATION_PHASE} Native tool output was unavailable; using one schema-constrained ${toolRequired ? 'required' : 'automatic'} decision.`,
     );
     const response = await this.request('/v1/chat/completions', {
       method: 'POST',
@@ -465,7 +488,7 @@ export class LlamaClient {
       ...requestSignal(signal),
     });
     this.diagnostics?.info(
-      `${trace.id} response headers (schema decision): elapsed=${Date.now() - trace.startedAt} ms.`,
+      `${GENERATION_PHASE} ${trace.id} response headers (schema decision): elapsed=${Date.now() - trace.startedAt} ms.`,
     );
     const content = await this.readStreamedContent(
       response,
@@ -523,27 +546,28 @@ export class LlamaClient {
   private consumeSseFrame(
     frame: string,
     pendingTools: Map<number, PendingToolCall>,
-  ): string {
+  ): ConsumedSseFrame {
     const data = frame
       .split(/\r?\n/)
       .filter((line) => line.startsWith('data:'))
       .map((line) => line.slice(5).trim())
       .join('');
     if (!data || data === '[DONE]') {
-      return '';
+      return { text: '' };
     }
 
     let chunk: OpenAiChunk;
     try {
       chunk = JSON.parse(data) as OpenAiChunk;
     } catch {
-      return '';
+      return { text: '' };
     }
     if (chunk.error !== undefined) {
       throw workerStreamError('/v1/chat/completions', chunk.error);
     }
     const delta = chunk.choices?.[0]?.delta;
-    for (const part of delta?.tool_calls ?? []) {
+    const toolCalls = delta?.tool_calls ?? [];
+    for (const part of toolCalls) {
       const existing = pendingTools.get(part.index) ?? {
         id: part.id ?? `call-${part.index}`,
         name: '',
@@ -560,7 +584,39 @@ export class LlamaClient {
       }
       pendingTools.set(part.index, existing);
     }
-    return delta?.content ?? '';
+    const text = delta?.content ?? '';
+    return {
+      text,
+      ...(chunk.timings ? { timings: chunk.timings } : {}),
+    };
+  }
+
+  private logTimings(
+    trace: ChatTrace,
+    stage: string,
+    timings: NonNullable<OpenAiChunk['timings']>,
+  ): void {
+    const promptTokens = finiteNumber(timings.prompt_n);
+    const cachedTokens = finiteNumber(timings.cache_n);
+    const promptMilliseconds = finiteNumber(timings.prompt_ms);
+    const promptPerSecond = finiteNumber(timings.prompt_per_second);
+    const predictedTokens = finiteNumber(timings.predicted_n);
+    const predictedMilliseconds = finiteNumber(timings.predicted_ms);
+    const predictedPerSecond = finiteNumber(timings.predicted_per_second);
+    if (
+      promptTokens === undefined &&
+      cachedTokens === undefined &&
+      predictedTokens === undefined
+    ) {
+      return;
+    }
+    this.diagnostics?.info(
+      `${GENERATION_PHASE} ${trace.id} timings (${stage}): ` +
+      `prompt=${promptTokens ?? 'unknown'} processed + ${cachedTokens ?? 0} cached tokens` +
+      formatDurationAndRate(promptMilliseconds, promptPerSecond) +
+      `; output=${predictedTokens ?? 'unknown'} ${predictedTokens === 1 ? 'token' : 'tokens'}` +
+      formatDurationAndRate(predictedMilliseconds, predictedPerSecond) + '.',
+    );
   }
 
   private async request(path: string, init: WorkerRequestInit): Promise<WorkerResponse> {
@@ -608,32 +664,20 @@ export class LlamaClient {
     let buffer = '';
     let content = '';
     let firstStreamData = true;
+    const pendingTools = new Map<number, PendingToolCall>();
     const consume = (frame: string): void => {
-      const data = frame
-        .split(/\r?\n/)
-        .filter((line) => line.startsWith('data:'))
-        .map((line) => line.slice(5).trim())
-        .join('');
-      if (!data || data === '[DONE]') {
-        return;
+      const consumed = this.consumeSseFrame(frame, pendingTools);
+      if (consumed.timings) {
+        this.logTimings(trace, stage, consumed.timings);
       }
-      let chunk: OpenAiChunk;
-      try {
-        chunk = JSON.parse(data) as OpenAiChunk;
-      } catch {
-        return;
-      }
-      if (chunk.error !== undefined) {
-        throw workerStreamError(path, chunk.error);
-      }
-      content += chunk.choices?.[0]?.delta?.content ?? '';
+      content += consumed.text;
     };
     while (true) {
       const { done, value } = await reader.read();
       if (firstStreamData && value && value.byteLength > 0) {
         firstStreamData = false;
         this.diagnostics?.info(
-          `${trace.id} first stream data (${stage}): elapsed=${Date.now() - trace.startedAt} ms.`,
+          `${GENERATION_PHASE} ${trace.id} first stream data (${stage}): elapsed=${Date.now() - trace.startedAt} ms.`,
         );
       }
       buffer += decoder.decode(value, { stream: !done });
@@ -652,6 +696,19 @@ export class LlamaClient {
     return content;
   }
 
+}
+
+function finiteNumber(value: number | undefined): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function formatDurationAndRate(
+  milliseconds: number | undefined,
+  perSecond: number | undefined,
+): string {
+  const duration = milliseconds === undefined ? '' : ` in ${milliseconds.toFixed(2)} ms`;
+  const rate = perSecond === undefined ? '' : ` (${perSecond.toFixed(2)} tokens/s)`;
+  return `${duration}${rate}`;
 }
 
 function requestSignal(signal?: AbortSignal): Pick<WorkerRequestInit, 'signal'> {

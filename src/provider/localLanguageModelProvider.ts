@@ -25,6 +25,7 @@ import {
   localAgentAvailableTools,
   resolveLocalAgentToolPolicy,
 } from './localAgentTools';
+import { modelLoadProgress } from './modelLoadProgress';
 import { messagesForSystemRoleSupport } from './messageRoleSupport';
 
 export interface LocalLanguageModelInformation extends vscode.LanguageModelChatInformation {
@@ -118,11 +119,23 @@ implements vscode.LanguageModelChatProvider<LocalLanguageModelInformation>, vsco
       0,
       2,
     );
+    const loadProgress = modelLoadProgress({
+      modelResident:
+        this.worker.currentModelId === installed.id && this.worker.state.kind === 'ready',
+      toolCallsPossible: toolPolicy.tools.length > 0,
+      agentRequest: localAgentRequest,
+    });
+    if (loadProgress) {
+      progress.report(new vscode.LanguageModelTextPart(`${loadProgress.loading}\n\n`));
+    }
     try {
       await this.worker.run(
         installed,
         'chat',
         async (client, signal) => {
+          if (loadProgress) {
+            progress.report(new vscode.LanguageModelTextPart(`${loadProgress.loaded}\n\n`));
+          }
           const profile = await client.getModelProfile(signal);
           const nativeCapabilityFingerprint = toolPolicy.tools.length > 0 &&
             profile.workerBuild && profile.chatTemplateFingerprint

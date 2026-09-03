@@ -703,6 +703,7 @@ test('delayed first stream data remains a normal request without a warning', asy
       setTimeout(() => {
         response.end(
           'data: {"choices":[{"delta":{"content":"OK"}}]}\n\n' +
+          'data: {"choices":[],"timings":{"cache_n":3,"prompt_n":4,"prompt_ms":20,"prompt_per_second":200,"predicted_n":1,"predicted_ms":5,"predicted_per_second":200}}\n\n' +
           'data: [DONE]\n\n',
         );
       }, 40);
@@ -738,10 +739,11 @@ test('delayed first stream data remains a normal request without a warning', asy
 
     assert.equal(result.toolCallCount, 0);
     assert.deepEqual(events, [{ kind: 'text', text: 'OK' }]);
-    assert.equal(info.some((message) => /chat-\d+ start.*messages=1.*tools=0.*maxOutputTokens=16/i.test(message)), true);
-    assert.equal(info.some((message) => /chat-\d+ response headers.*elapsed=/i.test(message)), true);
-    assert.equal(info.some((message) => /chat-\d+ first stream data.*elapsed=/i.test(message)), true);
-    assert.equal(info.some((message) => /chat-\d+ complete.*outputCharacters=2.*toolCalls=0.*elapsed=/i.test(message)), true);
+    assert.equal(info.some((message) => /\[Generating Response\] chat-\d+ start.*messages=1.*tools=0.*maxOutputTokens=16/i.test(message)), true);
+    assert.equal(info.some((message) => /\[Generating Response\] chat-\d+ response headers.*elapsed=/i.test(message)), true);
+    assert.equal(info.some((message) => /\[Generating Response\] chat-\d+ first stream data.*elapsed=/i.test(message)), true);
+    assert.equal(info.some((message) => /\[Generating Response\] chat-\d+ timings \(native\).*prompt=4 processed \+ 3 cached tokens.*200\.00 tokens\/s.*output=1 token.*200\.00 tokens\/s/i.test(message)), true);
+    assert.equal(info.some((message) => /\[Generating Response\] chat-\d+ complete.*outputCharacters=2.*toolCalls=0.*elapsed=/i.test(message)), true);
     assert.deepEqual(warnings, []);
     assert.equal([...info, ...warnings].some((message) => message.includes('SECRET PROMPT CONTENT')), false);
     await client.dispose();

@@ -16,6 +16,7 @@ import { verifiedWorkerBundle } from './workerIntegrity';
 import { prepareWorkerLaunch } from './workerLaunch';
 import type { WorkerBackend } from './workerManifest';
 import { createWorkerDiagnostics } from './workerDiagnostics';
+import { beginWorkerActivity, finishWorkerActivity } from './workerActivity';
 import { discoverSycl0 } from './syclDevice';
 
 const STOP_TIMEOUT_MS = 5_000;
@@ -76,6 +77,11 @@ export class WorkerManager implements vscode.Disposable {
       kind,
       async (scheduledSignal) => {
         const client = await this.ensureReady(model, scheduledSignal);
+        const activeState = beginWorkerActivity(this.workerState, kind);
+        const generatingResponse = activeState !== this.workerState;
+        if (generatingResponse) {
+          this.setState(activeState);
+        }
         try {
           return await operation(client, scheduledSignal);
         } catch (error) {
@@ -95,6 +101,13 @@ export class WorkerManager implements vscode.Disposable {
             }
           }
           throw error;
+        } finally {
+          if (generatingResponse && this.currentClient === client) {
+            const readyState = finishWorkerActivity(this.workerState);
+            if (readyState !== this.workerState) {
+              this.setState(readyState);
+            }
+          }
         }
       },
       signal,
@@ -209,7 +222,7 @@ export class WorkerManager implements vscode.Disposable {
       const backend = launch.backend;
       if (launch.syclDevice) {
         this.logger.info(
-          `Windows SYCL preflight passed: ${launch.syclDevice.id} `
+          `[Model Loading] Windows SYCL preflight passed: ${launch.syclDevice.id} `
           + `(${launch.syclDevice.description}).`,
         );
       }
@@ -255,7 +268,7 @@ export class WorkerManager implements vscode.Disposable {
         orphanBytes,
       );
       this.logger.info(
-        `Starting local worker: target=${target} bundle=${launch.bundle.bundleName} ` +
+        `[Model Loading] Starting local worker: target=${target} bundle=${launch.bundle.bundleName} ` +
         `backend=${backend} model=${model.name} context=${config.contextSize || 'auto'} ` +
         `batch=${config.batchSize}/${config.microBatchSize} threads=${config.cpuThreads || 'auto'}.`,
       );
@@ -269,7 +282,7 @@ export class WorkerManager implements vscode.Disposable {
       child.stdin.end();
       this.child = child;
       this.logger.info(
-        `Local worker spawned: pid=${child.pid ?? 'unknown'} backend=${backend}. Waiting for health.`,
+        `[Model Loading] Local worker spawned: pid=${child.pid ?? 'unknown'} backend=${backend}. Waiting for health.`,
       );
       child.stdout.setEncoding('utf8');
       child.stderr.setEncoding('utf8');
@@ -302,7 +315,7 @@ export class WorkerManager implements vscode.Disposable {
       this.currentClient = client;
       this.setState({ kind: 'ready', modelId: model.id, port });
       this.logger.info(
-        `Local model ready: ${model.name}; backend=${backend}; ` +
+        `[Model Loading] Complete: ${model.name}; backend=${backend}; ` +
         `startupElapsed=${Date.now() - startedAt} ms.`,
       );
       return client;
@@ -421,7 +434,7 @@ export class WorkerManager implements vscode.Disposable {
     if (fitted) {
       const budget = parseFreeDeviceMemoryMiB(data);
       this.logger.info(
-        `llama.cpp reduced the context window from ${fitted.trainedContextSize} to ${fitted.fittedContextSize} tokens to fit this computer${budget ? ` (it sees ${budget} MiB of device memory)` : ''}.`,
+        `[Model Loading] llama.cpp reduced the context window from ${fitted.trainedContextSize} to ${fitted.fittedContextSize} tokens to fit this computer${budget ? ` (it sees ${budget} MiB of device memory)` : ''}.`,
       );
     }
     for (const line of data.split(/\r?\n/)) {

@@ -6,6 +6,7 @@ import { ModelManager } from './models/modelManager';
 import { ModelRegistry } from './models/modelRegistry';
 import { LocalLanguageModelProvider } from './provider/localLanguageModelProvider';
 import { registerModelCommands } from './ui/modelCommands';
+import { runtimeStatusPresentation } from './ui/runtimeStatus';
 import { WorkerManager } from './worker/workerManager';
 
 let activeWorker: WorkerManager | undefined;
@@ -92,30 +93,10 @@ function updateStatus(
   state: import('./domain').WorkerState,
   modelCount: number,
 ): void {
-  switch (state.kind) {
-    case 'ready':
-      item.text = '$(sparkle) Local LLM';
-      item.tooltip = 'Local model ready';
-      item.backgroundColor = undefined;
-      break;
-    case 'starting':
-      item.text = '$(loading~spin) Local LLM';
-      item.tooltip = 'Loading local model';
-      item.backgroundColor = undefined;
-      break;
-    case 'failed':
-      item.text = '$(error) Local LLM';
-      item.tooltip = state.message;
-      item.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
-      break;
-    case 'stopping':
-      item.text = '$(loading~spin) Local LLM';
-      item.tooltip = 'Stopping local model';
-      item.backgroundColor = undefined;
-      break;
-    case 'stopped':
-      item.text = modelCount ? '$(circle-outline) Local LLM' : '$(add) Local LLM';
-      item.tooltip = modelCount ? 'Local worker stopped' : 'Install a local GGUF model';
-      item.backgroundColor = undefined;
-  }
+  const presentation = runtimeStatusPresentation(state, modelCount);
+  item.text = presentation.text;
+  item.tooltip = presentation.tooltip;
+  item.backgroundColor = presentation.error
+    ? new vscode.ThemeColor('statusBarItem.errorBackground')
+    : undefined;
 }
