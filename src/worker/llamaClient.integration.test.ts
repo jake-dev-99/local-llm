@@ -23,8 +23,6 @@ type TestLlamaClientConstructor = new (
   diagnostics?: {
     info(message: string): void;
     warn(message: string): void;
-    stallWarningMilliseconds?: number;
-    longGenerationWarningMilliseconds?: number;
   },
 ) => TestLlamaClient;
 
@@ -692,7 +690,7 @@ test('a broken connection names the endpoint and the underlying cause', async ()
   }
 });
 
-test('a stalled generation reports request milestones and a visible warning without logging the prompt', async () => {
+test('delayed first stream data remains a normal request without a warning', async () => {
   const server = createServer((request, response) => {
     if (request.url === '/v1/chat/completions/input_tokens') {
       response.writeHead(200, { 'content-type': 'application/json' });
@@ -726,7 +724,6 @@ test('a stalled generation reports request milestones and a visible warning with
       {
         info: (message) => info.push(message),
         warn: (message) => warnings.push(message),
-        stallWarningMilliseconds: 10,
       },
     );
     const events: ChatStreamEvent[] = [];
@@ -745,7 +742,7 @@ test('a stalled generation reports request milestones and a visible warning with
     assert.equal(info.some((message) => /chat-\d+ response headers.*elapsed=/i.test(message)), true);
     assert.equal(info.some((message) => /chat-\d+ first stream data.*elapsed=/i.test(message)), true);
     assert.equal(info.some((message) => /chat-\d+ complete.*outputCharacters=2.*toolCalls=0.*elapsed=/i.test(message)), true);
-    assert.equal(warnings.some((message) => /chat-\d+.*no stream data.*10 ms/i.test(message)), true);
+    assert.deepEqual(warnings, []);
     assert.equal([...info, ...warnings].some((message) => message.includes('SECRET PROMPT CONTENT')), false);
     await client.dispose();
   } finally {
@@ -754,7 +751,7 @@ test('a stalled generation reports request milestones and a visible warning with
   }
 });
 
-test('a long generation warns even while worker stream data is flowing', async () => {
+test('a long generation remains normal while worker stream data is flowing', async () => {
   const server = createServer((request, response) => {
     if (request.url === '/v1/chat/completions/input_tokens') {
       response.writeHead(200, { 'content-type': 'application/json' });
@@ -790,8 +787,6 @@ test('a long generation warns even while worker stream data is flowing', async (
       {
         info: () => undefined,
         warn: (message) => warnings.push(message),
-        stallWarningMilliseconds: 100,
-        longGenerationWarningMilliseconds: 10,
       },
     );
 
@@ -803,10 +798,7 @@ test('a long generation warns even while worker stream data is flowing', async (
       temperature: 0,
     }, () => undefined);
 
-    assert.equal(
-      warnings.some((message) => /chat-\d+ still running after 10 ms.*streaming can be buffered/i.test(message)),
-      true,
-    );
+    assert.deepEqual(warnings, []);
     await client.dispose();
   } finally {
     server.closeAllConnections();

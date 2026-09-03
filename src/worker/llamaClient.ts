@@ -63,15 +63,11 @@ export type NativeToolCallSupport = 'unknown' | 'available' | 'unavailable';
 
 export interface LlamaClientDiagnostics {
   info(message: string): void;
-  warn(message: string): void;
-  stallWarningMilliseconds?: number;
-  longGenerationWarningMilliseconds?: number;
 }
 
 interface ChatTrace {
   id: string;
   startedAt: number;
-  visibleWarningShown: boolean;
 }
 
 export class LlamaClient {
@@ -189,34 +185,13 @@ export class LlamaClient {
     const trace: ChatTrace = {
       id: `chat-${++this.chatSequence}`,
       startedAt: Date.now(),
-      visibleWarningShown: false,
     };
     this.diagnostics?.info(
       `${trace.id} start: messages=${request.messages.length} tools=${tools.length} ` +
       `toolChoice=${toolChoice} maxOutputTokens=${request.maxTokens}.`,
     );
 
-    const longWarningMilliseconds =
-      this.diagnostics?.longGenerationWarningMilliseconds ?? 60_000;
-    const longWarningTimer = this.diagnostics && longWarningMilliseconds > 0
-      ? setTimeout(() => {
-        if (!trace.visibleWarningShown) {
-          trace.visibleWarningShown = true;
-          this.diagnostics?.warn(
-            `${trace.id} still running after ${longWarningMilliseconds} ms. ` +
-            'Worker streaming can be buffered during tool selection; open the Local LLM logs for live milestones.',
-          );
-        }
-      }, longWarningMilliseconds)
-      : undefined;
-    let result: ChatResult;
-    try {
-      result = await this.executeChat(request, onEvent, trace, signal);
-    } finally {
-      if (longWarningTimer) {
-        clearTimeout(longWarningTimer);
-      }
-    }
+    const result = await this.executeChat(request, onEvent, trace, signal);
     this.diagnostics?.info(
       `${trace.id} complete: inputTokens=${result.inputTokens} ` +
       `outputCharacters=${result.textCharacters} toolCalls=${result.toolCallCount} ` +
@@ -369,15 +344,11 @@ export class LlamaClient {
       `input tokens with ${tools.length} tool${tools.length === 1 ? '' : 's'}.`,
     );
 
-    const response = await this.withStallWarning(
-      trace,
-      `no response headers for the ${stage} generation`,
-      () => this.request('/v1/chat/completions', {
-        method: 'POST',
-        body: JSON.stringify(body),
-        ...requestSignal(signal),
-      }),
-    );
+    const response = await this.request('/v1/chat/completions', {
+      method: 'POST',
+      body: JSON.stringify(body),
+      ...requestSignal(signal),
+    });
     this.diagnostics?.info(
       `${trace.id} response headers (${stage}): elapsed=${Date.now() - trace.startedAt} ms.`,
     );
@@ -394,11 +365,7 @@ export class LlamaClient {
     let textCharacters = 0;
     let firstStreamData = true;
     while (true) {
-      const { done, value } = await this.withStallWarning(
-        trace,
-        `no stream data for the ${stage} generation`,
-        () => reader.read(),
-      );
+      const { done, value } = await reader.read();
       if (firstStreamData && value && value.byteLength > 0) {
         firstStreamData = false;
         this.diagnostics?.info(
@@ -492,15 +459,11 @@ export class LlamaClient {
     this.diagnostics?.info(
       `Native tool output was unavailable; using one schema-constrained ${toolRequired ? 'required' : 'automatic'} decision.`,
     );
-    const response = await this.withStallWarning(
-      trace,
-      'no response headers for the schema decision',
-      () => this.request('/v1/chat/completions', {
-        method: 'POST',
-        body: JSON.stringify(body),
-        ...requestSignal(signal),
-      }),
-    );
+    const response = await this.request('/v1/chat/completions', {
+      method: 'POST',
+      body: JSON.stringify(body),
+      ...requestSignal(signal),
+    });
     this.diagnostics?.info(
       `${trace.id} response headers (schema decision): elapsed=${Date.now() - trace.startedAt} ms.`,
     );
@@ -666,11 +629,7 @@ export class LlamaClient {
       content += chunk.choices?.[0]?.delta?.content ?? '';
     };
     while (true) {
-      const { done, value } = await this.withStallWarning(
-        trace,
-        `no stream data for the ${stage}`,
-        () => reader.read(),
-      );
+      const { done, value } = await reader.read();
       if (firstStreamData && value && value.byteLength > 0) {
         firstStreamData = false;
         this.diagnostics?.info(
@@ -693,28 +652,6 @@ export class LlamaClient {
     return content;
   }
 
-  private async withStallWarning<T>(
-    trace: ChatTrace,
-    condition: string,
-    operation: () => Promise<T>,
-  ): Promise<T> {
-    const warningMilliseconds = this.diagnostics?.stallWarningMilliseconds ?? 30_000;
-    if (!this.diagnostics || trace.visibleWarningShown || warningMilliseconds <= 0) {
-      return operation();
-    }
-    const timer = setTimeout(() => {
-      trace.visibleWarningShown = true;
-      this.diagnostics?.warn(
-        `${trace.id} stalled: ${condition} after ${warningMilliseconds} ms. ` +
-        'Generation is still running; open the Local LLM logs for request milestones.',
-      );
-    }, warningMilliseconds);
-    try {
-      return await operation();
-    } finally {
-      clearTimeout(timer);
-    }
-  }
 }
 
 function requestSignal(signal?: AbortSignal): Pick<WorkerRequestInit, 'signal'> {
