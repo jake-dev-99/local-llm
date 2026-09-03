@@ -6,7 +6,7 @@
 
 **Architecture:** A single archive preparer owns download, checksum, safe extraction, transactional publication, and Windows manifest generation. Packaging calls that preparer automatically for `win32-x64`; runtime selection maps both acceleration modes to the same extracted executable and distinguishes them only by backend arguments.
 
-**Tech Stack:** Node.js 24 ESM, `yauzl` 3.2.1, TypeScript 7, Node test runner, VSCE.
+**Tech Stack:** Node.js 24 ESM, `yauzl` 3.4.0, TypeScript 7, Node test runner, VSCE.
 
 **Spec:** `docs/superpowers/specs/2026-09-03-official-windows-sycl-archive-design.md`
 
@@ -42,7 +42,7 @@
 Run:
 
 ```shell
-npm install --save-dev --save-exact yauzl@3.2.1
+npm install --save-dev --save-exact yauzl@3.4.0
 ```
 
 Expected: `package.json` and `package-lock.json` declare `yauzl` directly.
