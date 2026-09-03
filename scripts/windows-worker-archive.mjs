@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
 import {
+  cp,
   mkdir,
   readFile,
   rename,
@@ -29,6 +30,7 @@ export async function prepareWindowsWorkerArchive(root, dependencies = {}) {
   const release = dependencies.release ?? WINDOWS_WORKER_RELEASE;
   const fetchFn = dependencies.fetchFn ?? fetch;
   const log = dependencies.log ?? console.log;
+  const copyDirectory = dependencies.copyDirectory ?? cp;
   const renameFile = dependencies.renameFile ?? rename;
   const archivePath = await ensureVerifiedArchive(root, release, fetchFn, log);
   const workersDirectory = path.join(root, 'resources', 'workers');
@@ -55,15 +57,16 @@ export async function prepareWindowsWorkerArchive(root, dependencies = {}) {
       stagedWindows,
       windowsBackup,
       windowsDestination,
+      copyDirectory,
       renameFile,
     });
     log(`[worker-archive] Prepared ${release.build} Windows SYCL worker from ${release.assetName}.`);
     return manifest;
   } finally {
     await Promise.all([
-      rm(stagedWindows, { recursive: true, force: true }),
+      rm(stagedWindows, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }),
       rm(stagedManifest, { force: true }),
-      rm(windowsBackup, { recursive: true, force: true }),
+      rm(windowsBackup, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }),
       rm(manifestBackup, { force: true }),
     ]);
   }
@@ -252,14 +255,25 @@ async function publishTransaction(options) {
       await options.renameFile(options.manifestPath, options.manifestBackup);
       manifestBackedUp = true;
     }
-    await options.renameFile(options.stagedWindows, options.windowsDestination);
+    await options.copyDirectory(options.stagedWindows, options.windowsDestination, {
+      recursive: true,
+      force: false,
+      errorOnExist: true,
+    });
     windowsPublished = true;
     await options.renameFile(options.stagedManifest, options.manifestPath);
     manifestPublished = true;
   } catch (error) {
     if (manifestPublished) await rm(options.manifestPath, { force: true });
     if (manifestBackedUp) await options.renameFile(options.manifestBackup, options.manifestPath);
-    if (windowsPublished) await rm(options.windowsDestination, { recursive: true, force: true });
+    if (windowsPublished) {
+      await rm(options.windowsDestination, {
+        recursive: true,
+        force: true,
+        maxRetries: 10,
+        retryDelay: 100,
+      });
+    }
     if (windowsBackedUp) await options.renameFile(options.windowsBackup, options.windowsDestination);
     throw error;
   }

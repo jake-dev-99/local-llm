@@ -192,6 +192,36 @@ test('hashes every extracted file in sorted order', async (context) => {
   assert.equal(bundle.files[2].sha256, sha256(Buffer.from('z')));
 });
 
+test('publishes the extracted Windows tree when Windows rejects a directory rename', async (context) => {
+  const root = await fixtureRoot(context);
+  const windowsDirectory = path.join(root, 'resources', 'workers', 'win32-x64');
+  const archive = storedZip([
+    { name: 'llama-server.exe', contents: 'server' },
+    { name: 'runtime.dll', contents: 'runtime' },
+  ]);
+  const { rename } = await import('node:fs/promises');
+
+  const manifest = await prepareWindowsWorkerArchive(root, {
+    release: fixtureRelease(archive),
+    fetchFn: async () => new Response(archive, { status: 200 }),
+    log: () => undefined,
+    renameFile: async (source, destination) => {
+      if (destination === windowsDirectory && source.includes('.win32-x64-stage-')) {
+        const error = new Error('operation not permitted');
+        error.code = 'EPERM';
+        throw error;
+      }
+      await rename(source, destination);
+    },
+  });
+
+  assert.equal(
+    await readFile(path.join(windowsDirectory, 'sycl', 'llama-server.exe'), 'utf8'),
+    'server',
+  );
+  assert.equal(manifest.platforms['win32-x64'].bundles.sycl.files.length, 2);
+});
+
 test('restores the previous Windows tree and manifest when publication fails', async (context) => {
   const root = await fixtureRoot(context);
   const windowsDirectory = path.join(root, 'resources', 'workers', 'win32-x64');

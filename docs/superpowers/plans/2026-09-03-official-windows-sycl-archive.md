@@ -90,13 +90,14 @@ POSIX path and whose SHA-256 values are calculated from extracted bytes.
 
 Assert that both Windows modes reference bundle `sycl`, backend values remain
 `sycl` and `cpu`, a legacy Darwin manifest migrates to v2, and an injected
-rename failure restores the prior `win32-x64` directory and manifest bytes.
+publication failure restores the prior `win32-x64` directory and manifest bytes.
 
 - [ ] **Step 7: Implement manifest creation and transactional publication**
 
 Stage an entire replacement `win32-x64/sycl` tree, stage the new manifest,
-rename the previous Windows tree and manifest to unique backups, publish both,
-and restore both backups on any error. Delete backups only after success.
+rename the previous Windows tree and manifest to unique backups, copy the staged
+Windows tree into place, publish the manifest, and restore both backups on any
+error. Delete backups only after success.
 
 - [ ] **Step 8: Ignore generated Windows payload and run focused tests**
 
