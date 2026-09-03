@@ -13,6 +13,7 @@ const GENERAL_IGNORE_ENTRIES = [
   '.github/**',
   '.agents/**',
   '.codex/**',
+  '.superpowers/**',
   '**/.DS_Store',
   'dist/vsix/**',
   'docs/**',

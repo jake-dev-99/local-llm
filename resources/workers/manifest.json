@@ -1,14 +1,337 @@
 {
+  "manifestVersion": 2,
   "llamaCppCommit": "60eeeb6082c1126bb8bc72902c83123cd056811b",
   "llamaCppBuild": "b10472",
-  "workers": {
+  "platforms": {
     "darwin-arm64": {
-      "path": "resources/workers/darwin-arm64/llama-server",
-      "sha256": "5188f4ae2d8dc59261d7e4381c582cd7401da388bd17ce987cc42179c7a692c7"
+      "modes": {
+        "auto": {
+          "bundle": "default",
+          "backend": "metal"
+        },
+        "cpu": {
+          "bundle": "default",
+          "backend": "cpu"
+        }
+      },
+      "bundles": {
+        "default": {
+          "executable": "resources/workers/darwin-arm64/llama-server",
+          "files": [
+            {
+              "path": "resources/workers/darwin-arm64/llama-server",
+              "sha256": "5188f4ae2d8dc59261d7e4381c582cd7401da388bd17ce987cc42179c7a692c7"
+            }
+          ]
+        }
+      }
     },
     "win32-x64": {
-      "path": "resources/workers/win32-x64/llama-server.exe",
-      "sha256": "b6978c718101551634f82edf4b94888267715c4b42aa92b94bfd7bd365ff530b"
+      "modes": {
+        "auto": {
+          "bundle": "sycl",
+          "backend": "sycl"
+        },
+        "cpu": {
+          "bundle": "sycl",
+          "backend": "cpu"
+        }
+      },
+      "bundles": {
+        "sycl": {
+          "executable": "resources/workers/win32-x64/sycl/llama-server.exe",
+          "files": [
+            {
+              "path": "resources/workers/win32-x64/sycl/dnnl.dll",
+              "sha256": "544133a6bd576cef441a341650bfee16c5c452ac9e0cdffb42a7d02515ea09d9"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/ggml-base.dll",
+              "sha256": "841889f26faacff284c2c5607f96358d2bbd0605c36fb33709e7e9490d2fec5b"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/ggml-cpu-alderlake.dll",
+              "sha256": "85bd92eabd8c090b844e25bc26c5a8ff4aedf43c28529add9fa20dd655f00d90"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/ggml-cpu-cannonlake.dll",
+              "sha256": "e7df90a4e4d9da98857f3d67adf27e661903b0b92bfa877cc5a3d45edf08f8c9"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/ggml-cpu-cascadelake.dll",
+              "sha256": "36f07dbc11fab09a5fbe7450c5dfe6fe5ffa610678de919a01bd52c6f7306156"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/ggml-cpu-cooperlake.dll",
+              "sha256": "b7e9c267a0f76cef26eb3c181e664a6d14209388f8b9b22983d73f600a514825"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/ggml-cpu-haswell.dll",
+              "sha256": "c4b31ca92e016d94cbb6926b5ae99db0331b2cd0822456b6bd308fe3c920d80f"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/ggml-cpu-icelake.dll",
+              "sha256": "50790ce2450afc3ddcbd06678c369fc95bfd2f8fc085920257d4cb29f7cc29f6"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/ggml-cpu-ivybridge.dll",
+              "sha256": "206832f314af8ed5151f6ec68a4968bdc2e79c636fe93bc8797a7bf4b8854d74"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/ggml-cpu-piledriver.dll",
+              "sha256": "a03bc33a0d7ce2e41811c9baef538c3b1bd1fecfb9b03850ff86844d3133089e"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/ggml-cpu-sandybridge.dll",
+              "sha256": "f6fb0b26b154d4cd628848f8ebf0839e08fcddcc9c4fd2ac36fdcc319d512afe"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/ggml-cpu-sapphirerapids.dll",
+              "sha256": "88f9b96ffa850f41c50350004727bb29ac03a5954d174c9165c8a07a6f5f9b85"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/ggml-cpu-skylakex.dll",
+              "sha256": "bc163175e54d2d4d9b983622f5a801bba4f539a0092fd47be25ebc201c34f1d3"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/ggml-cpu-sse42.dll",
+              "sha256": "62bf3f8ce569ee8ea6ae076b22e28e4c29320f89470b8889d2602147db54bc85"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/ggml-cpu-x64.dll",
+              "sha256": "84509087431d7d52765b3259fe4b72f8cf1d04a0a30bed667794f146af2fc332"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/ggml-cpu-zen4.dll",
+              "sha256": "63c513ffe1dd15c37efe84ef1cf4ba96c9db2aca4567ed3a343887d9e5484ea2"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/ggml-rpc-server.exe",
+              "sha256": "612a3e7a81939e7da74b5de3f6764bff6aa43b761ef28d03b89936ad234f97a4"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/ggml-rpc.dll",
+              "sha256": "62be24e6330e2b3f13decf728554b4d7c430c48daf7c44f000ddd67e425b48bd"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/ggml-sycl.dll",
+              "sha256": "86da4bf470f43b5fdf9f9521003271ca9f1492db587dc79efd850124c48b1423"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/ggml.dll",
+              "sha256": "362831c05b00cc6b7dabf0f4868894564f52740d0c3ae6a1d7f3d13e38046942"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/libhwloc-15.dll",
+              "sha256": "08dd29c5a4348f50feb938ff7f6ce07ab8c22200c244fca7af8d14804c13fe23"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/libiomp5md.dll",
+              "sha256": "d2b62d61e526093467a0c798df9286144fa3d36dff4f9035201cbec724f66c83"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/libmmd.dll",
+              "sha256": "3d3c145ef2d44a9a162620340a551f7c7e388891895fb96df34a67186a848872"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/libomp140.x86_64.dll",
+              "sha256": "4a20c1e5c115c29771a12324513eb109badac72180f79481527ad79d996ffb33"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/libsycl-fallback-bfloat16.spv",
+              "sha256": "d7a8fb99ebfc8abaf95ab356b08e60deb504d064f5c48e3d20d461d32330c935"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/libsycl-native-bfloat16.spv",
+              "sha256": "8f33756ab426adf38cc99e496af069b1eb64d050b99fcc36f85ca5be8f7531d1"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/llama-batched-bench-impl.dll",
+              "sha256": "170819315598d15e0dd3a69738b5c2ebe0ecdeeb91fd1169510fc5978edb1348"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/llama-batched-bench.exe",
+              "sha256": "254fc77cd5a50660aedd73168b816e618d67a0f7f775b9587cfce85b61509edc"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/llama-bench-impl.dll",
+              "sha256": "f10098411942082dc24c3cb1af2c48cae0bb06609977111aaa1b7c5454a44bf7"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/llama-bench.exe",
+              "sha256": "97495a77c5f6d528f9eeff0a43a692574951a6b98e673e637366dd7dfce07d4f"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/llama-cli-impl.dll",
+              "sha256": "bc88f85065e2dc7a8caa7513602d252bac7a109b8760faef201355915a64300c"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/llama-cli.exe",
+              "sha256": "2d71f41115a4b8bf106ee3d6f35d328c433c2515700917f5e0f50e1b1e7e8013"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/llama-common.dll",
+              "sha256": "715a25f4406fb62b5cf1c75960ac77c5e6b6c2828b1afdee313d069aad58779f"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/llama-completion-impl.dll",
+              "sha256": "82c68e996ea50c916a771839157685e448a30a4de2460344dc83f792a02f5c73"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/llama-completion.exe",
+              "sha256": "684ba429e887e39ad2098c48437559342869badcf1d46cac7beeeb7df8e19f1f"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/llama-fit-params-impl.dll",
+              "sha256": "172e57a0d77d4cc72021d7d3ba75b7db0d4138d1e6a774935fdeb378e451b114"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/llama-fit-params.exe",
+              "sha256": "e6abec01bd274d1f3730a9b74534a1c00471953bcd7e070775bd0ca2d4d14325"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/llama-gemma3-cli.exe",
+              "sha256": "6a6cf36f51a879acbc2bb4a04ef64f6bbac266d31d7775ff2b2f6eb801c73730"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/llama-gguf-split.exe",
+              "sha256": "460b67d99ffce861d9a5d284576c438e6a21a1152e9b67b055d8eb25d862fb3f"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/llama-imatrix.exe",
+              "sha256": "cba14c7607931e4dc534d6e42538ab1a3b077553ba0b28177b722145118bd116"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/llama-llava-cli.exe",
+              "sha256": "6a6cf36f51a879acbc2bb4a04ef64f6bbac266d31d7775ff2b2f6eb801c73730"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/llama-minicpmv-cli.exe",
+              "sha256": "6a6cf36f51a879acbc2bb4a04ef64f6bbac266d31d7775ff2b2f6eb801c73730"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/llama-mtmd-cli.exe",
+              "sha256": "c00002b2d60d46d5e9a1dab43f3b43bcb823df3d9935eff53fe7e9d5bcdd00ac"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/llama-mtmd-debug.exe",
+              "sha256": "b76e6145b2daf6b8a1dd107a44626acc84ec806c914786345d51d933455618e1"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/llama-perplexity-impl.dll",
+              "sha256": "238597334db4a16fef57d1823908a40d8ab422b4af92a9f27bc6637c4e268506"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/llama-perplexity.exe",
+              "sha256": "02efd3c1d887b4b161f0136060c384ddbbb7a3fd3188a45d763726296d92414d"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/llama-quantize-impl.dll",
+              "sha256": "e1c4071e8d9bea97e1449d56e4ebf9c2ec55f085a8c41474a47d0294ffa04ce3"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/llama-quantize.exe",
+              "sha256": "315cb9c53e5d1b2649fdb2c3cf96dfce4108889970bbe06bafd6b758f7b9de93"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/llama-qwen2vl-cli.exe",
+              "sha256": "2066ced89a7497780664efdda44cc5639ef9ae57d8f7ad2a7dd52fd62d76c87f"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/llama-results.exe",
+              "sha256": "807dddacd07a1bf109e0f727d8c669660270063857c56f23485a0211c3d065af"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/llama-server-impl.dll",
+              "sha256": "1a05f09f991f8540193a49fd365281ded1b119685fb260f7128fa93d15c7af39"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/llama-server.exe",
+              "sha256": "76b0a5f72243ccb99079ca71ebd0332f123c52668d815c9d6716a89d46415668"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/llama-template-analysis.exe",
+              "sha256": "589f26f2e3c11a7db737f986beb72e5c7b76f78561e489c4f2bca9bd69cb672c"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/llama-tokenize.exe",
+              "sha256": "46e035751071669136187d98d8ce5e4823242f948b495f8eb5af0e43828e8f31"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/llama-tts.exe",
+              "sha256": "399cb2fd037eba8395cdfee1639ad0fc501f86f8a3029f7d21baac6bc409dfd1"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/llama.dll",
+              "sha256": "d5bb3c11dd5767f4f0041e04a82e1c2fd54c687f1996706bba6e3bfdb7d3c5a6"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/llama.exe",
+              "sha256": "0be0ca87f1ae0b8b94bf33cae1be23276af831d505fce8dc9392fa9f0319ab77"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/mkl_core.2.dll",
+              "sha256": "96080d61cb5c2b4505e02ea3f7e5ac78f6328a526f0e9adf1294bac2bb679183"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/mkl_sycl_blas.5.dll",
+              "sha256": "d16f8ff229ee93b33523d0aed484ecf0ccd4b9d8f64d10b26b42c21523e9e554"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/mkl_tbb_thread.2.dll",
+              "sha256": "16b0d1183678b5c2b7c256c8bbf9e4e9adb1a8cce4b99568e4631c9381365f08"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/mtmd.dll",
+              "sha256": "7b63a219fba78977f913f7b46837452c43abfab0134ca6b639f4d414da186fb2"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/svml_dispmd.dll",
+              "sha256": "fd3ef5cc409a8949b9161782a950e417f1e90c0db2b42e9608d891d69b1e6c4c"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/sycl-ls.exe",
+              "sha256": "b72213ceedf753c926dacd781f7cd210d80181e1f74d0dc76d5b82a9937cb47e"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/sycl8.dll",
+              "sha256": "c9cdcc84c80d0b6904d4e5429e3b3de43201be7425251156d6d67408f00535b8"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/tbb12.dll",
+              "sha256": "b24e99b40add5ce3132793c10f7325b8e9fdfb4db03465f5103cfb43146a5a9f"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/tcm.dll",
+              "sha256": "9fb2c4b7d6b8775f769703ab5f5dcd8834377f4d49860e52ea44fc1c253cdfe1"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/umf.dll",
+              "sha256": "1e1173dc68792507897bd34d22211bd4b9e06c9a1bebd38ab7879662db71ce53"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/ur_adapter_level_zero_v2.dll",
+              "sha256": "a652c9f814e6dd98470f17344a33ba0168b8b36e71d358e430e432ea5284b3db"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/ur_adapter_level_zero.dll",
+              "sha256": "65a8c022ccabe908455b283c2f7df7646b8111ce7d0b0e88b53810d3f688f42e"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/ur_adapter_opencl.dll",
+              "sha256": "9c2572c896a5799425f7ecd286d191bd4c7c338e3947e3410050d9abe0f72da7"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/ur_loader.dll",
+              "sha256": "b5d895938f78ebd9aa1250fdb595678c0193a3b9f7bdd0b157c61099d31008ce"
+            },
+            {
+              "path": "resources/workers/win32-x64/sycl/ur_win_proxy_loader.dll",
+              "sha256": "2248c6ec0f3a68185098d7d8c4c197eaa1d0d433bbc1812c3c926ab884494abf"
+            }
+          ]
+        }
+      }
     }
   }
 }
