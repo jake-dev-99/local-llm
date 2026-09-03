@@ -7,20 +7,30 @@ import test from 'node:test';
 import { sha256File } from '../src/worker/workerManifest.ts';
 import { prepareTargetWorkers, targetIgnoreEntries } from './package-workers.mjs';
 
-test('Windows packaging requires and verifies both bundles', async (context) => {
+test('Windows packaging prepares and verifies the official bundle', async (context) => {
   const fixture = await packageFixture(context, 'win32-x64');
-  await prepareTargetWorkers(fixture.root, 'win32-x64');
+  const prepared = [];
+  await prepareTargetWorkers(fixture.root, 'win32-x64', {
+    prepareWindowsArchive: async (root) => prepared.push(root),
+  });
+  assert.deepEqual(prepared, [fixture.root]);
   await rm(fixture.syclDll);
   await assert.rejects(
-    prepareTargetWorkers(fixture.root, 'win32-x64'),
+    prepareTargetWorkers(fixture.root, 'win32-x64', {
+      prepareWindowsArchive: async () => undefined,
+    }),
     /ENOENT.*sycl-runtime\.dll/is,
   );
 });
 
-test('Darwin verification neither reads nor requires Windows files', async (context) => {
+test('Darwin verification neither prepares nor requires Windows files', async (context) => {
   const fixture = await packageFixture(context, 'darwin-arm64');
   await rm(fixture.windowsDirectory, { recursive: true, force: true });
-  await prepareTargetWorkers(fixture.root, 'darwin-arm64');
+  await prepareTargetWorkers(fixture.root, 'darwin-arm64', {
+    prepareWindowsArchive: async () => {
+      throw new Error('Darwin packaging must not prepare Windows files');
+    },
+  });
 });
 
 test('ignore rules exclude the complete other-platform tree', () => {
@@ -36,15 +46,16 @@ test('target preparation rejects unsupported targets before reading the manifest
   );
 });
 
-test('an unbuilt legacy manifest explains how to generate the required bundles', async (context) => {
+test('Windows archive preparation runs before the manifest is read', async (context) => {
   const fixture = await packageFixture(context, 'win32-x64');
   const manifestPath = path.join(fixture.root, 'resources', 'workers', 'manifest.json');
   await writeFile(manifestPath, JSON.stringify({ workers: {} }));
 
-  await assert.rejects(
-    prepareTargetWorkers(fixture.root, 'win32-x64'),
-    /build:worker.*--target win32-x64.*--backend all/is,
-  );
+  await prepareTargetWorkers(fixture.root, 'win32-x64', {
+    prepareWindowsArchive: async () => {
+      await writeFile(manifestPath, `${JSON.stringify(fixture.manifest, null, 2)}\n`);
+    },
+  });
 });
 
 async function packageFixture(context, target) {
@@ -68,7 +79,7 @@ async function packageFixture(context, target) {
       'win32-x64': {
         modes: {
           auto: { bundle: 'sycl', backend: 'sycl' },
-          cpu: { bundle: 'cpu', backend: 'cpu' },
+          cpu: { bundle: 'sycl', backend: 'cpu' },
         },
         bundles: {
           sycl: await workerBundle(
@@ -76,7 +87,6 @@ async function packageFixture(context, target) {
             'resources/workers/win32-x64/sycl/llama-server.exe',
             ['resources/workers/win32-x64/sycl/sycl-runtime.dll'],
           ),
-          cpu: await workerBundle(root, 'resources/workers/win32-x64/cpu/llama-server.exe'),
         },
       },
     },
@@ -88,6 +98,7 @@ async function packageFixture(context, target) {
   return {
     root,
     target,
+    manifest,
     syclDll: path.join(root, 'resources', 'workers', 'win32-x64', 'sycl', 'sycl-runtime.dll'),
     windowsDirectory: path.join(root, 'resources', 'workers', 'win32-x64'),
   };

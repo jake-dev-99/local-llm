@@ -3,252 +3,112 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import process from 'node:process';
 
-import { cmakeOptionsForBuild, parseWorkerBuildOptions } from './worker-build-options.mjs';
-import { publishWindowsWorkerBuilds } from './windows-sycl-bundle.mjs';
-import { identifyOneApiCompiler, loadOneApiEnvironment, resolveOneApiFiles } from './windows-oneapi.mjs';
-import { resolveVisualStudioBuildTools } from './windows-vs-tools.mjs';
+import {
+  WINDOWS_WORKER_RELEASE,
+  prepareWindowsWorkerArchive,
+} from './windows-worker-archive.mjs';
 
-const LLAMA_CPP_COMMIT = '60eeeb6082c1126bb8bc72902c83123cd056811b';
 const root = path.resolve(import.meta.dirname, '..');
 const hostTarget = `${process.platform}-${process.arch}`;
-const options = parseWorkerBuildOptions(process.argv.slice(2), hostTarget);
-const source = path.join(root, 'build', 'llama.cpp');
-const windowsTools = hostTarget === 'win32-x64'
-  ? await resolveVisualStudioBuildTools(process.env)
-  : undefined;
+const target = parseTarget(process.argv.slice(2), hostTarget);
 
-if (windowsTools) {
-  console.log(`[worker-build] Using Visual Studio CMake: ${windowsTools.cmake}`);
-  console.log(`[worker-build] Using Visual Studio Ninja: ${windowsTools.ninja}`);
-  console.log(`[worker-build] Using Visual Studio developer bootstrap: ${windowsTools.developerCommand}`);
-}
-
-const syclEnvironment = options.backend === 'sycl' || options.backend === 'all'
-  ? await loadOneApiEnvironment(process.env, {
-      visualStudioDeveloperCommand: windowsTools?.developerCommand,
-    })
-  : undefined;
-if (syclEnvironment) {
-  console.log('[worker-build] Visual Studio x64 and Intel oneAPI environments initialized.');
-}
-const oneApiCompiler = syclEnvironment
-  ? await identifyOneApiCompiler(syclEnvironment, captureProcess)
-  : undefined;
-if (oneApiCompiler) {
-  console.log(`[worker-build] Intel compiler: ${oneApiCompiler}`);
-}
-
-if (!(await exists(path.join(source, '.git')))) {
-  await run('git', ['clone', '--filter=blob:none', 'https://github.com/ggml-org/llama.cpp.git', source]);
-}
-await run('git', ['fetch', '--depth=1', 'origin', LLAMA_CPP_COMMIT], source);
-await run('git', ['checkout', '--detach', LLAMA_CPP_COMMIT], source);
-
-const backends = options.backend === 'all' ? ['cpu', 'sycl'] : [options.backend];
-const builds = [];
-for (const backend of backends) {
-  const environment = backend === 'sycl'
-    ? syclEnvironment
-    : process.env;
-  builds.push(await buildWorker({
-    ...options,
-    backend,
-    hostTarget,
-    environment,
-    cmakePath: windowsTools?.cmake,
-    ninjaPath: windowsTools?.ninja,
-  }));
-}
-if (options.target === 'win32-x64') {
-  await publishWindowsWorkers(builds);
+if (target === 'win32-x64') {
+  await prepareWindowsWorkerArchive(root);
 } else {
-  for (const build of builds) {
-    await publishWorker(build);
-  }
+  await buildDarwinWorker();
 }
 
-async function buildWorker({
-  target,
-  backend,
-  hostTarget: buildHostTarget,
-  environment,
-  cmakePath,
-  ninjaPath,
-}) {
-  const buildDirectory = workerBuildDirectory(target, backend);
-  const cmakeOptions = cmakeOptionsForBuild({
-    target,
-    backend,
-    hostTarget: buildHostTarget,
-    llvmMingwRoot: environment.LOCAL_LLM_LLVM_MINGW_ROOT,
-    ninjaPath,
-  });
-  const cmake = cmakePath || 'cmake';
-
-  await rm(buildDirectory, { recursive: true, force: true });
-  await run(cmake, ['-S', source, '-B', buildDirectory, ...cmakeOptions], root, environment);
-  await run(
-    cmake,
-    ['--build', buildDirectory, '--config', 'Release', '--target', 'llama-server', '--parallel'],
-    root,
-    environment,
-  );
-
-  const binary = await firstExisting(workerCandidates(buildDirectory, target));
-  return { target, backend, environment, buildDirectory, binary };
+function parseTarget(args, defaultTarget) {
+  if (args.length === 0) return defaultTarget;
+  if (args.length !== 2 || args[0] !== '--target' || !args[1]) {
+    throw new Error('Usage: npm run build:worker -- [--target darwin-arm64|win32-x64]');
+  }
+  const requested = args[1];
+  if (!['darwin-arm64', 'win32-x64'].includes(requested)) {
+    throw new Error(`Worker builds support darwin-arm64 and win32-x64, not ${requested}.`);
+  }
+  return requested;
 }
 
-async function publishWindowsWorkers(completedBuilds) {
-  const syclBuild = completedBuilds.find((build) => build.backend === 'sycl');
-  let syclBundleOptions;
-  if (syclBuild) {
-    const oneApi = resolveOneApiFiles(syclBuild.environment);
-    syclBundleOptions = {
-      root,
-      oneApiRoot: oneApi.oneApiRoot,
-      vcToolsRedistDir: oneApi.vcToolsRedistDir,
-      oneApiPath: environmentValue(syclBuild.environment, 'PATH'),
-      systemRoot: environmentValue(syclBuild.environment, 'SystemRoot'),
-      environment: syclBuild.environment,
-      runProcess: captureProcess,
-      runDumpbin: async (absoluteFile) => await capture(
-        'dumpbin',
-        ['/nologo', '/dependents', absoluteFile],
-        root,
-        syclBuild.environment,
-      ),
-    };
+async function buildDarwinWorker() {
+  if (hostTarget !== 'darwin-arm64') {
+    throw new Error('The darwin-arm64 worker must be built on Apple Silicon macOS.');
   }
 
-  await publishWindowsWorkerBuilds({
-    root,
-    target: 'win32-x64',
-    builds: completedBuilds.map((build) => ({
-      backend: build.backend,
-      binary: build.binary,
-      destination: path.dirname(workerDestination(build.target, build.backend)),
-      bundleOptions: build.backend === 'sycl' ? syclBundleOptions : undefined,
-    })),
-  });
-  for (const build of completedBuilds) {
-    const destination = workerDestination(build.target, build.backend);
-    console.log(
-      `Bundled llama.cpp ${LLAMA_CPP_COMMIT} ${build.backend} worker at ${destination}`,
-    );
-  }
-}
-
-async function publishWorker({ target, backend, binary }) {
-  const destination = workerDestination(target, backend);
+  const source = path.join(root, 'build', 'llama.cpp');
+  const buildDirectory = path.join(root, 'build', 'llama.cpp-darwin-arm64');
+  const destination = path.join(root, 'resources', 'workers', 'darwin-arm64', 'llama-server');
   await mkdir(path.dirname(destination), { recursive: true });
+  if (!(await exists(path.join(source, '.git')))) {
+    await run('git', ['clone', '--filter=blob:none', 'https://github.com/ggml-org/llama.cpp.git', source]);
+  }
+  await run('git', ['fetch', '--depth=1', 'origin', WINDOWS_WORKER_RELEASE.commit], source);
+  await run('git', ['checkout', '--detach', WINDOWS_WORKER_RELEASE.commit], source);
+  await rm(buildDirectory, { recursive: true, force: true });
+  await run('cmake', [
+    '-S', source,
+    '-B', buildDirectory,
+    '-DCMAKE_BUILD_TYPE=Release',
+    '-DBUILD_SHARED_LIBS=OFF',
+    '-DGGML_STATIC=ON',
+    '-DGGML_NATIVE=OFF',
+    '-DGGML_OPENMP=OFF',
+    '-DLLAMA_BUILD_TESTS=OFF',
+    '-DLLAMA_BUILD_EXAMPLES=OFF',
+    '-DLLAMA_BUILD_APP=OFF',
+    '-DLLAMA_BUILD_SERVER=ON',
+    '-DLLAMA_BUILD_UI=OFF',
+    '-DLLAMA_USE_PREBUILT_UI=OFF',
+    '-DLLAMA_OPENSSL=OFF',
+    '-DLLAMA_LLGUIDANCE=OFF',
+    '-DLLAMA_SUBPROCESS=OFF',
+    '-DGGML_METAL=ON',
+    '-DGGML_METAL_EMBED_LIBRARY=ON',
+    '-DCMAKE_OSX_ARCHITECTURES=arm64',
+    '-DCMAKE_OSX_DEPLOYMENT_TARGET=13.3',
+  ]);
+  await run(
+    'cmake',
+    ['--build', buildDirectory, '--config', 'Release', '--target', 'llama-server', '--parallel'],
+  );
+  const binary = path.join(buildDirectory, 'bin', 'llama-server');
+  if (!(await exists(binary))) {
+    throw new Error(`Could not find llama-server at ${binary}.`);
+  }
   await cp(binary, destination);
   await chmod(destination, 0o755);
-  console.log(`Bundled llama.cpp ${LLAMA_CPP_COMMIT} ${backend} worker at ${destination}`);
+  console.log(
+    `Bundled llama.cpp ${WINDOWS_WORKER_RELEASE.commit} Darwin worker at ${destination}`,
+  );
 }
 
-function workerBuildDirectory(target, backend) {
-  return path.join(root, 'build', `llama.cpp-${target}${target === 'win32-x64' ? `-${backend}` : ''}`);
-}
-
-function workerDestination(target, backend) {
-  if (target === 'darwin-arm64') {
-    return path.join(root, 'resources', 'workers', target, 'llama-server');
-  }
-  return path.join(root, 'resources', 'workers', target, backend, 'llama-server.exe');
-}
-
-function workerCandidates(buildDirectory, target) {
-  return target === 'win32-x64'
-    ? [
-        path.join(buildDirectory, 'bin', 'Release', 'llama-server.exe'),
-        path.join(buildDirectory, 'bin', 'llama-server.exe'),
-      ]
-    : [path.join(buildDirectory, 'bin', 'llama-server')];
-}
-
-async function run(command, args, cwd = root, environment = process.env) {
+async function run(command, args, cwd = root) {
   await new Promise((resolve, reject) => {
+    const environment = { ...process.env };
+    delete environment.CFLAGS;
+    delete environment.CXXFLAGS;
+    delete environment.CPPFLAGS;
+    delete environment.LDFLAGS;
     const child = spawn(command, args, {
       cwd,
-      env: cleanBuildEnvironment(environment),
+      env: environment,
       stdio: 'inherit',
       shell: false,
     });
     child.once('error', reject);
     child.once('exit', (code) => {
-      if (code === 0) {
-        resolve();
-      } else {
-        reject(new Error(`${command} exited with code ${code ?? 'unknown'}.`));
-      }
+      if (code === 0) resolve();
+      else reject(new Error(`${command} exited with code ${code ?? 'unknown'}.`));
     });
   });
-}
-
-async function capture(command, args, cwd = root, environment = process.env) {
-  const result = await captureProcess(command, args, { cwd, env: environment });
-  if (result.code !== 0) {
-    const detail = result.stderr.trim();
-    throw new Error(
-      `${command} exited with code ${result.code ?? 'unknown'}${detail ? `:\n${detail}` : '.'}`,
-    );
-  }
-  return result.stdout;
-}
-
-async function captureProcess(command, args, options = {}) {
-  return await new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd: options.cwd ?? root,
-      env: cleanBuildEnvironment(options.env ?? process.env),
-      stdio: ['ignore', 'pipe', 'pipe'],
-      shell: false,
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk) => {
-      stdout += chunk;
-    });
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk;
-    });
-    child.once('error', reject);
-    child.once('close', (code) => {
-      resolve({ code, stdout, stderr });
-    });
-  });
-}
-
-function cleanBuildEnvironment(environment) {
-  const cleanEnvironment = { ...environment };
-  delete cleanEnvironment.CFLAGS;
-  delete cleanEnvironment.CXXFLAGS;
-  delete cleanEnvironment.CPPFLAGS;
-  delete cleanEnvironment.LDFLAGS;
-  return cleanEnvironment;
-}
-
-function environmentValue(environment, name) {
-  const key = Object.keys(environment).find((candidate) => candidate.toLowerCase() === name.toLowerCase());
-  return key ? environment[key] : undefined;
 }
 
 async function exists(value) {
   try {
     await stat(value);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    if (error?.code === 'ENOENT') return false;
+    throw error;
   }
-}
-
-async function firstExisting(candidates) {
-  for (const candidate of candidates) {
-    if (await exists(candidate)) {
-      return candidate;
-    }
-  }
-  throw new Error(`Could not find llama-server in ${candidates.join(', ')}.`);
 }
