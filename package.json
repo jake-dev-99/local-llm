@@ -157,7 +157,7 @@
             "cpu"
           ],
           "default": "auto",
-          "description": "Use Metal on Apple Silicon or Intel SYCL on x64 Windows automatically. Select cpu to force the bundled CPU worker. SYCL failures are reported and never fall back automatically."
+          "description": "Use Metal on Apple Silicon or Intel SYCL on x64 Windows automatically. Select cpu to disable device offload in the bundled worker. SYCL failures are reported and never fall back automatically."
         },
         "localLlm.batchSize": {
           "type": "integer",
@@ -228,6 +228,7 @@
     "build:worker": "node scripts/build-worker.mjs",
     "package": "node scripts/package-vsix.mjs",
     "smoke:worker": "node scripts/smoke-worker.mjs",
+    "verify:windows-worker": "node scripts/verify-windows-worker.mjs",
     "vscode:prepublish": "npm run typecheck && npm run build"
   },
   "devDependencies": {

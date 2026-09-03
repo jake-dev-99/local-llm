@@ -1,15 +1,29 @@
 # Third-party notices
 
-Platform VSIX packages include a statically linked `llama-server` built from
+Platform VSIX packages include `llama-server` from
 [`ggml-org/llama.cpp`](https://github.com/ggml-org/llama.cpp) commit
-`60eeeb6082c1126bb8bc72902c83123cd056811b` (release `b10472`).
+`60eeeb6082c1126bb8bc72902c83123cd056811b` (release `b10472`). The Darwin
+worker is built locally from that source. The Windows VSIX includes the complete,
+unmodified official release asset
+[`llama-b10472-bin-win-sycl-x64.zip`](https://github.com/ggml-org/llama.cpp/releases/download/b10472/llama-b10472-bin-win-sycl-x64.zip),
+SHA-256 `0c4c50f1e9805933e043d4970f0c2050e4fb5343b8ac0244a49efaa474705830`.
 
 Its source tree is available from the linked repository at the pinned commit.
 
-Bundled worker SHA-256 digests for this PoC build:
+Pinned worker artifact digests for this PoC build:
 
 - `darwin-arm64/llama-server`: `5188f4ae2d8dc59261d7e4381c582cd7401da388bd17ce987cc42179c7a692c7`
-- `win32-x64/llama-server.exe`: `b6978c718101551634f82edf4b94888267715c4b42aa92b94bfd7bd365ff530b`
+- `llama-b10472-bin-win-sycl-x64.zip`: `0c4c50f1e9805933e043d4970f0c2050e4fb5343b8ac0244a49efaa474705830`
+
+The official Windows archive includes Intel SYCL/Unified Runtime, oneMKL,
+oneDNN, oneTBB, OpenMP, and related user-mode runtime files. It does not contain
+a separate licensing directory at this pinned release. Component terms and
+redistribution guidance are published by Intel in its
+[`Redistributable Library Considerations`](https://www.intel.com/content/www/us/en/docs/dpcpp-cpp-compiler/developer-guide-reference/2024-2/redistributable-library-considerations.html),
+[`Intel Simplified Software License`](https://www.intel.com/content/www/us/en/content-details/749362/intel-simplified-software-license-version-october-2022.html),
+and the component-specific notices linked from those materials. This notice
+records the exact upstream binary provenance without claiming the upstream ZIP
+contains legal files that are absent from it.
 
 Downloaded GGUF models are not part of this extension. Each model remains
 subject to the license and usage terms published by its provider.

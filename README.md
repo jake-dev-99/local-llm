@@ -13,7 +13,7 @@ invalidated before it can be used again.
 The prototype supports:
 
 - Apple Silicon macOS (`darwin-arm64`) with Metal acceleration
-- Intel/AMD 64-bit Windows 10 or 11 (`win32-x64`) with CPU inference
+- Intel 64-bit Windows 10 or 11 (`win32-x64`) with Intel SYCL acceleration or explicit CPU inference
 - GGUF import, resumable Hugging Face downloads, and direct HTTPS downloads
 - installed models in VS Code's native Chat model picker
 - ordinary streaming Chat
@@ -188,27 +188,38 @@ requests fail with a direct explanation instead of triggering hidden tool loss.
 
 ## Build from source
 
-Requirements are Node.js, npm, Git, CMake, and a native C/C++ toolchain. Build
-each worker on its target platform so the VSIX has no separately installed
-runtime dependency.
+Requirements are Node.js and npm. Building the Darwin worker additionally
+requires Git, CMake, and the native Apple C/C++ toolchain. Windows packaging
+downloads the pinned official llama.cpp SYCL release archive, verifies its
+SHA-256, and bundles its complete payload; Intel oneAPI, Visual Studio, CMake,
+MinGW, and manual DLL copying are not part of the Windows build.
 
 ```shell
 npm install
 npm test
 npm run typecheck
 npm run build
-npm run build:worker
+npm run build:worker -- --target darwin-arm64
 npm run package -- darwin-arm64
 npm run package -- win32-x64
 ```
 
 Each packaged extension is written to `dist/vsix/<target>/`.
 
+`npm run package -- win32-x64` is the complete Windows assembly path. It
+downloads only when the verified cache under `build/worker-downloads/` is
+absent, stages one official distribution for both `auto` and explicit `cpu`
+modes, verifies every manifest hash, and never executes the Windows worker
+during packaging. On an x64 Windows Intel Arc host, run
+`npm run verify:windows-worker` after staging to execute the clean-environment
+device probes, then use `npm run smoke:worker` with an absolute GGUF path for
+the model-load gate.
+
 The worker is pinned to llama.cpp commit
 `60eeeb6082c1126bb8bc72902c83123cd056811b` (build `b10472`). The checked-in
-Windows worker is a portable CPU build. Runtime speed is not a prototype
-acceptance gate; actual execution on an Intel Windows machine remains a
-platform validation step.
+Windows worker is the complete official SYCL archive for that release. Native
+device discovery, model execution, and installed-VSIX acceptance still require
+an Intel Windows host with a compatible graphics driver.
 
 ## Prototype boundaries
 
