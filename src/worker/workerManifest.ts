@@ -112,13 +112,3 @@ export async function verifyPlatformBundles(root: string, manifest: WorkerManife
   if (!platform) throw new Error(`worker target is not declared: ${target}`);
   for (const bundle of Object.values(platform.bundles)) await verifyWorkerBundleFiles(root, bundle);
 }
-
-export function replaceWorkerBundle(manifest: WorkerManifestV2, target: string, bundleName: string, bundle: WorkerBundle): WorkerManifestV2 {
-  const raw = JSON.parse(JSON.stringify(manifest)) as Record<string, unknown>;
-  const platforms = raw.platforms as Record<string, Record<string, unknown>>;
-  const platform = platforms[target];
-  if (!platform) throw new Error(`worker target is not declared: ${target}`);
-  const bundles = platform.bundles as Record<string, unknown>;
-  bundles[bundleName] = bundle;
-  return parseWorkerManifest(raw);
-}
