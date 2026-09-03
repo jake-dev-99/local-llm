@@ -20,10 +20,13 @@ test('Windows auto selects only the SYCL bundle', () => {
   });
 });
 
-test('Windows cpu selects only the CPU bundle', () => {
+test('Windows cpu reuses the official SYCL distribution with the CPU backend', () => {
   const manifest = parseWorkerManifest(validManifest());
-  assert.equal(resolveWorkerBundle(manifest, 'win32-x64', 'cpu').bundleName, 'cpu');
-  assert.equal(resolveWorkerBundle(manifest, 'win32-x64', 'cpu').backend, 'cpu');
+  const cpu = resolveWorkerBundle(manifest, 'win32-x64', 'cpu');
+  const sycl = resolveWorkerBundle(manifest, 'win32-x64', 'auto');
+  assert.equal(cpu.bundleName, 'sycl');
+  assert.equal(cpu.backend, 'cpu');
+  assert.equal(cpu.executable, sycl.executable);
 });
 
 test('Darwin auto and cpu reuse one file bundle with different backends', () => {
@@ -70,9 +73,8 @@ function validManifest(): Record<string, any> {
   const hash = 'a'.repeat(64);
   return { manifestVersion: 2, llamaCppCommit: '60eeeb6082c1126bb8bc72902c83123cd056811b', llamaCppBuild: 'b10472', platforms: {
     'darwin-arm64': { modes: { auto: { bundle: 'default', backend: 'metal' }, cpu: { bundle: 'default', backend: 'cpu' } }, bundles: { default: { executable: 'resources/workers/darwin-arm64/llama-server', files: [{ path: 'resources/workers/darwin-arm64/llama-server', sha256: hash }] } } },
-    'win32-x64': { modes: { auto: { bundle: 'sycl', backend: 'sycl' }, cpu: { bundle: 'cpu', backend: 'cpu' } }, bundles: {
+    'win32-x64': { modes: { auto: { bundle: 'sycl', backend: 'sycl' }, cpu: { bundle: 'sycl', backend: 'cpu' } }, bundles: {
       sycl: { executable: 'resources/workers/win32-x64/sycl/llama-server.exe', files: [{ path: 'resources/workers/win32-x64/sycl/llama-server.exe', sha256: hash }, { path: 'resources/workers/win32-x64/sycl/sycl8.dll', sha256: hash }] },
-      cpu: { executable: 'resources/workers/win32-x64/cpu/llama-server.exe', files: [{ path: 'resources/workers/win32-x64/cpu/llama-server.exe', sha256: hash }] },
     } },
   } };
 }

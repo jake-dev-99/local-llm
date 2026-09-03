@@ -20,7 +20,7 @@ test('smoke options reject a relative model path before inspecting it', async ()
   );
 });
 
-test('Windows smoke maps sycl and cpu to their isolated bundles', async (context) => {
+test('Windows smoke maps sycl and cpu to one official distribution', async (context) => {
   const fixture = await workerFixture(context);
   const sycl = await resolveRequestedWorkerBundle(fixture.root, 'sycl');
   const cpu = await resolveRequestedWorkerBundle(fixture.root, 'cpu');
@@ -33,16 +33,17 @@ test('Windows smoke maps sycl and cpu to their isolated bundles', async (context
       executable: 'resources/workers/win32-x64/sycl/llama-server.exe',
     },
   );
-  assert.equal(cpu.bundle.bundleName, 'cpu');
+  assert.equal(cpu.bundle.bundleName, 'sycl');
   assert.equal(cpu.bundle.backend, 'cpu');
+  assert.equal(cpu.bundle.executable, sycl.bundle.executable);
+  assert.equal(cpu.executable, sycl.executable);
 });
 
 test('SYCL discovery completes before the worker is spawned', async () => {
   const events = [];
   const child = fakeChild({ exitOn: 'SIGTERM' });
   const environment = {
-    ONEAPI_DEVICE_SELECTOR: 'opencl:gpu',
-    UR_ADAPTERS_FORCE_LOAD: 'C:\\workers\\sycl\\ur_adapter_opencl.dll',
+    PATH: 'C:\\workers\\sycl;C:\\Windows\\System32;C:\\Windows',
   };
   await runSmokeWorker(['--backend', 'sycl', '--model', '/models/test.gguf'], smokeDependencies({
     discoverSycl: async () => {
@@ -50,7 +51,7 @@ test('SYCL discovery completes before the worker is spawned', async () => {
       return {
         id: 'SYCL0',
         description: 'Intel Arc',
-        runtime: { adapter: 'opencl', environment },
+        environment,
       };
     },
     spawnWorker: (_executable, _args, options) => {
@@ -189,12 +190,12 @@ function smokeDependencies(overrides = {}) {
     resolveBundle: async (_root, backend) => ({
       bundle: {
         target: 'win32-x64',
-        bundleName: backend === 'sycl' ? 'sycl' : 'cpu',
+        bundleName: 'sycl',
         backend,
-        executable: `resources/workers/win32-x64/${backend === 'sycl' ? 'sycl' : 'cpu'}/llama-server.exe`,
+        executable: 'resources/workers/win32-x64/sycl/llama-server.exe',
         files: [],
       },
-      executable: `C:/workers/${backend}/llama-server.exe`,
+      executable: 'C:/workers/sycl/llama-server.exe',
     }),
     discoverSycl: async () => ({ id: 'SYCL0', description: 'Intel Arc' }),
     allocatePort: async () => 43123,
@@ -255,11 +256,10 @@ async function workerFixture(context) {
       'win32-x64': {
         modes: {
           auto: { bundle: 'sycl', backend: 'sycl' },
-          cpu: { bundle: 'cpu', backend: 'cpu' },
+          cpu: { bundle: 'sycl', backend: 'cpu' },
         },
         bundles: {
           sycl: await workerBundle(root, 'resources/workers/win32-x64/sycl/llama-server.exe'),
-          cpu: await workerBundle(root, 'resources/workers/win32-x64/cpu/llama-server.exe'),
         },
       },
     },

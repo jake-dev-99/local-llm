@@ -20,7 +20,7 @@ export interface PreparedWorkerLaunch {
   bundle: LaunchableWorkerBundle;
   backend: WorkerBackend;
   syclDevice?: SyclDevice;
-  syclRuntime?: DiscoveredSyclDevice['runtime'];
+  environment?: NodeJS.ProcessEnv;
 }
 
 export async function prepareWorkerLaunch(
@@ -31,6 +31,6 @@ export async function prepareWorkerLaunch(
     return { bundle, backend: bundle.backend };
   }
   const discovered = await input.discoverSycl(bundle.executablePath);
-  const { runtime: syclRuntime, ...syclDevice } = discovered;
-  return { bundle, backend: bundle.backend, syclDevice, syclRuntime };
+  const { environment, ...syclDevice } = discovered;
+  return { bundle, backend: bundle.backend, syclDevice, environment };
 }

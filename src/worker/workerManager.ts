@@ -209,8 +209,8 @@ export class WorkerManager implements vscode.Disposable {
       const backend = launch.backend;
       if (launch.syclDevice) {
         this.logger.info(
-          `Windows SYCL preflight passed with ${launch.syclRuntime?.adapter ?? 'unknown'}: `
-          + `${launch.syclDevice.id} (${launch.syclDevice.description}).`,
+          `Windows SYCL preflight passed: ${launch.syclDevice.id} `
+          + `(${launch.syclDevice.description}).`,
         );
       }
       await access(executable, fsConstants.X_OK).catch(() => {
@@ -261,7 +261,7 @@ export class WorkerManager implements vscode.Disposable {
       );
       child = spawn(executable, args, {
         cwd: pathDirectory(executable),
-        env: launch.syclRuntime?.environment,
+        env: launch.environment,
         shell: false,
         windowsHide: true,
         stdio: ['pipe', 'pipe', 'pipe'],

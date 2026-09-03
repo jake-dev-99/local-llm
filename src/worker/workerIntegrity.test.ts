@@ -15,13 +15,13 @@ test('verified Windows auto selects only the SYCL bundle', async (context) => {
   assert.match(bundle.executablePath, /win32-x64[\\/]sycl[\\/]llama-server\.exe$/);
 });
 
-test('verified Windows cpu selects only the explicit CPU bundle', async (context) => {
+test('verified Windows cpu reuses the official distribution with CPU arguments', async (context) => {
   const root = await workerFixture(context);
   const bundle = await verifiedWorkerBundle(root, 'win32-x64', 'cpu');
 
   assert.equal(bundle.backend, 'cpu');
-  assert.equal(bundle.bundleName, 'cpu');
-  assert.match(bundle.executablePath, /win32-x64[\\/]cpu[\\/]llama-server\.exe$/);
+  assert.equal(bundle.bundleName, 'sycl');
+  assert.match(bundle.executablePath, /win32-x64[\\/]sycl[\\/]llama-server\.exe$/);
 });
 
 async function workerFixture(context: test.TestContext): Promise<string> {
@@ -30,7 +30,6 @@ async function workerFixture(context: test.TestContext): Promise<string> {
   const sycl = await bundle(root, 'resources/workers/win32-x64/sycl/llama-server.exe', [
     'resources/workers/win32-x64/sycl/sycl8.dll',
   ]);
-  const cpu = await bundle(root, 'resources/workers/win32-x64/cpu/llama-server.exe');
   const manifest = {
     manifestVersion: 2,
     llamaCppCommit: '60eeeb6082c1126bb8bc72902c83123cd056811b',
@@ -39,9 +38,9 @@ async function workerFixture(context: test.TestContext): Promise<string> {
       'win32-x64': {
         modes: {
           auto: { bundle: 'sycl', backend: 'sycl' },
-          cpu: { bundle: 'cpu', backend: 'cpu' },
+          cpu: { bundle: 'sycl', backend: 'cpu' },
         },
-        bundles: { sycl, cpu },
+        bundles: { sycl },
       },
     },
   };
