@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -268,6 +268,43 @@ async function fixtureRoot(context) {
     },
   }, null, 2)}\n`);
   return root;
+}
+
+for (const rollbackFails of [false, true]) {
+  test(`a partial bundle copy ${rollbackFails ? 'preserves the backup if rollback also fails' : 'restores the previous bundle'}`, async context => {
+    const root = await fixtureRoot(context);
+    const workers = path.join(root, 'resources', 'workers');
+    const destination = path.join(workers, 'win32-x64');
+    await mkdir(destination);
+    await writeFile(path.join(destination, 'old-worker.exe'), 'old worker');
+    const manifest = await readFile(path.join(workers, 'manifest.json'), 'utf8');
+    const archive = storedZip([{ name: 'llama-server.exe', contents: 'new server' }]);
+    await assert.rejects(prepareWindowsWorkerArchive(root, {
+      release: fixtureRelease(archive),
+      fetchFn: async () => new Response(archive, { status: 200 }),
+      log: () => undefined,
+      copyDirectory: async (_source, target) => {
+        await mkdir(target);
+        await writeFile(path.join(target, 'partial.dll'), 'partial');
+        throw new Error('injected partial copy failure');
+      },
+      renameFile: async (source, target) => {
+        if (rollbackFails && source.includes('.win32-x64-backup-')) {
+          throw new Error('injected rollback failure');
+        }
+        await rename(source, target);
+      },
+    }), rollbackFails ? /rollback/i : /injected partial copy failure/);
+    assert.equal(await readFile(path.join(workers, 'manifest.json'), 'utf8'), manifest);
+    if (rollbackFails) {
+      const backup = (await readdir(workers)).find(name => name.startsWith('.win32-x64-backup-'));
+      assert.ok(backup, 'rollback failure must not destroy the only original bundle');
+      assert.equal(await readFile(path.join(workers, backup, 'old-worker.exe'), 'utf8'), 'old worker');
+    } else {
+      assert.equal(await readFile(path.join(destination, 'old-worker.exe'), 'utf8'), 'old worker');
+      assert.deepEqual(await readdir(destination), ['old-worker.exe']);
+    }
+  });
 }
 
 function fixtureRelease(archive) {

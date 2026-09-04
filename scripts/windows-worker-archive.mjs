@@ -42,6 +42,7 @@ export async function prepareWindowsWorkerArchive(root, dependencies = {}) {
   const windowsDestination = path.join(workersDirectory, 'win32-x64');
   const windowsBackup = path.join(workersDirectory, `.win32-x64-backup-${token}`);
   const manifestBackup = path.join(workersDirectory, `.manifest-backup-${token}.json`);
+  let published = false;
 
   await mkdir(workersDirectory, { recursive: true });
   try {
@@ -60,14 +61,18 @@ export async function prepareWindowsWorkerArchive(root, dependencies = {}) {
       copyDirectory,
       renameFile,
     });
+    published = true;
     log(`[worker-archive] Prepared ${release.build} Windows SYCL worker from ${release.assetName}.`);
     return manifest;
   } finally {
     await Promise.all([
       rm(stagedWindows, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }),
       rm(stagedManifest, { force: true }),
-      rm(windowsBackup, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }),
-      rm(manifestBackup, { force: true }),
+      // If rollback itself failed, these may be the only original files left.
+      ...(published ? [
+        rm(windowsBackup, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }),
+        rm(manifestBackup, { force: true }),
+      ] : []),
     ]);
   }
 }
@@ -244,7 +249,7 @@ function safeEntryPath(fileName) {
 async function publishTransaction(options) {
   let windowsBackedUp = false;
   let manifestBackedUp = false;
-  let windowsPublished = false;
+  let windowsCopyStarted = false;
   let manifestPublished = false;
   try {
     if (await exists(options.windowsDestination)) {
@@ -255,26 +260,31 @@ async function publishTransaction(options) {
       await options.renameFile(options.manifestPath, options.manifestBackup);
       manifestBackedUp = true;
     }
+    windowsCopyStarted = true;
     await options.copyDirectory(options.stagedWindows, options.windowsDestination, {
       recursive: true,
       force: false,
       errorOnExist: true,
     });
-    windowsPublished = true;
     await options.renameFile(options.stagedManifest, options.manifestPath);
     manifestPublished = true;
   } catch (error) {
-    if (manifestPublished) await rm(options.manifestPath, { force: true });
-    if (manifestBackedUp) await options.renameFile(options.manifestBackup, options.manifestPath);
-    if (windowsPublished) {
-      await rm(options.windowsDestination, {
-        recursive: true,
-        force: true,
-        maxRetries: 10,
-        retryDelay: 100,
-      });
+    try {
+      if (manifestPublished) await rm(options.manifestPath, { force: true });
+      if (manifestBackedUp) await options.renameFile(options.manifestBackup, options.manifestPath);
+      if (windowsCopyStarted) {
+        await rm(options.windowsDestination, {
+          recursive: true,
+          force: true,
+          maxRetries: 10,
+          retryDelay: 100,
+        });
+      }
+      if (windowsBackedUp) await options.renameFile(options.windowsBackup, options.windowsDestination);
+    } catch (rollbackError) {
+      throw new AggregateError([error, rollbackError],
+        `Windows bundle publication and rollback failed. Any remaining originals are preserved at ${options.windowsBackup} and ${options.manifestBackup}.`);
     }
-    if (windowsBackedUp) await options.renameFile(options.windowsBackup, options.windowsDestination);
     throw error;
   }
 }
