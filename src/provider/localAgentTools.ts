@@ -28,7 +28,8 @@ export function resolveLocalAgentToolPolicy(
   localAgentForceFinal: boolean,
 ): LocalAgentToolPolicy {
   if (localAgentForceFinal) {
-    return { tools: [], toolChoice: 'none', source: 'local-agent-final' };
+    // Definitions are part of the cached prompt, not permission to execute.
+    return { tools: [...tools], toolChoice: 'none', source: 'local-agent-final' };
   }
   if (callerRequired) {
     return { tools: [...tools], toolChoice: 'required', source: 'caller-required' };

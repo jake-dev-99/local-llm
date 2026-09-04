@@ -9,6 +9,7 @@ import type {
 } from '../domain';
 import { parseWorkerModelProfile, type WorkerModelProfile } from './runtimeProfile';
 import { assertPromptFits } from './toolBudget';
+import { assertFinalResponse, finalResponseMessages } from './finalResponse';
 import {
   parseToolDecision,
   toolDecisionResponseFormat,
@@ -303,13 +304,8 @@ export class LlamaClient {
         toolCallCount: 1,
       };
     }
-    const {
-      tools: _tools,
-      workerToolChoice: _workerToolChoice,
-      ...withoutTools
-    } = request;
     return this.streamNativeChat(
-      { ...withoutTools, toolChoice: 'none' },
+      { ...request, toolChoice: 'none', workerToolChoice: 'none' },
       onEvent,
       trace,
       'final',
@@ -326,6 +322,15 @@ export class LlamaClient {
   ): Promise<ChatResult> {
     const tools = request.tools ?? [];
     const toolChoice = request.toolChoice ?? 'auto';
+    const finalOnly = toolChoice === 'none';
+    const messages = finalOnly && tools.length > 0
+      ? finalResponseMessages(request.messages)
+      : request.messages;
+    if (finalOnly && tools.length > 0) {
+      this.diagnostics?.info(
+        `${GENERATION_PHASE} ${trace.id} final answer: tool execution disabled; preserving ${tools.length} tool definitions and the conversation prefix.`,
+      );
+    }
     const outputTokenLimit = toolChoice === 'required'
       ? Math.min(
         request.maxTokens,
@@ -339,12 +344,12 @@ export class LlamaClient {
     }
     const body: Record<string, unknown> = {
       model: 'local',
-      messages: request.messages,
+      messages,
       stream: true,
       max_tokens: outputTokenLimit,
       temperature: request.temperature,
     };
-    const workerToolChoice = request.workerToolChoice ?? toolChoice;
+    const workerToolChoice = finalOnly ? 'none' : request.workerToolChoice ?? toolChoice;
     const measured = await assertPromptFits(
       tools,
       request.inputTokenBudget,
@@ -374,7 +379,7 @@ export class LlamaClient {
     const pendingTools = new Map<number, PendingToolCall>();
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
-    const bufferText = tools.length > 0 && toolChoice !== 'none';
+    const bufferText = tools.length > 0 || finalOnly;
     let buffer = '';
     let bufferedText = '';
     let textCharacters = 0;
@@ -422,6 +427,9 @@ export class LlamaClient {
     }
 
     let toolCallCount = 0;
+    if (finalOnly) {
+      assertFinalResponse(bufferedText, pendingTools.size > 0);
+    }
     if (pendingTools.size > 0 && bufferedText) {
       onEvent({ kind: 'text', text: bufferedText });
     }
@@ -733,7 +741,7 @@ function withTools(
   toolChoice: NonNullable<ChatRequest['toolChoice']>,
 ): Record<string, unknown> {
   if (!tools?.length) {
-    return { ...body };
+    return { ...body, ...(toolChoice === 'none' ? { tool_choice: 'none' } : {}) };
   }
   return {
     ...body,

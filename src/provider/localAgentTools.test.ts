@@ -52,10 +52,11 @@ test('VS Code required mode remains required before the invocation ceiling', () 
   );
 });
 
-test('the invocation ceiling disables tools and requests final generation', () => {
+test('the invocation ceiling disables execution without removing cached tool definitions', () => {
+  const tools = [tool('read_file')];
   assert.deepEqual(
-    resolveLocalAgentToolPolicy([tool('read_file')], true, true),
-    { tools: [], toolChoice: 'none', source: 'local-agent-final' },
+    resolveLocalAgentToolPolicy(tools, true, true),
+    { tools, toolChoice: 'none', source: 'local-agent-final' },
   );
 });
 

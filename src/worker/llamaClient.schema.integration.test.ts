@@ -307,7 +307,11 @@ test('automatic fallback selects ordinary final generation', async () => {
     assert.equal(completionBodies[1]?.temperature, 0.2);
     assert.equal(completionBodies[1]?.max_tokens, 256);
     assert.equal(completionBodies[1]?.response_format, undefined);
-    assert.equal(completionBodies[1]?.tools, undefined);
+    assert.deepEqual(completionBodies[1]?.tools, [{
+      type: 'function',
+      function: { name: 'read_file', parameters: { type: 'object' } },
+    }]);
+    assert.equal(completionBodies[1]?.tool_choice, 'none');
     assert.equal(result.toolCallCount, 0);
     assert.deepEqual(events, [{
       kind: 'text',

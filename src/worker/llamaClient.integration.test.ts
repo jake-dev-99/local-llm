@@ -814,6 +814,127 @@ async function testClient(server: ReturnType<typeof createServer>): Promise<Test
   return new LlamaClient(`http://127.0.0.1:${address.port}`, 'test-key');
 }
 
+const finalRequest: ChatRequest = {
+  messages: [
+    { role: 'system', content: 'Use tools to make requested edits. Report verified results.' },
+    { role: 'user', content: 'Update example.cls.' },
+    { role: 'assistant', content: '', tool_calls: [{
+      id: 'edit-1', type: 'function',
+      function: { name: 'replace_string_in_file', arguments: '{"filePath":"example.cls"}' },
+    }] },
+    { role: 'tool', tool_call_id: 'edit-1', content: 'Edit applied.' },
+  ],
+  tools: [{ type: 'function', function: {
+    name: 'replace_string_in_file',
+    parameters: { type: 'object', properties: { filePath: { type: 'string' } }, required: ['filePath'] },
+  } }],
+  toolChoice: 'none', inputTokenBudget: 1000, maxTokens: 2048, temperature: 0,
+};
+
+test('final generation preserves the tool and history prefix and appends final-only guidance', async () => {
+  await withFinalWorker([{ content: 'Updated example.cls.' }], async (client, bodies) => {
+    const events: ChatStreamEvent[] = [];
+    await client.chat(finalRequest, event => events.push(event));
+    const body = bodies[0]!;
+    assert.deepEqual(body.tools, finalRequest.tools);
+    assert.equal(body.tool_choice, 'none');
+    const messages = body.messages as ChatRequest['messages'];
+    assert.deepEqual(messages.slice(0, -1), finalRequest.messages.slice(0, -1));
+    assert.equal(messages.length, finalRequest.messages.length);
+    assert.equal(messages.at(-1)?.role, 'tool');
+    assert.equal(messages.at(-1)?.tool_call_id, 'edit-1');
+    assert.ok(messages.at(-1)?.content.startsWith('Edit applied.\n\n'));
+    assert.match(messages.at(-1)?.content ?? '', /do not call tools/i);
+    assert.equal(finalRequest.messages.length, 4, 'caller history must not be mutated');
+    assert.equal(finalRequest.messages.at(-1)?.content, 'Edit applied.');
+    assert.deepEqual(events, [{ kind: 'text', text: 'Updated example.cls.' }]);
+  });
+});
+
+test('final-only intent reaches the worker even with no tool definitions', async () => {
+  await withFinalWorker([{ content: 'Done.' }], async (client, bodies) => {
+    const { tools: _tools, ...request } = finalRequest;
+    await client.chat(request, () => undefined);
+    assert.equal(bodies[0]?.tool_choice, 'none');
+  });
+});
+
+test('final generation never emits a structured tool call even if the worker ignores none', async () => {
+  await withFinalWorker([
+    { content: 'I will edit again.' },
+    { tool_calls: [{ index: 0, id: 'unexpected', function: {
+      name: 'replace_string_in_file', arguments: '{"filePath":"example.cls"}',
+    } }] },
+  ], async client => {
+    const events: ChatStreamEvent[] = [];
+    await assert.rejects(client.chat(finalRequest, event => events.push(event)), /tool.*disabled/i);
+    assert.deepEqual(events, [], 'no text or executable call may escape the rejected response');
+  });
+});
+
+for (const text of [
+  '<tool_call>\n<function=replace_string_in_file>\n<parameter=filePath>example.cls</parameter>\n</function>\n</tool_call>',
+  'One more change.\n<function=replace_string_in_file>\n<parameter=filePath>example.cls</parameter>',
+]) {
+  test(`final generation rejects leaked protocol split across SSE chunks: ${text.slice(0, 25)}`, async () => {
+    await withFinalWorker([...text].map(content => ({ content })), async client => {
+      const events: ChatStreamEvent[] = [];
+      await assert.rejects(client.chat(finalRequest, event => events.push(event)), /tool.*disabled/i);
+      assert.deepEqual(events, []);
+    });
+  });
+}
+
+test('final generation preserves legitimate fenced and inline tool-markup examples', async () => {
+  const text = 'The parser handles `<tool_call>` and `<function=replace_string_in_file>`.\n' +
+    '```xml\n<tool_call>\n<function=replace_string_in_file>\n</function>\n</tool_call>\n```\n' +
+    '~~~xml\n<tool_call>\n</tool_call>\n~~~\nThe edit is complete.';
+  await withFinalWorker([...text].map(content => ({ content })), async client => {
+    const events: ChatStreamEvent[] = [];
+    await client.chat(finalRequest, event => events.push(event));
+    assert.equal(events.map(event => event.kind === 'text' ? event.text : '').join(''), text);
+  });
+});
+
+test('final guidance is included in the measured prompt budget before generation', async () => {
+  await withFinalWorker([{ content: 'Done.' }], async (client, bodies) => {
+    await assert.rejects(client.chat({ ...finalRequest, inputTokenBudget: 100 }, () => undefined), /budget/i);
+    assert.equal(bodies.length, 0, 'an oversized final prompt must never start generation');
+  }, body => (body.messages as ChatRequest['messages']).at(-1)?.content === 'Edit applied.' ? 100 : 101);
+});
+
+async function withFinalWorker(
+  deltas: Array<Record<string, unknown>>,
+  run: (client: TestLlamaClient, bodies: Array<Record<string, unknown>>) => Promise<void>,
+  countTokens: (body: Record<string, unknown>) => number = () => 100,
+): Promise<void> {
+  const bodies: Array<Record<string, unknown>> = [];
+  const server = createServer((request, response) => {
+    let raw = '';
+    request.on('data', chunk => { raw += chunk; });
+    request.on('end', () => {
+      const body = JSON.parse(raw) as Record<string, unknown>;
+      if (request.url === '/v1/chat/completions/input_tokens') {
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ input_tokens: countTokens(body) }));
+      } else {
+        bodies.push(body);
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(deltas.map(delta => `data: ${JSON.stringify({ choices: [{ delta }] })}\n\n`).join('') + 'data: [DONE]\n\n');
+      }
+    });
+  });
+  await listen(server);
+  const client = await testClient(server);
+  try {
+    await run(client, bodies);
+  } finally {
+    await client.dispose();
+    server.closeAllConnections();
+    await close(server);
+  }
+}
+
 async function listen(server: ReturnType<typeof createServer>): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);

@@ -166,3 +166,30 @@ visible and no CPU fallback process starts.
 macOS tests and packaging prove source logic and artifact assembly only. Do not
 claim Intel Arc runtime acceptance until the native probe, model smoke, and
 installed-VSIX gates pass on Windows.
+
+## Final-answer cache and tool-boundary gate
+
+With Qwen3.5-4B and the bundled Local Agent, repeat a coding request that reaches
+the configured tool-call limit. Keep the model, context size, and tool set
+unchanged during this check. The final request must:
+
+- retain the same tool definitions and report `toolChoice=none`;
+- log `final answer: tool execution disabled; preserving ...`;
+- reuse most of the previous prompt, visible in `timings ... cached tokens`,
+  processing only the new result/control tail instead of resetting to zero;
+- emit no further executable tool call;
+- produce normal final text, or an explicit final-only protocol error if the
+  model still emits an unquoted tool call. Code examples remain intact, and
+  previous edits are neither replayed nor rolled back by this check.
+
+The runtime note is appended to the final tool result without modifying the
+stored conversation. In Qwen's template, adding a new user message instead
+changes which historical assistant reasoning blocks are rendered and loses
+much of the otherwise reusable prefix.
+
+A macOS cache-mechanics check with the pinned `b10472` worker, existing
+Qwen3-4B-Instruct-2507-Q8_0 weights, and the official Qwen3.5-4B template showed
+273 cached / 3,151 processed tokens with a new user instruction. The corrected
+production client retained 3,418 cached tokens and processed 70. This is a
+controlled template/cache check, **not** Qwen3.5-4B response-quality or native
+Windows/SYCL acceptance; repeat the installed-VSIX gate above on the target host.
