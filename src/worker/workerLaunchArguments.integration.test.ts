@@ -86,15 +86,16 @@ test('CPU execution explicitly disables device offload while retaining bounded b
   assert.equal(args.includes('--no-op-offload'), true);
 });
 
-test('Windows SYCL explicitly selects SYCL0 and requests GPU layers', async () => {
+test('Windows SYCL explicitly selects SYCL0 and fits automatic GPU layers', async () => {
   const buildArguments = await loadBuildWorkerArguments();
   const args = buildArguments(
     '/models/qwen.gguf', 60000, '/keys/worker.key', config({ acceleration: 'auto' }), 'sycl',
   );
 
-  assert.deepEqual(valueFor(args, '--fit'), 'off');
+  assert.deepEqual(valueFor(args, '--fit'), 'on');
+  assert.deepEqual(valueFor(args, '--fit-target'), '2048');
   assert.deepEqual(valueFor(args, '--device'), 'SYCL0');
-  assert.deepEqual(valueFor(args, '--n-gpu-layers'), '99');
+  assert.equal(args.includes('--n-gpu-layers'), false);
   assert.deepEqual(valueFor(args, '--split-mode'), 'none');
   assert.deepEqual(valueFor(args, '--main-gpu'), '0');
   assert.equal(args.includes('--no-op-offload'), false);

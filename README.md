@@ -36,6 +36,13 @@ or:
 code --install-extension dist/vsix/win32-x64/local-llm-engine-0.3.4-win32-x64.vsix --force
 ```
 
+For local development, build, package, and install the VSIX for the current
+platform in one step:
+
+```shell
+npm run package:install
+```
+
 Reload VS Code after upgrading from an earlier prototype. Installed models live
 in VS Code global storage and remain available across extension upgrades.
 

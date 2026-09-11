@@ -54,9 +54,12 @@ test('SYCL discovery completes before the worker is spawned', async () => {
         environment,
       };
     },
-    spawnWorker: (_executable, _args, options) => {
+    spawnWorker: (_executable, args, options) => {
       events.push('spawn');
       assert.deepEqual(options.env, environment);
+      assert.equal(args[args.indexOf('--fit') + 1], 'on');
+      assert.equal(args[args.indexOf('--fit-target') + 1], '2048');
+      assert.equal(args.includes('--n-gpu-layers'), false);
       return child;
     },
   }));

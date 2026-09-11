@@ -15,7 +15,7 @@ import { isFatalWorkerError } from './workerError';
 import { verifiedWorkerBundle } from './workerIntegrity';
 import { prepareWorkerLaunch } from './workerLaunch';
 import type { WorkerBackend } from './workerManifest';
-import { createWorkerDiagnostics } from './workerDiagnostics';
+import { createWorkerDiagnostics, WorkerStartupDiagnostics } from './workerDiagnostics';
 import { beginWorkerActivity, finishWorkerActivity } from './workerActivity';
 import { discoverSycl0 } from './syclDevice';
 
@@ -200,6 +200,7 @@ export class WorkerManager implements vscode.Disposable {
   ): Promise<LlamaClient> {
     const startGeneration = this.generation;
     const startedAt = Date.now();
+    const startupDiagnostics = new WorkerStartupDiagnostics(this.logger);
     let child: ChildProcessWithoutNullStreams | undefined;
     let client: LlamaClient | undefined;
     this.requestedStop = false;
@@ -286,8 +287,22 @@ export class WorkerManager implements vscode.Disposable {
       );
       child.stdout.setEncoding('utf8');
       child.stderr.setEncoding('utf8');
-      child.stdout.on('data', (data: string) => this.logWorkerOutput(data));
-      child.stderr.on('data', (data: string) => this.logWorkerOutput(data));
+      const logOutput = (data: string): void => {
+        startupDiagnostics.append(data);
+        this.logWorkerOutput(data);
+      };
+      child.stdout.on('data', logOutput);
+      child.stderr.on('data', logOutput);
+      child.once('close', () => {
+        if (
+          signal?.aborted || this.requestedStop || this.disposed ||
+          startGeneration !== this.generation
+        ) {
+          startupDiagnostics.complete();
+        } else {
+          startupDiagnostics.reportFailure();
+        }
+      });
       const spawnError = new Promise<never>((_resolve, reject) => {
         child?.once('error', (error) => {
           this.logger.error('Local worker process error', error);
@@ -313,6 +328,7 @@ export class WorkerManager implements vscode.Disposable {
       }
 
       this.currentClient = client;
+      startupDiagnostics.complete();
       this.setState({ kind: 'ready', modelId: model.id, port });
       this.logger.info(
         `[Model Loading] Complete: ${model.name}; backend=${backend}; ` +
@@ -329,6 +345,7 @@ export class WorkerManager implements vscode.Disposable {
       await this.removeApiKeyFile();
       const cancelled = signal?.aborted || startGeneration !== this.generation || this.disposed;
       if (cancelled) {
+        startupDiagnostics.complete();
         if (startGeneration === this.generation && !this.disposed) {
           this.setState({ kind: 'stopped' });
         }
@@ -536,9 +553,9 @@ export function buildWorkerArguments(
     case 'sycl':
       args.push(
         '--fit',
-        'off',
-        '--n-gpu-layers',
-        '99',
+        'on',
+        '--fit-target',
+        '2048',
         '--device',
         'SYCL0',
         '--split-mode',

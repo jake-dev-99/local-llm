@@ -164,7 +164,7 @@ function buildExtensionEquivalentArguments(modelPath, port, apiKeyFile, backend)
     '--no-webui',
   ];
   if (backend === 'sycl') {
-    args.push('--fit', 'off', '--n-gpu-layers', '99', '--device', 'SYCL0', '--split-mode', 'none', '--main-gpu', '0');
+    args.push('--fit', 'on', '--fit-target', '2048', '--device', 'SYCL0', '--split-mode', 'none', '--main-gpu', '0');
   } else {
     args.push('--fit', 'off', '--n-gpu-layers', '0', '--device', 'none', '--no-op-offload');
   }

@@ -227,6 +227,7 @@
     "watch": "node esbuild.mjs --watch",
     "build:worker": "node scripts/build-worker.mjs",
     "package": "node scripts/package-vsix.mjs",
+    "package:install": "npm run package && node scripts/install-vsix.mjs",
     "smoke:worker": "node scripts/smoke-worker.mjs",
     "verify:windows-worker": "node scripts/verify-windows-worker.mjs",
     "vscode:prepublish": "npm run typecheck && npm run build"
