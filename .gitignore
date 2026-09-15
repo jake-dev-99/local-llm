@@ -6,3 +6,4 @@ build/
 .DS_Store
 resources/workers/win32-x64/sycl/
 !resources/workers/*/.gitkeep
+.sf

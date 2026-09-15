@@ -9,6 +9,11 @@ import type {
 import type { LocalLlmLogger } from '../logging';
 import type { ModelManager } from '../models/modelManager';
 import { formatBytes } from '../models/modelSources';
+import {
+  benchmarkModel,
+  isModelValidated,
+  MODEL_BENCHMARK_SAMPLE_COUNT,
+} from './modelBenchmark';
 import { isFatalWorkerError } from '../worker/workerError';
 import type { WorkerManager } from '../worker/workerManager';
 
@@ -42,6 +47,7 @@ export function registerModelCommands(services: CommandServices): vscode.Disposa
     command('localLlm.showStatus', () => showStatus(services)),
     command('localLlm.setHuggingFaceToken', () => setHuggingFaceToken(services)),
     command('localLlm.validateModel', () => validateModel(services)),
+    command('localLlm.benchmarkModel', () => benchmarkSelectedModel(services)),
     command('localLlm.configureStrictLocal', () => configureStrictLocal(services)),
     command('localLlm.checkPrivacyDefaults', () => checkPrivacyDefaults()),
   ];
@@ -94,6 +100,11 @@ async function manageModels(services: CommandServices): Promise<void> {
         label: '$(beaker) Validate model compatibility',
         description: 'Load a model and verify its structured tool-call path',
         command: 'localLlm.validateModel',
+      },
+      {
+        label: '$(dashboard) Benchmark model',
+        description: 'Measure min, average, and max output tok/s on this machine',
+        command: 'localLlm.benchmarkModel',
       },
       {
         label: '$(key) Set Hugging Face token',
@@ -429,6 +440,52 @@ async function validateModel(
   }
 }
 
+async function benchmarkSelectedModel(services: CommandServices): Promise<void> {
+  const model = await chooseModel(
+    services,
+    'Benchmark Local Model',
+    services.models.registry.list().filter(isModelValidated),
+    'No validated local models are available. Run Local LLM: Validate Model Compatibility first.',
+  );
+  if (!model) {
+    return;
+  }
+  const result = await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: `Benchmarking ${model.name}`,
+      cancellable: true,
+    },
+    async (progress, token) => {
+      const cancellation = abortOnCancellation(token);
+      try {
+        return await services.worker.run(
+          model,
+          'utility',
+          (client, signal) => benchmarkModel(client, signal, (completed) => {
+            progress.report({
+              increment: 100 / MODEL_BENCHMARK_SAMPLE_COUNT,
+              message: `Sample ${completed} of ${MODEL_BENCHMARK_SAMPLE_COUNT}`,
+            });
+          }),
+          cancellation.signal,
+        );
+      } finally {
+        cancellation.dispose();
+      }
+    },
+  );
+  void vscode.window.showInformationMessage(
+    `${model.name}: min ${formatTokenRate(result.minTokensPerSecond)}, ` +
+    `avg ${formatTokenRate(result.averageTokensPerSecond)}, ` +
+    `max ${formatTokenRate(result.maxTokensPerSecond)}.`,
+  );
+}
+
+function formatTokenRate(rate: number): string {
+  return `${rate.toFixed(2)} tok/s`;
+}
+
 function isValidProbeContinuation(value: string): boolean {
   const normalized = value.trim().toLowerCase();
   return /\bok\b/.test(normalized) &&
@@ -588,16 +645,18 @@ async function applyStrictLocalSettings(model: InstalledModel): Promise<void> {
 async function chooseModel(
   services: CommandServices,
   title: string,
+  models: readonly InstalledModel[] = services.models.registry.list(),
+  emptyMessage = 'No local GGUF models are installed.',
 ): Promise<InstalledModel | undefined> {
   const config = readConfig(services.context);
-  const items = services.models.registry.list().map((model) => ({
+  const items = models.map((model) => ({
     label: model.name,
     description: `${formatBytes(model.fileSize)} · ${model.source}`,
     detail: `${model.filename}${model.id === config.defaultModelId ? ' · default' : ''}`,
     model,
   }));
   if (!items.length) {
-    void vscode.window.showInformationMessage('No local GGUF models are installed.');
+    void vscode.window.showInformationMessage(emptyMessage);
     return undefined;
   }
   return (await vscode.window.showQuickPick(items, { title, matchOnDetail: true }))?.model;

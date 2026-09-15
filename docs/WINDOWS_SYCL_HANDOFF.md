@@ -25,8 +25,12 @@ sha256: 0c4c50f1e9805933e043d4970f0c2050e4fb5343b8ac0244a49efaa474705830
 The upstream release workflow merges the matching Windows CPU payload into the
 final SYCL ZIP. `auto` and explicit `cpu` therefore use the same
 `resources/workers/win32-x64/sycl/llama-server.exe`. SYCL mode requests
-`SYCL0`; CPU mode disables device offload. A SYCL failure never falls back to
-CPU automatically.
+`SYCL0` with `--fit on --fit-target 1024` and leaves the GPU layer count
+automatic so llama.cpp can keep layers in system RAM when needed. An explicit
+context size stays fixed; context size `0` leaves the window unset so fitting
+can adjust it too. CPU mode disables device offload. A SYCL failure never
+restarts in CPU mode automatically; partial CPU offload during fitting is
+normal SYCL execution.
 
 ## Prerequisites
 
@@ -80,7 +84,7 @@ the deterministic integrity declaration for the pinned official bytes.
 ## Inspect the package
 
 Run the source gates:
-
+ll
 ```shell
 npm test
 npm run typecheck

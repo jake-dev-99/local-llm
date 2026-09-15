@@ -14,7 +14,7 @@ interface TestLlamaClient {
     request: ChatRequest,
     onEvent: (event: ChatStreamEvent) => void,
     signal?: AbortSignal,
-  ): Promise<{ toolCallCount: number }>;
+  ): Promise<{ toolCallCount: number; tokensPerSecond?: number }>;
 }
 
 type TestLlamaClientConstructor = new (
@@ -738,6 +738,7 @@ test('delayed first stream data remains a normal request without a warning', asy
     }, (event) => events.push(event));
 
     assert.equal(result.toolCallCount, 0);
+    assert.equal(result.tokensPerSecond, 200);
     assert.deepEqual(events, [{ kind: 'text', text: 'OK' }]);
     assert.equal(info.some((message) => /\[Generating Response\] chat-\d+ start.*messages=1.*tools=0.*maxOutputTokens=16/i.test(message)), true);
     assert.equal(info.some((message) => /\[Generating Response\] chat-\d+ response headers.*elapsed=/i.test(message)), true);

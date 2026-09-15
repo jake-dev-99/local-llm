@@ -10,7 +10,7 @@ import type { LocalLlmLogger } from '../logging';
 import { abortError, InferenceScheduler, type InferenceKind } from './inferenceScheduler';
 import { LlamaClient } from './llamaClient';
 import { describeError } from '../errorDetail';
-import { parseFittedContext, parseFreeDeviceMemoryMiB, resolveFitTargetMiB } from './memoryFit';
+import { SYCL_INITIAL_FIT_TARGET_MIB, isSyclDeviceOutOfMemory, nextSyclFitTargetMiB, parseFittedContext, parseFreeDeviceMemoryMiB, resolveFitTargetMiB } from './memoryFit';
 import { isFatalWorkerError } from './workerError';
 import { verifiedWorkerBundle } from './workerIntegrity';
 import { prepareWorkerLaunch } from './workerLaunch';
@@ -23,6 +23,13 @@ const STOP_TIMEOUT_MS = 5_000;
 const HEALTH_INTERVAL_MS = 500;
 const MAX_RESTARTS = 3;
 const RESTART_WINDOW_MS = 5 * 60_000;
+
+interface MemoryAttempt {
+  outOfMemory: boolean;
+  canRetry: boolean;
+}
+
+class RetrySyclMemoryError extends Error {}
 
 export class WorkerManager implements vscode.Disposable {
   private readonly stateEmitter = new vscode.EventEmitter<WorkerState>();
@@ -38,6 +45,7 @@ export class WorkerManager implements vscode.Disposable {
   private lifecycleTail: Promise<void> = Promise.resolve();
   private workerState: WorkerState = { kind: 'stopped' };
   private readonly scheduler = new InferenceScheduler();
+  private readonly syclFitTargets = new Map<string, number>();
 
   readonly onDidChangeState = this.stateEmitter.event;
 
@@ -198,10 +206,32 @@ export class WorkerManager implements vscode.Disposable {
     model: InstalledModel,
     signal?: AbortSignal,
   ): Promise<LlamaClient> {
+    const generation = this.generation;
+    for (;;) {
+      throwIfAborted(signal);
+      if (this.disposed || generation !== this.generation) {
+        throw new vscode.CancellationError();
+      }
+      try {
+        return await this.startAttempt(model, signal);
+      } catch (error) {
+        if (!(error instanceof RetrySyclMemoryError)) {
+          throw error;
+        }
+      }
+    }
+  }
+
+  private async startAttempt(
+    model: InstalledModel,
+    signal?: AbortSignal,
+  ): Promise<LlamaClient> {
     const startGeneration = this.generation;
     const startedAt = Date.now();
     let child: ChildProcessWithoutNullStreams | undefined;
     let client: LlamaClient | undefined;
+    let closed: Promise<void> | undefined;
+    const memoryAttempt: MemoryAttempt = { outOfMemory: false, canRetry: false };
     this.requestedStop = false;
     this.setState({ kind: 'starting', modelId: model.id });
     try {
@@ -220,6 +250,11 @@ export class WorkerManager implements vscode.Disposable {
       });
       const executable = launch.bundle.executablePath;
       const backend = launch.backend;
+      const fitKey = JSON.stringify([
+        model.id, model.filePath, model.fileSize, model.fileModifiedAt,
+        config.contextSize, config.batchSize, config.microBatchSize,
+      ]);
+      const syclFitTargetMiB = this.syclFitTargets.get(fitKey) ?? SYCL_INITIAL_FIT_TARGET_MIB;
       if (launch.syclDevice) {
         this.logger.info(
           `[Model Loading] Windows SYCL preflight passed: ${launch.syclDevice.id} `
@@ -266,12 +301,18 @@ export class WorkerManager implements vscode.Disposable {
         config,
         backend,
         orphanBytes,
+        syclFitTargetMiB,
       );
       this.logger.info(
         `[Model Loading] Starting local worker: target=${target} bundle=${launch.bundle.bundleName} ` +
         `backend=${backend} model=${model.name} context=${config.contextSize || 'auto'} ` +
         `batch=${config.batchSize}/${config.microBatchSize} threads=${config.cpuThreads || 'auto'}.`,
       );
+      if (backend === 'sycl') {
+        this.logger.info(
+          `[Model Loading] SYCL automatic GPU layers; execution reserve=${syclFitTargetMiB} MiB; warmup enabled.`,
+        );
+      }
       child = spawn(executable, args, {
         cwd: pathDirectory(executable),
         env: launch.environment,
@@ -286,16 +327,41 @@ export class WorkerManager implements vscode.Disposable {
       );
       child.stdout.setEncoding('utf8');
       child.stderr.setEncoding('utf8');
-      child.stdout.on('data', (data: string) => this.logWorkerOutput(data));
-      child.stderr.on('data', (data: string) => this.logWorkerOutput(data));
+      const observeOutput = (): ((data: string) => void) => {
+        let tail = '';
+        return (data) => {
+          this.logWorkerOutput(data);
+          if (backend !== 'sycl' || memoryAttempt.outOfMemory) {
+            return;
+          }
+          tail = (tail + data).slice(-8192);
+          if (isSyclDeviceOutOfMemory(tail)) {
+            memoryAttempt.outOfMemory = true;
+            const next = nextSyclFitTargetMiB(syclFitTargetMiB);
+            if (next !== undefined) {
+              memoryAttempt.canRetry = true;
+              this.syclFitTargets.set(fitKey, next);
+              this.logger.info(
+                `[Model Loading] SYCL device memory exhausted; next load reserves ${next} MiB `
+                + 'and refits GPU layers. This is a resource failure, not an invalid model.',
+              );
+            }
+          }
+        };
+      };
+      child.stdout.on('data', observeOutput());
+      child.stderr.on('data', observeOutput());
       const spawnError = new Promise<never>((_resolve, reject) => {
         child?.once('error', (error) => {
           this.logger.error('Local worker process error', error);
           reject(error);
         });
       });
-      child.once('exit', (code, exitSignal) => {
-        void this.handleExit(child as ChildProcessWithoutNullStreams, code, exitSignal);
+      closed = new Promise<void>((resolve) => {
+        child?.once('close', (code, exitSignal) => {
+          resolve();
+          void this.handleExit(child as ChildProcessWithoutNullStreams, code, exitSignal, memoryAttempt);
+        });
       });
 
       client = new LlamaClient(
@@ -324,6 +390,7 @@ export class WorkerManager implements vscode.Disposable {
         this.child = undefined;
         child.kill('SIGKILL');
       }
+      const processClosed = closed ? await waitForClose(closed, STOP_TIMEOUT_MS) : true;
       this.currentClient = undefined;
       await client?.dispose();
       await this.removeApiKeyFile();
@@ -333,6 +400,17 @@ export class WorkerManager implements vscode.Disposable {
           this.setState({ kind: 'stopped' });
         }
         throw new vscode.CancellationError();
+      }
+      if (memoryAttempt.outOfMemory) {
+        if (memoryAttempt.canRetry && processClosed) {
+          throw new RetrySyclMemoryError('Retrying SYCL loading with more execution headroom.');
+        }
+        const message = processClosed
+          ? 'SYCL device memory exhausted after bounded memory fitting. The model is not marked invalid. '
+            + 'Reduce context or batch size, free memory, or explicitly select CPU acceleration.'
+          : 'SYCL device memory exhausted and worker termination was not confirmed; automatic retry stopped.';
+        this.setState({ kind: 'failed', modelId: model.id, message });
+        throw new Error(message, { cause: error });
       }
       const message = error instanceof Error ? error.message : String(error);
       this.setState({ kind: 'failed', modelId: model.id, message });
@@ -351,7 +429,7 @@ export class WorkerManager implements vscode.Disposable {
       if (signal?.aborted) {
         throw abortError();
       }
-      if (child.exitCode !== null || child.killed) {
+      if (child.exitCode !== null || child.signalCode !== null || child.killed) {
         throw new Error(`Local worker exited while loading the model (code ${child.exitCode ?? 'unknown'}).`);
       }
       if (await client.health(signal)) {
@@ -368,8 +446,9 @@ export class WorkerManager implements vscode.Disposable {
     child: ChildProcessWithoutNullStreams,
     code: number | null,
     signal: NodeJS.Signals | null,
+    memoryAttempt: MemoryAttempt,
   ): Promise<void> {
-    if (this.child !== child) {
+    if (this.child !== child || this.workerState.kind === 'starting') {
       return;
     }
     const exitGeneration = this.generation;
@@ -385,14 +464,19 @@ export class WorkerManager implements vscode.Disposable {
     }
 
     const model = this.currentModel;
-    const message = `Local worker exited unexpectedly (code ${code ?? 'none'}, signal ${signal ?? 'none'}).`;
+    const message = memoryAttempt.outOfMemory
+      ? 'SYCL device memory exhausted. The interrupted request was not replayed. '
+        + (memoryAttempt.canRetry
+          ? 'The next load will refit GPU layers with more execution headroom.'
+          : 'Automatic memory retries exhausted; reduce context or batch size, free memory, or select CPU acceleration.')
+      : `Local worker exited unexpectedly (code ${code ?? 'none'}, signal ${signal ?? 'none'}).`;
     this.logger.error(message, undefined, true);
     if (!model) {
       this.setState({ kind: 'failed', message });
       return;
     }
     this.setState({ kind: 'failed', modelId: model.id, message });
-    if (!wasReady) {
+    if (!wasReady || (memoryAttempt.outOfMemory && !memoryAttempt.canRetry)) {
       return;
     }
 
@@ -491,6 +575,7 @@ export function buildWorkerArguments(
   config: import('../domain').WorkerConfig,
   backend: WorkerBackend,
   concurrentWorkerBytes?: number,
+  syclFitTargetMiB = SYCL_INITIAL_FIT_TARGET_MIB,
 ): string[] {
   const batchSize = Math.max(32, Math.floor(config.batchSize));
   const microBatchSize = Math.max(
@@ -536,9 +621,9 @@ export function buildWorkerArguments(
     case 'sycl':
       args.push(
         '--fit',
-        'off',
-        '--n-gpu-layers',
-        '99',
+        'on',
+        '--fit-target',
+        String(syclFitTargetMiB),
         '--device',
         'SYCL0',
         '--split-mode',
@@ -568,6 +653,20 @@ export function buildWorkerArguments(
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
     throw abortError();
+  }
+}
+
+async function waitForClose(closed: Promise<void>, timeoutMs: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      closed.then(() => true),
+      new Promise<false>((resolve) => {
+        timer = setTimeout(() => resolve(false), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 

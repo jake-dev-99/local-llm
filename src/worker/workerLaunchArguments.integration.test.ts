@@ -10,6 +10,7 @@ type BuildWorkerArguments = (
   config: LocalLlmConfig,
   backend: 'metal' | 'sycl' | 'cpu',
   concurrentWorkerBytes?: number,
+  syclFitTargetMiB?: number,
 ) => string[];
 
 test('an automatic context window omits --ctx-size so llama.cpp can fit the model', async () => {
@@ -86,18 +87,43 @@ test('CPU execution explicitly disables device offload while retaining bounded b
   assert.equal(args.includes('--no-op-offload'), true);
 });
 
-test('Windows SYCL explicitly selects SYCL0 and requests GPU layers', async () => {
+test('Windows SYCL fits GPU offload with a reserve while explicitly selecting SYCL0', async () => {
   const buildArguments = await loadBuildWorkerArguments();
   const args = buildArguments(
     '/models/qwen.gguf', 60000, '/keys/worker.key', config({ acceleration: 'auto' }), 'sycl',
   );
 
-  assert.deepEqual(valueFor(args, '--fit'), 'off');
+  assert.deepEqual(valueFor(args, '--fit'), 'on');
+  assert.deepEqual(valueFor(args, '--fit-target'), '2048');
+  assert.deepEqual(valueFor(args, '--ctx-size'), '32768');
   assert.deepEqual(valueFor(args, '--device'), 'SYCL0');
-  assert.deepEqual(valueFor(args, '--n-gpu-layers'), '99');
+  assert.equal(args.includes('--n-gpu-layers'), false);
   assert.deepEqual(valueFor(args, '--split-mode'), 'none');
   assert.deepEqual(valueFor(args, '--main-gpu'), '0');
   assert.equal(args.includes('--no-op-offload'), false);
+});
+
+test('Windows SYCL leaves an automatic context unpinned for memory fitting', async () => {
+  const buildArguments = await loadBuildWorkerArguments();
+  const args = buildArguments(
+    '/models/qwen.gguf', 60000, '/keys/worker.key', config({ contextSize: 0 }), 'sycl',
+  );
+
+  assert.deepEqual(valueFor(args, '--fit'), 'on');
+  assert.equal(args.includes('--ctx-size'), false);
+  assert.equal(args.includes('--n-gpu-layers'), false);
+});
+
+test('SYCL memory backoff changes the reserve without pinning GPU layers or disabling warmup', async () => {
+  const buildArguments = await loadBuildWorkerArguments();
+  for (const reserve of [4096, 8192]) {
+    const args = buildArguments('/models/qwen.gguf', 60000, '/keys/worker.key', config(), 'sycl', undefined, reserve);
+    assert.equal(valueFor(args, '--fit-target'), String(reserve));
+    assert.equal(valueFor(args, '--ctx-size'), '32768');
+    assert.equal(valueFor(args, '--device'), 'SYCL0');
+    assert.equal(args.includes('--n-gpu-layers'), false);
+    assert.equal(args.includes('--no-warmup'), false);
+  }
 });
 
 function config(overrides: Partial<LocalLlmConfig> = {}): LocalLlmConfig {

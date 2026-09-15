@@ -5,6 +5,20 @@
  */
 export const LLAMA_CPP_DEFAULT_FIT_TARGET_MIB = 1024;
 
+export const SYCL_INITIAL_FIT_TARGET_MIB = 2048;
+export const SYCL_MAX_FIT_TARGET_MIB = 8192;
+
+export function nextSyclFitTargetMiB(current: number): number | undefined {
+  if (!Number.isFinite(current) || current >= SYCL_MAX_FIT_TARGET_MIB) {
+    return undefined;
+  }
+  return Math.min(SYCL_MAX_FIT_TARGET_MIB, Math.max(SYCL_INITIAL_FIT_TARGET_MIB, current * 2));
+}
+
+export function isSyclDeviceOutOfMemory(text: string): boolean {
+  return /\b(?:UR_RESULT_ERROR_OUT_OF_DEVICE_MEMORY|PI_ERROR_OUT_OF_DEVICE_MEMORY)\b/i.test(text);
+}
+
 const MIB = 1024 * 1024;
 
 export interface FitTargetInput {
@@ -41,6 +55,27 @@ export function resolveFitTargetMiB(input: FitTargetInput): number {
 export interface FittedContext {
   trainedContextSize: number;
   fittedContextSize: number;
+}
+
+export interface GpuOffload {
+  offloadedLayers: number;
+  totalLayers: number;
+}
+
+export function parseGpuOffload(text: string): GpuOffload | undefined {
+  const matches = [...text.matchAll(/offloaded\s+(\d+)\s*\/\s*(\d+)\s+layers\s+to\s+GPU/gi)];
+  const match = matches.at(-1);
+  const offloadedLayers = Number(match?.[1]);
+  const totalLayers = Number(match?.[2]);
+  if (
+    !Number.isInteger(offloadedLayers) ||
+    !isPositiveInteger(totalLayers) ||
+    offloadedLayers < 0 ||
+    offloadedLayers > totalLayers
+  ) {
+    return undefined;
+  }
+  return { offloadedLayers, totalLayers };
 }
 
 /**

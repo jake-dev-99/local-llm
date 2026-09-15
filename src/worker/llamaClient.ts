@@ -69,6 +69,7 @@ export interface ChatResult {
   inputTokens: number;
   textCharacters: number;
   toolCallCount: number;
+  tokensPerSecond?: number;
 }
 
 /**
@@ -383,6 +384,7 @@ export class LlamaClient {
     let buffer = '';
     let bufferedText = '';
     let textCharacters = 0;
+    let tokensPerSecond: number | undefined;
     let firstStreamData = true;
     while (true) {
       const { done, value } = await reader.read();
@@ -399,6 +401,8 @@ export class LlamaClient {
         const consumed = this.consumeSseFrame(frame, pendingTools);
         if (consumed.timings) {
           this.logTimings(trace, stage, consumed.timings);
+          tokensPerSecond = finiteNumber(consumed.timings.predicted_per_second)
+            ?? tokensPerSecond;
         }
         const text = consumed.text;
         textCharacters += text.length;
@@ -416,6 +420,8 @@ export class LlamaClient {
       const consumed = this.consumeSseFrame(buffer, pendingTools);
       if (consumed.timings) {
         this.logTimings(trace, stage, consumed.timings);
+        tokensPerSecond = finiteNumber(consumed.timings.predicted_per_second)
+          ?? tokensPerSecond;
       }
       const text = consumed.text;
       textCharacters += text.length;
@@ -450,7 +456,12 @@ export class LlamaClient {
     if (toolCallCount === 0 && bufferedText) {
       onEvent({ kind: 'text', text: bufferedText });
     }
-    return { inputTokens: measured.inputTokens, textCharacters, toolCallCount };
+    return {
+      inputTokens: measured.inputTokens,
+      textCharacters,
+      toolCallCount,
+      ...(tokensPerSecond !== undefined ? { tokensPerSecond } : {}),
+    };
   }
 
   private async schemaConstrainedFallback(

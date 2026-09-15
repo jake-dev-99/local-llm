@@ -1,0 +1,12 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Verify SYCL fitting",
+			"type": "shell",
+			"command": "node --test src/worker/memoryFit.test.ts src/worker/workerLaunchArguments.integration.test.ts",
+			"isBackground": false,
+			"problemMatcher": []
+		}
+	]
+}

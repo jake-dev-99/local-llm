@@ -171,7 +171,7 @@ from a different model already active for Chat.
 - `localLlm.maxAgentToolRounds`: maximum invoked tools per active Local Agent request, default `8`; loaded definitions and final generation do not count
 - `localLlm.startupTimeoutSeconds`: model-load timeout, default `600`
 - `localLlm.cpuThreads`: zero lets llama.cpp choose
-- `localLlm.acceleration`: `auto` fits Metal offload to available memory on macOS; `cpu` disables it
+- `localLlm.acceleration`: `auto` fits GPU offload to available memory with Metal on macOS or SYCL on Windows; SYCL reserves 1024 MiB; `cpu` disables GPU offload
 - `localLlm.batchSize`: logical prompt batch, default `256`
 - `localLlm.microBatchSize`: physical compute batch, default `64`; lower values reduce peak memory
 - `localLlm.metalMemoryReserveMiB`: Metal fitting reserve, default `1024`
