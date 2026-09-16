@@ -231,7 +231,8 @@
     "watch": "node esbuild.mjs --watch",
     "build:worker": "node scripts/build-worker.mjs",
     "package": "node scripts/package-vsix.mjs",
-    "package:install": "npm run package && code --install-extension dist/vsix/win32-x64/local-llm-engine-0.3.4-win32-x64.vsix --profile \"State of Michigan\"",
+    "package:install:win": "npm run package && code --install-extension dist/vsix/win32-x64/local-llm-engine-0.3.4-win32-x64.vsix --profile \"State of Michigan\"",
+    "package:install:mac": "npm run package && code --install-extension /Users/jake/Development/consumer/local-llm/dist/vsix/darwin-arm64/local-llm-engine-0.3.4-darwin-arm64.vsix",
     "smoke:worker": "node scripts/smoke-worker.mjs",
     "verify:windows-worker": "node scripts/verify-windows-worker.mjs",
     "vscode:prepublish": "npm run typecheck && npm run build"

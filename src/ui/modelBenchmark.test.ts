@@ -34,7 +34,8 @@ test('only models with completed compatibility checks are benchmarkable', () => 
     ...validated,
     capabilities: { ...validated.capabilities, toolCalling: 'unverified' },
   }), false);
-  assert.equal(isModelValidated({ ...validated, runtimeProfile: undefined }), false);
+  const { runtimeProfile: _runtimeProfile, ...withoutProfile } = validated;
+  assert.equal(isModelValidated(withoutProfile), false);
 });
 
 test('token rates are summarized as min, average, and max', () => {
@@ -56,11 +57,12 @@ test('benchmark runs three bounded deterministic output samples', async () => {
       },
       async chat(request) {
         requests.push(request);
+        const rate = rates[requests.length - 1];
         return {
           inputTokens: 20,
           textCharacters: 100,
           toolCallCount: 0,
-          tokensPerSecond: rates[requests.length - 1],
+          tokensPerSecond: rate!,
         };
       },
     },
