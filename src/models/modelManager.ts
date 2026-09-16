@@ -3,12 +3,12 @@ import { createHash, randomUUID } from 'node:crypto';
 import { open, rm, stat } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { readConfig } from '../config';
-import type { InstalledModel, ModelSource } from '../domain';
-import type { LocalLlmLogger } from '../logging';
-import { readGgufMetadata } from './ggufMetadata';
-import { isSingleFileGguf, selectableHuggingFaceFiles } from './huggingFaceFileSelection';
-import { ModelRegistry } from './modelRegistry';
+import { readConfig } from '../config.js';
+import type { InstalledModel, ModelSource } from '../domain.js';
+import type { LocalLlmLogger } from '../logging.js';
+import { readGgufMetadata } from './ggufMetadata.js';
+import { isSingleFileGguf, selectableHuggingFaceFiles } from './huggingFaceFileSelection.js';
+import { ModelRegistry } from './modelRegistry.js';
 import {
   copyLocalModel,
   downloadModel,
@@ -17,7 +17,7 @@ import {
   safeModelFilename,
   sourceUrlForRegistry,
   type HuggingFaceFile,
-} from './modelSources';
+} from './modelSources.js';
 
 const HF_TOKEN_SECRET = 'localLlm.huggingFaceToken';
 

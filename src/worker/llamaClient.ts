@@ -6,17 +6,17 @@ import type {
   ChatStreamEvent,
   ChatTool,
   InfillRequest,
-} from '../domain';
-import { parseWorkerModelProfile, type WorkerModelProfile } from './runtimeProfile';
-import { assertPromptFits } from './toolBudget';
-import { assertFinalResponse, finalResponseMessages } from './finalResponse';
+} from '../domain.js';
+import { parseWorkerModelProfile, type WorkerModelProfile } from './runtimeProfile.js';
+import { assertPromptFits } from './toolBudget.js';
+import { assertFinalResponse, finalResponseMessages } from './finalResponse.js';
 import {
   parseToolDecision,
   toolDecisionResponseFormat,
   type ToolDecision,
   validateToolCallInput,
-} from './toolProtocol';
-import { workerRequestError, workerStreamError, workerTransportError } from './workerError';
+} from './toolProtocol.js';
+import { workerRequestError, workerStreamError, workerTransportError } from './workerError.js';
 
 type WorkerResponse = Awaited<ReturnType<typeof pooledFetch>>;
 

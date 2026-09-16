@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { build, type Plugin } from 'esbuild';
-import type { LocalLlmConfig } from '../domain';
+import type { LocalLlmConfig } from '../domain.js';
 
 type BuildWorkerArguments = (
   modelPath: string,

@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import test from 'node:test';
 import { build } from 'esbuild';
-import type { ChatRequest, ChatStreamEvent } from '../domain';
+import type { ChatRequest, ChatStreamEvent } from '../domain.js';
 
 interface TestLlamaClient {
   setNativeToolCallSupport(support: 'unknown' | 'available' | 'unavailable'): void;

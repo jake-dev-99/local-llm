@@ -5,10 +5,10 @@ import type {
   InstalledModel,
   ModelRuntimeProfile,
   NativeToolCapabilityRecord,
-} from '../domain';
-import type { LocalLlmLogger } from '../logging';
-import { readGgufMetadata } from './ggufMetadata';
-import { sha256File } from './modelSources';
+} from '../domain.js';
+import type { LocalLlmLogger } from '../logging.js';
+import { readGgufMetadata } from './ggufMetadata.js';
+import { sha256File } from './modelSources.js';
 
 const REGISTRY_KEY = 'localLlm.installedModels.v1';
 

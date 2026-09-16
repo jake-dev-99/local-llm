@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { describeError, errorStack } from './errorDetail';
+import { describeError, errorStack } from './errorDetail.js';
 
 export class LocalLlmLogger implements vscode.Disposable {
   private readonly channel = vscode.window.createOutputChannel('Local LLM');

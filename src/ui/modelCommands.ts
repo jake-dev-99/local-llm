@@ -1,21 +1,21 @@
 import * as vscode from 'vscode';
-import { readConfig, setDefaultModelId } from '../config';
+import { readConfig, setDefaultModelId } from '../config.js';
 import type {
   ChatStreamEvent,
   ChatTool,
   InstalledModel,
   ModelRuntimeProfile,
-} from '../domain';
-import type { LocalLlmLogger } from '../logging';
-import type { ModelManager } from '../models/modelManager';
-import { formatBytes } from '../models/modelSources';
+} from '../domain.js';
+import type { LocalLlmLogger } from '../logging.js';
+import type { ModelManager } from '../models/modelManager.js';
+import { formatBytes } from '../models/modelSources.js';
 import {
   benchmarkModel,
   isModelValidated,
   MODEL_BENCHMARK_SAMPLE_COUNT,
-} from './modelBenchmark';
-import { isFatalWorkerError } from '../worker/workerError';
-import type { WorkerManager } from '../worker/workerManager';
+} from './modelBenchmark.js';
+import { isFatalWorkerError } from '../worker/workerError.js';
+import type { WorkerManager } from '../worker/workerManager.js';
 
 interface CommandServices {
   context: vscode.ExtensionContext;
@@ -495,7 +495,7 @@ function isValidProbeContinuation(value: string): boolean {
 async function validateFillInMiddle(
   services: CommandServices,
   model: InstalledModel,
-  client: import('../worker/llamaClient').LlamaClient,
+  client: import('../worker/llamaClient.js').LlamaClient,
   signal: AbortSignal,
 ): Promise<boolean> {
   try {

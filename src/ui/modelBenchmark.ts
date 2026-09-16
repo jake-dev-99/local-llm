@@ -1,5 +1,5 @@
-import type { ChatRequest, ChatStreamEvent, InstalledModel } from '../domain';
-import type { ChatResult } from '../worker/llamaClient';
+import type { ChatRequest, ChatStreamEvent, InstalledModel } from '../domain.js';
+import type { ChatResult } from '../worker/llamaClient.js';
 
 export const MODEL_BENCHMARK_SAMPLE_COUNT = 3;
 const MODEL_BENCHMARK_MAX_TOKENS = 64;

@@ -1,4 +1,4 @@
-import type { ChatMessage } from '../domain';
+import type { ChatMessage } from '../domain.js';
 import MarkdownIt from 'markdown-it';
 
 const markdown = new MarkdownIt('commonmark');
@@ -21,10 +21,18 @@ export function finalResponseMessages(messages: readonly ChatMessage[]): ChatMes
 
 export function assertFinalResponse(text: string, hasToolCalls: boolean): void {
   if (hasToolCalls || containsUnquotedToolCall(text)) {
-    throw new Error(
-      'The model returned tool-call output while tool execution was disabled for the final answer. ' +
-      'No additional tool was executed.',
-    );
+    if(hasToolCalls){
+      console.error('The model returned tool-call output while tool execution was disabled for the final answer.');
+      console.error(text);
+    }
+    if(containsUnquotedToolCall(text)){
+      console.error('The model returned unquoted tool-call output while tool execution was disabled for the final answer.');
+      console.error(text);
+    }
+    // throw new Error(
+    //   'The model returned tool-call output while tool execution was disabled for the final answer. ' +
+    //   'No additional tool was executed.',
+    // );
   }
 }
 

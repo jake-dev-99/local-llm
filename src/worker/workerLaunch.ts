@@ -2,8 +2,8 @@ import type {
   AccelerationMode,
   ResolvedWorkerBundle,
   WorkerBackend,
-} from './workerManifest';
-import type { DiscoveredSyclDevice, SyclDevice } from './syclDevice';
+} from './workerManifest.js';
+import type { DiscoveredSyclDevice, SyclDevice } from './syclDevice.js';
 
 export interface LaunchableWorkerBundle extends ResolvedWorkerBundle {
   executablePath: string;

@@ -1,4 +1,4 @@
-import type { LlamaClientDiagnostics } from './llamaClient';
+import type { LlamaClientDiagnostics } from './llamaClient.js';
 
 interface WorkerDiagnosticLogger {
   info(message: string): void;

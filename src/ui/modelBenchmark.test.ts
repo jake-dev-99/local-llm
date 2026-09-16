@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { ChatRequest } from '../domain';
+import type { ChatRequest } from '../domain.js';
 import {
   benchmarkModel,
   isModelValidated,

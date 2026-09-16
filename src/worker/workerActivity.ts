@@ -1,5 +1,5 @@
-import type { WorkerState } from '../domain';
-import type { InferenceKind } from './inferenceScheduler';
+import type { WorkerState } from '../domain.js';
+import type { InferenceKind } from './inferenceScheduler.js';
 
 export function beginWorkerActivity(
   state: WorkerState,

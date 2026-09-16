@@ -1,4 +1,4 @@
-import type { ChatMessage } from '../domain';
+import type { ChatMessage } from '../domain.js';
 
 export const LOCAL_AGENT_PROTOCOL_MARKER = 'LOCAL_LLM_WORKSPACE_AGENT_PROTOCOL_9E218F31_V1';
 

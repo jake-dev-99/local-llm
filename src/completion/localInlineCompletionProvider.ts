@@ -1,9 +1,9 @@
 import * as vscode from 'vscode';
-import { readConfig } from '../config';
-import type { LocalLlmLogger } from '../logging';
-import type { ModelRegistry } from '../models/modelRegistry';
-import { toAbortSignal } from '../provider/localLanguageModelProvider';
-import type { WorkerManager } from '../worker/workerManager';
+import { readConfig } from '../config.js';
+import type { LocalLlmLogger } from '../logging.js';
+import type { ModelRegistry } from '../models/modelRegistry.js';
+import { toAbortSignal } from '../provider/localLanguageModelProvider.js';
+import type { WorkerManager } from '../worker/workerManager.js';
 
 const MAX_PREFIX_CHARS = 24_000;
 const MAX_SUFFIX_CHARS = 8_000;

@@ -1,4 +1,4 @@
-import type { WorkerState } from '../domain';
+import type { WorkerState } from '../domain.js';
 
 export interface RuntimeStatusPresentation {
   text: string;

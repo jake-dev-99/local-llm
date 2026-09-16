@@ -1,4 +1,4 @@
-import type { ChatTool } from '../domain';
+import type { ChatTool } from '../domain.js';
 
 const LOCAL_AGENT_TOOL_NAMES = new Set([
   'file_search',

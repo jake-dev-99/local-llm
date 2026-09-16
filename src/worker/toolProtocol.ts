@@ -1,5 +1,5 @@
-import Ajv from 'ajv';
-import type { ChatTool } from '../domain';
+import { Ajv } from 'ajv';
+import { ChatTool } from '../domain.js';
 
 export type ToolDecision =
   | { kind: 'tool'; name: string; arguments: Record<string, unknown> }

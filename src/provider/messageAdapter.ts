@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import type { ChatMessage, ChatTool } from '../domain';
+import type { ChatMessage, ChatTool } from '../domain.js';
 
 export function adaptMessages(
   messages: readonly vscode.LanguageModelChatRequestMessage[],

@@ -1,4 +1,4 @@
-import type { ChatMessage } from '../domain';
+import type { ChatMessage } from '../domain.js';
 
 export function messagesForSystemRoleSupport(
   messages: readonly ChatMessage[],

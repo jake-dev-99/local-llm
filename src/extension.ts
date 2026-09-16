@@ -1,13 +1,13 @@
 import * as vscode from 'vscode';
-import { LocalInlineCompletionProvider } from './completion/localInlineCompletionProvider';
-import { readConfig } from './config';
-import { LocalLlmLogger } from './logging';
-import { ModelManager } from './models/modelManager';
-import { ModelRegistry } from './models/modelRegistry';
-import { LocalLanguageModelProvider } from './provider/localLanguageModelProvider';
-import { registerModelCommands } from './ui/modelCommands';
-import { runtimeStatusPresentation } from './ui/runtimeStatus';
-import { WorkerManager } from './worker/workerManager';
+import { LocalInlineCompletionProvider } from './completion/localInlineCompletionProvider.js';
+import { readConfig } from './config.js';
+import { LocalLlmLogger } from './logging.js';
+import { ModelManager } from './models/modelManager.js';
+import { ModelRegistry } from './models/modelRegistry.js';
+import { LocalLanguageModelProvider } from './provider/localLanguageModelProvider.js';
+import { registerModelCommands } from './ui/modelCommands.js';
+import { runtimeStatusPresentation } from './ui/runtimeStatus.js';
+import { WorkerManager } from './worker/workerManager.js';
 
 let activeWorker: WorkerManager | undefined;
 
@@ -90,7 +90,7 @@ function isSupportedPlatform(): boolean {
 
 function updateStatus(
   item: vscode.StatusBarItem,
-  state: import('./domain').WorkerState,
+  state: import('./domain.js').WorkerState,
   modelCount: number,
 ): void {
   const presentation = runtimeStatusPresentation(state, modelCount);

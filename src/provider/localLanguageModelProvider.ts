@@ -1,32 +1,32 @@
 import * as vscode from 'vscode';
-import { readConfig } from '../config';
-import type { InstalledModel, ModelRuntimeProfile } from '../domain';
-import type { LocalLlmLogger } from '../logging';
-import type { ModelRegistry } from '../models/modelRegistry';
-import type { WorkerManager } from '../worker/workerManager';
+import { readConfig } from '../config.js';
+import type { InstalledModel, ModelRuntimeProfile } from '../domain.js';
+import type { LocalLlmLogger } from '../logging.js';
+import type { ModelRegistry } from '../models/modelRegistry.js';
+import type { WorkerManager } from '../worker/workerManager.js';
 import {
   matchingNativeToolSupport,
   nativeToolCapabilityFingerprint,
   TOOL_PROTOCOL_VERSION,
-} from '../worker/nativeToolCapability';
-import { isFatalWorkerError } from '../worker/workerError';
-import { modelTokenLimits, resolveAdvertisedContextSize } from './modelCapacity';
+} from '../worker/nativeToolCapability.js';
+import { isFatalWorkerError } from '../worker/workerError.js';
+import { modelTokenLimits, resolveAdvertisedContextSize } from './modelCapacity.js';
 import {
   adaptMessages,
   adaptTools,
   serializeMessageForTokenCount,
-} from './messageAdapter';
+} from './messageAdapter.js';
 import {
   isLocalAgentRequest,
   localAgentToolInvocationCount,
   localAgentToolLimitReached,
-} from './localAgentToolChoice';
+} from './localAgentToolChoice.js';
 import {
   localAgentAvailableTools,
   resolveLocalAgentToolPolicy,
-} from './localAgentTools';
-import { modelLoadProgress } from './modelLoadProgress';
-import { messagesForSystemRoleSupport } from './messageRoleSupport';
+} from './localAgentTools.js';
+import { modelLoadProgress } from './modelLoadProgress.js';
+import { messagesForSystemRoleSupport } from './messageRoleSupport.js';
 
 export interface LocalLanguageModelInformation extends vscode.LanguageModelChatInformation {
   readonly installedModelId: string;
@@ -360,7 +360,7 @@ implements vscode.LanguageModelChatProvider<LocalLanguageModelInformation>, vsco
 
   private async recordRuntimeProfile(
     modelId: string,
-    profile: import('../worker/runtimeProfile').WorkerModelProfile,
+    profile: import('../worker/runtimeProfile.js').WorkerModelProfile,
   ): Promise<void> {
     const current = this.registry.get(modelId)?.runtimeProfile;
     if (
@@ -385,7 +385,7 @@ implements vscode.LanguageModelChatProvider<LocalLanguageModelInformation>, vsco
 
 function reportChatEvent(
   progress: vscode.Progress<vscode.LanguageModelResponsePart>,
-  event: import('../domain').ChatStreamEvent,
+  event: import('../domain.js').ChatStreamEvent,
 ): void {
   if (event.kind === 'text') {
     progress.report(new vscode.LanguageModelTextPart(event.text));

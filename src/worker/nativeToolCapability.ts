@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type {
   NativeToolCallSupport,
   NativeToolCapabilityRecord,
-} from '../domain';
+} from '../domain.js';
 
 export const TOOL_PROTOCOL_VERSION = 'local-llm-tool-protocol-v1';
 

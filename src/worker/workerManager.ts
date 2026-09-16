@@ -4,20 +4,20 @@ import { constants as fsConstants } from 'node:fs';
 import { access, mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import * as net from 'node:net';
 import * as vscode from 'vscode';
-import { readConfig } from '../config';
-import type { InstalledModel, WorkerState } from '../domain';
-import type { LocalLlmLogger } from '../logging';
-import { abortError, InferenceScheduler, type InferenceKind } from './inferenceScheduler';
-import { LlamaClient } from './llamaClient';
-import { describeError } from '../errorDetail';
-import { SYCL_INITIAL_FIT_TARGET_MIB, isSyclDeviceOutOfMemory, nextSyclFitTargetMiB, parseFittedContext, parseFreeDeviceMemoryMiB, resolveFitTargetMiB } from './memoryFit';
-import { isFatalWorkerError } from './workerError';
-import { verifiedWorkerBundle } from './workerIntegrity';
-import { prepareWorkerLaunch } from './workerLaunch';
-import type { WorkerBackend } from './workerManifest';
-import { createWorkerDiagnostics } from './workerDiagnostics';
-import { beginWorkerActivity, finishWorkerActivity } from './workerActivity';
-import { discoverSycl0 } from './syclDevice';
+import { readConfig } from '../config.js';
+import type { InstalledModel, WorkerState } from '../domain.js';
+import type { LocalLlmLogger } from '../logging.js';
+import { abortError, InferenceScheduler, type InferenceKind } from './inferenceScheduler.js';
+import { LlamaClient } from './llamaClient.js';
+import { describeError } from '../errorDetail.js';
+import { SYCL_INITIAL_FIT_TARGET_MIB, isSyclDeviceOutOfMemory, nextSyclFitTargetMiB, parseFittedContext, parseFreeDeviceMemoryMiB, resolveFitTargetMiB } from './memoryFit.js';
+import { isFatalWorkerError } from './workerError.js';
+import { verifiedWorkerBundle } from './workerIntegrity.js';
+import { prepareWorkerLaunch } from './workerLaunch.js';
+import type { WorkerBackend } from './workerManifest.js';
+import { createWorkerDiagnostics } from './workerDiagnostics.js';
+import { beginWorkerActivity, finishWorkerActivity } from './workerActivity.js';
+import { discoverSycl0 } from './syclDevice.js';
 
 const STOP_TIMEOUT_MS = 5_000;
 const HEALTH_INTERVAL_MS = 500;
@@ -572,7 +572,7 @@ export function buildWorkerArguments(
   modelPath: string,
   port: number,
   apiKeyFile: string,
-  config: import('../domain').WorkerConfig,
+  config: import('../domain.js').WorkerConfig,
   backend: WorkerBackend,
   concurrentWorkerBytes?: number,
   syclFitTargetMiB = SYCL_INITIAL_FIT_TARGET_MIB,
