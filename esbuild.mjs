@@ -6,7 +6,7 @@ const options = {
   platform: 'node',
   format: 'cjs',
   target: 'node22',
-  outfile: 'dist/extension.js',
+  outfile: 'dist/extension.cjs',
   external: ['vscode'],
   sourcemap: true,
   sourcesContent: true,

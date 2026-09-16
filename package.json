@@ -20,7 +20,7 @@
     "llama.cpp",
     "chat"
   ],
-  "main": "./dist/extension.js",
+  "main": "./dist/extension.cjs",
   "extensionKind": [
     "ui"
   ],
@@ -94,10 +94,6 @@
         "title": "Local LLM: Check Local Privacy Defaults"
       }
     ],
-    "compilerOptions": {
-      "esModuleInterop": true,
-      "allowSyntheticDefaultImports": true
-    },
     "configuration": {
       "title": "Local LLM",
       "properties": {
