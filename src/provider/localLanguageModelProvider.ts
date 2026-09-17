@@ -9,6 +9,7 @@ import {
   nativeToolCapabilityFingerprint,
   TOOL_PROTOCOL_VERSION,
 } from '../worker/nativeToolCapability.js';
+import { runtimeForModel } from '../worker/runtimeSession.js';
 import { isFatalWorkerError } from '../worker/workerError.js';
 import { modelTokenLimits, resolveAdvertisedContextSize } from './modelCapacity.js';
 import {
@@ -170,16 +171,20 @@ implements vscode.LanguageModelChatProvider<LocalLanguageModelInformation>, vsco
           ) {
             await this.registry.markToolCalling(installed.id, 'unverified');
           }
+          // These two refusals are the same check for both runtimes but not
+          // the same advice: telling someone holding a Safetensors checkpoint
+          // to install a tool-use GGUF would send them after the wrong thing.
+          const runtime = runtimeForModel(installed);
           if (!profile.hasChatTemplate) {
-            throw new Error(
-              'This GGUF does not expose a llama.cpp chat template. Install an instruct/chat GGUF for VS Code Chat.',
-            );
+            throw new Error(runtime === 'transformers'
+              ? 'This checkpoint ships no chat template, so its tokenizer cannot format a conversation. Install an instruct or chat variant for VS Code Chat.'
+              : 'This GGUF does not expose a llama.cpp chat template. Install an instruct/chat GGUF for VS Code Chat.');
           }
           if (toolPolicy.tools.length && (!profile.supportsTools || !profile.supportsToolCalls)) {
             await this.registry.markToolCalling(installed.id, 'unsupported');
-            throw new Error(
-              'This GGUF chat template does not support structured llama.cpp tool calls. Use Chat without tools or install a tool-use instruct model.',
-            );
+            throw new Error(runtime === 'transformers'
+              ? 'Safetensors models cannot use tools yet: this runtime has no schema-constrained decoding, so a tool call would come back as unparseable prose. Use Chat without tools, or select a GGUF model for Local Agent.'
+              : 'This GGUF chat template does not support structured llama.cpp tool calls. Use Chat without tools or install a tool-use instruct model.');
           }
           if (
             toolPolicy.tools.length &&
