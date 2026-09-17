@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { writeFile } from 'node:fs/promises';
+
 import {
   filenameVersion,
   mapFilenamesToPypi,
   parseRequirements,
   pickWheel,
   requiresPythonOk,
+  resolveBaseClosure,
   toManifestWheel,
   wheelPlatformTags,
   wheelPythonTag,
@@ -112,4 +115,33 @@ test('filename mapping rejects a version that contradicts the pins', async () =>
     ),
     /but pins say/,
   );
+});
+
+test('base closure keeps transitive deps, not just the pins', async () => {
+  // Regression: per-pin PyPI lookups shipped only torch/transformers/
+  // accelerate/safetensors, so the hermetic `pip install --no-index` failed
+  // with "Could not find a version that satisfies the requirement
+  // huggingface-hub (from transformers) (from versions: none)".
+  const pins = new Map([['transformers', '5.17.0'], ['huggingface-hub', '1.32.0']]);
+  const dumped = ['transformers-5.17.0-py3-none-any.whl', 'huggingface_hub-1.32.0-py3-none-any.whl'];
+  const download = async (specs, { dest }) => {
+    assert.deepEqual([...specs].sort(), ['huggingface-hub==1.32.0', 'transformers==5.17.0']);
+    for (const filename of dumped) {
+      await writeFile(`${dest}/${filename}`, 'bytes');
+    }
+  };
+  const fetchJson = async (url) => {
+    const packageName = url.split('/pypi/')[1].split('/')[0];
+    const filename = dumped.find((name) => name.toLowerCase().startsWith(packageName.split('-')[0]));
+    return {
+      info: { version: pins.get(packageName) },
+      urls: [{ filename, url: `https://files.example.invalid/${filename}`, digests: { sha256: '0'.repeat(64) } }],
+    };
+  };
+  const wheels = await resolveBaseClosure(
+    pins,
+    { platform: 'win_amd64', pythonVersion: '3.10' },
+    { fetchJson, download },
+  );
+  assert.deepEqual(wheels.map((wheel) => wheel.name), ['huggingface-hub==1.32.0', 'transformers==5.17.0']);
 });

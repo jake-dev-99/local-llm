@@ -20,7 +20,7 @@ import path from 'node:path';
 
 const REQUIREMENTS = 'resources/runtime/requirements.txt';
 const DEFAULT_OUT = 'resources/runtime/env-manifest.json';
-const PYTORCH_CPU_INDEX = 'https://download.pytorch.org/whl/cpu/torch/';
+const PYTORCH_CPU_INDEX = 'https://download.pytorch.org/whl/cpu/';
 const STANDALONE_RELEASES = 'https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest';
 
 /** Packages with platform wheels; everything else must resolve pure. */
@@ -172,32 +172,6 @@ async function resolvePypiWheel(packageName, version, spec) {
   return toManifestWheel(picked, packageName, version);
 }
 
-async function resolveCpuTorch(version, spec) {
-  // The +cpu builds live outside the default index; the PEP 503 page carries
-  // hashes in link fragments.
-  const response = await fetch(PYTORCH_CPU_INDEX);
-  if (!response.ok) {
-    throw new Error(`GET ${PYTORCH_CPU_INDEX} failed with HTTP ${response.status}.`);
-  }
-  const html = await response.text();
-  const candidates = [];
-  const link = /<a[^>]+href="([^"]+)"[^>]*>([^<]*)<\/a>/gi;
-  let match;
-  while ((match = link.exec(html)) !== null) {
-    const href = match[1];
-    const filename = decodeURIComponent(href.split('/').pop().split('#')[0]);
-    const sha = /#sha256=([0-9a-f]{64})/i.exec(href)?.[1];
-    if (filename.startsWith(`torch-${version}+cpu-`) && filename.includes(spec.pythonTag) && sha) {
-      candidates.push({ filename, url: new URL(href.split('#')[0], PYTORCH_CPU_INDEX).href, digests: { sha256: sha } });
-    }
-  }
-  const picked = pickWheel(candidates, { ...spec, packageName: 'torch' });
-  if (!picked) {
-    throw new Error(`No ${spec.pythonTag} +cpu torch==${version} wheel for ${spec.platformTags.join('|')}.`);
-  }
-  return toManifestWheel(picked, 'torch', `${version}+cpu`);
-}
-
 function pipDownload(specs, { platform, pythonVersion, dest, extraIndexUrls = [] }) {
   return new Promise((resolve, reject) => {
     execFile(
@@ -250,6 +224,50 @@ export async function resolvePackWithPip(
 }
 
 const PYTORCH_XPU_INDEX = 'https://download.pytorch.org/whl/xpu/';
+
+
+/**
+ * Resolves a base closure: every pin plus its transitive dependencies, via
+ * pip as the resolver. Per-pin PyPI lookups only fetch the top-level wheels
+ * and miss what transformers/accelerate actually import (huggingface-hub,
+ * tokenizers, …), which then fails the hermetic `pip install --no-index`
+ * with "from versions: none". Downloading the pins together and mapping the
+ * result back to pinned URLs keeps the manifest hermetic and complete.
+ */
+export async function resolveBaseClosure(
+  pins,
+  { platform, pythonVersion, extraIndexUrls = [], cpuTorch = false },
+  { fetchJson: get, download },
+) {
+  const specs = [...pins.entries()].map(([name, version]) => `${name}==${version}`);
+  const dir = await mkdtemp(path.join(tmpdir(), 'local-llm-base-'));
+  try {
+    await download(specs, { platform, pythonVersion, dest: dir, extraIndexUrls });
+    const { readdir, readFile } = await import('node:fs/promises');
+    const { createHash } = await import('node:crypto');
+    const filenames = (await readdir(dir)).filter((name) => name.endsWith('.whl')).sort();
+    const wheels = [];
+    const pypiFilenames = [];
+    for (const filename of filenames) {
+      // The +cpu torch build lives on the PyTorch channel, not PyPI, so it
+      // is located there with a content hash like the XPU pack.
+      if (cpuTorch && filename.startsWith('torch-') && filename.includes('+cpu')) {
+        const bytes = await readFile(path.join(dir, filename));
+        const sha256 = createHash('sha256').update(bytes).digest('hex');
+        const url = await locateChannelFile(filename, PYTORCH_CPU_INDEX, get);
+        const stem = filename.split('-');
+        wheels.push({ name: `${stem[0].toLowerCase()}==${stem[1]}`, url, sha256 });
+      } else {
+        pypiFilenames.push(filename);
+      }
+    }
+    wheels.push(...await mapFilenamesToPypi(pypiFilenames, pins, get));
+    wheels.sort((a, b) => a.name.localeCompare(b.name));
+    return wheels;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
 
 /**
  * Resolves the XPU pack: torch's own +xpu build (in-tree torch.xpu, no IPEX
@@ -350,29 +368,26 @@ function exeFor(triple) {
 }
 
 export async function generateManifest({ pythonMinor = '3.10', requirementsPath = REQUIREMENTS, xpu = undefined } = {}) {
-  const pythonTag = `cp${pythonMinor.replace('.', '')}`;
   const pins = parseRequirements(await readFile(requirementsPath, 'utf8'));
-  const darwinSpec = { pythonTag, pythonMinor, platformTags: ['arm64', 'universal2', 'any'] };
-  const winSpec = { pythonTag, pythonMinor, platformTags: ['win_amd64', 'any'] };
+  const pip = { fetchJson, download: (specs, options) => pipDownload(specs, options) };
 
-  const darwinWheels = [];
-  for (const [name, version] of pins) {
-    darwinWheels.push(await resolvePypiWheel(name, version, { ...darwinSpec }));
-  }
+  // Base closures resolve every pin together so transitive dependencies
+  // (huggingface-hub, tokenizers, …) ship in the hermetic install.
+  const darwinWheels = await resolveBaseClosure(
+    pins,
+    { platform: 'macosx_14_0_arm64', pythonVersion: pythonMinor },
+    pip,
+  );
 
-  // Windows base is the CPU torch + default-index everything else.
-  const winWheels = [];
-  for (const [name, version] of pins) {
-    winWheels.push(
-      name === 'torch'
-        ? await resolveCpuTorch(version, winSpec)
-        : await resolvePypiWheel(name, version, { ...winSpec }),
-    );
-  }
+  // Windows base is the CPU torch build plus the shared closure.
+  const winWheels = await resolveBaseClosure(
+    pins,
+    { platform: 'win_amd64', pythonVersion: pythonMinor, extraIndexUrls: [PYTORCH_CPU_INDEX], cpuTorch: true },
+    pip,
+  );
   const baseNames = new Set(winWheels.map((wheel) => wheel.name.split('==')[0].toLowerCase()));
 
   const torchPin = pins.get('torch');
-  const pip = { fetchJson, download: (specs, options) => pipDownload(specs, options) };
   const cudaPack = await resolvePackWithPip(
     [`torch==${torchPin}`],
     { platform: 'win_amd64', pythonVersion: pythonMinor, baseNames, replaces: ['torch'] },
