@@ -87,6 +87,14 @@ function harness(storage: string) {
       },
       run: async (exe: string, args: string[]) => {
         commands.push({ exe, args });
+        if (exe === 'tar') {
+          // Simulate the flattened layout: standalone archives nest under
+          // one top-level dir, stripped at extract time.
+          const dest = args[args.indexOf('-C') + 1] as string;
+          mkdirSync(dest, { recursive: true });
+          mkdirSync(path.join(dest, 'bin'), { recursive: true });
+          writeFileSync(path.join(dest, 'bin', 'python3'), 'fake');
+        }
         return { stdout: '', stderr: '' };
       },
       readReleaseManifest: async () => RELEASE.targets['darwin-arm64'],
@@ -126,6 +134,44 @@ test('first use provisions in order, second use is cached', async () => {
     assert.equal(cachedResult.fresh, false);
     assert.equal(second.downloads.length, 0);
     assert.equal(second.commands.length, 0);
+  } finally {
+    rmSync(storage, { recursive: true, force: true });
+  }
+});
+
+test('extraction passes --strip-components for the nested python dir', async () => {
+  const provision = await loadProvision();
+  const storage = mkdtempSync(path.join(tmpdir(), 'local-llm-prov-'));
+  try {
+    const attempt = harness(storage);
+    await provision.ensureEnvironment(
+      { ...attempt.options, probe: async () => undefined },
+      attempt.deps,
+    );
+    const tar = attempt.commands.find((command: { exe: string }) => command.exe === 'tar');
+    assert.ok(tar, 'extraction ran');
+    assert.ok((tar as { args: string[] }).args.includes('--strip-components'));
+  } finally {
+    rmSync(storage, { recursive: true, force: true });
+  }
+});
+
+test('a missing interpreter exe fails named, not as a bare ENOENT', async () => {
+  const provision = await loadProvision();
+  const storage = mkdtempSync(path.join(tmpdir(), 'local-llm-prov-'));
+  try {
+    const attempt = harness(storage);
+    const bare = {
+      ...attempt.deps,
+      run: async () => ({ stdout: '', stderr: '' }),
+    };
+    await assert.rejects(
+      provision.ensureEnvironment(
+        { ...attempt.options, probe: async () => undefined },
+        bare,
+      ),
+      /unexpected layout/,
+    );
   } finally {
     rmSync(storage, { recursive: true, force: true });
   }

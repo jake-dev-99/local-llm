@@ -328,12 +328,16 @@ async function configSourceForLoneFile(
     prompt: 'Give the Hugging Face repository to fetch config (and tokenizer) from.',
     placeHolder: 'owner/model-name',
     ignoreFocusOut: true,
-    validateInput: (value) =>
-      /^[\w.-]+\/[\w.-]+$/.test(value.trim())
-        ? undefined
-        : 'Enter a repository as owner/name.',
+    validateInput: validateRepositoryInput,
   });
   return repository ? { repository: repository.trim() } : undefined;
+}
+
+/** Shared `owner/name` check for every Hugging Face repository prompt. */
+function validateRepositoryInput(value: string): string | undefined {
+  return /^[\w.-]+\/[\w.-]+$/.test(value.trim())
+    ? undefined
+    : 'Enter a repository as owner/name.';
 }
 
 /** Whether the provisioned flavor has CUDA; false on any doubt. */
@@ -352,10 +356,7 @@ async function downloadHuggingFace(services: CommandServices): Promise<void> {
     prompt: 'Repository',
     placeHolder: 'owner/model-GGUF',
     ignoreFocusOut: true,
-    validateInput: (value) =>
-      /^[\w.-]+\/[\w.-]+$/.test(value.trim())
-        ? undefined
-        : 'Enter a repository as owner/name.',
+    validateInput: validateRepositoryInput,
   });
   if (!repository) {
     return;

@@ -7,7 +7,7 @@
  * without network or processes; production passes the real ones.
  */
 
-import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { downloadModel } from '../models/modelSources.ts';
@@ -112,7 +112,9 @@ export async function ensureEnvironment(
   const interpreterDir = path.join(directory, 'interpreter');
   await mkdir(interpreterDir, { recursive: true });
   // bsdtar ships with macOS and with Windows 10+, so no new dependency.
-  await deps.run('tar', ['-xf', archivePath, '-C', interpreterDir]);
+  // Standalone archives nest everything under one top-level `python/`
+  // directory; stripping it keeps interpreterExePath fixed per platform.
+  await deps.run('tar', ['-xf', archivePath, '--strip-components', '1', '-C', interpreterDir]);
   const wheelPaths: string[] = [];
   for (const [index, wheel] of wheels.entries()) {
     options.progress.report({ message: `Downloading ${wheel.name} (${index + 1}/${wheels.length})` });
@@ -120,9 +122,18 @@ export async function ensureEnvironment(
     await deps.download(wheel.url, destination, wheel.sha256, undefined, options.progress, options.token);
     wheelPaths.push(destination);
   }
-  const interpreterExe = target.startsWith('win32')
-    ? path.join(interpreterDir, 'python.exe')
-    : path.join(interpreterDir, 'bin', 'python3');
+  const interpreterExe = interpreterExePath(interpreterDir, target);
+  try {
+    await stat(interpreterExe);
+  } catch {
+    // An archive layout change would otherwise surface pages later as a bare
+    // ENOENT from the venv spawn. Fail here, naming the actual problem.
+    throw new Error(
+      `The downloaded Python interpreter has an unexpected layout: ${interpreterExe} ` +
+      `is missing after extraction. Re-run provisioning; if it persists, the ` +
+      `release manifest pins an incompatible interpreter build.`,
+    );
+  }
   await deps.run(interpreterExe, ['-m', 'venv', path.join(directory, 'venv')]);
   const pythonPath = venvPython(directory, target);
   await deps.run(pythonPath, ['-m', 'pip', 'install', '--no-index', ...wheelPaths]);
@@ -139,6 +150,17 @@ function venvPython(directory: string, target: string): string {
   return target.startsWith('win32')
     ? path.join(directory, 'venv', 'Scripts', 'python.exe')
     : path.join(directory, 'venv', 'bin', 'python3');
+}
+
+/**
+ * The standalone interpreter inside an extracted archive. python-build-standalone
+ * ships everything under one top-level `python/` directory, which extraction
+ * strips (see extractArchive), so the layout is fixed per platform.
+ */
+export function interpreterExePath(interpreterDir: string, target: string): string {
+  return target.startsWith('win32')
+    ? path.join(interpreterDir, 'python.exe')
+    : path.join(interpreterDir, 'bin', 'python3');
 }
 
 function safeWheelFilename(wheel: { url: string; name: string }): string {
