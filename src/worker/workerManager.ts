@@ -594,6 +594,16 @@ export class WorkerManager implements vscode.Disposable {
     if (!wasReady || (memoryAttempt.outOfMemory && !memoryAttempt.canRetry)) {
       return;
     }
+    // Only llama.cpp is restarted eagerly. Its worker starts in seconds and a
+    // crash is often transient, so keeping it warm is worth the attempt. A
+    // Safetensors worker that died while ready has almost always exhausted
+    // memory, and reloading it costs a digest pass, an interpreter probe and
+    // tens of gigabytes of weights — three times over five minutes, arriving
+    // at the same failure. The model is not stranded: the next request starts
+    // a fresh session through `ensureReady`.
+    if (runtime === 'transformers') {
+      return;
+    }
 
     const cutoff = Date.now() - RESTART_WINDOW_MS;
     this.restartTimes = this.restartTimes.filter((time) => time >= cutoff);

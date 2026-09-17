@@ -27,7 +27,14 @@ export interface RuntimeSession {
   readonly exited: boolean;
   /** Called when the process goes away, including when `stop` ended it. */
   onExit(handler: (exit: RuntimeExit) => void): void;
-  /** Ends the process and releases the client. Safe to call more than once. */
+  /**
+   * Ends the process. Safe to call more than once.
+   *
+   * Only the process: failing whatever was in flight is `client.dispose()`,
+   * which the caller invokes next. Keeping them separate matters because they
+   * are genuinely different operations on llama.cpp — a signal to the child
+   * versus destroying an HTTP pool — and collapsing them here would hide that.
+   */
   stop(): Promise<void>;
 }
 

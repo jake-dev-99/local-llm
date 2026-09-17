@@ -81,9 +81,11 @@ export async function startTransformersSession(
     },
     onExit: exits.onExit,
     stop: async () => {
-      // Closing stdin is the worker's shutdown signal; it unloads the model and
-      // exits on its own, with a SIGKILL behind it if it does not.
-      worker.dispose();
+      // Ends the process only. Closing stdin is the worker's shutdown signal:
+      // it unloads the model and exits on its own, with a SIGKILL behind it if
+      // it does not. Failing the in-flight requests belongs to the client's
+      // own dispose, which the manager calls next.
+      transport.close();
     },
   };
 }
