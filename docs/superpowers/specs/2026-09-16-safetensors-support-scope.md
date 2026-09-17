@@ -407,11 +407,106 @@ Found because the first version of the adapter test hung: it answered the
 token-count request before that request had been sent. The fix removed the
 request rather than the race.
 
-## Still to do in phase 4
+# Implementation status — increment 4 (phase 4, complete)
 
-- A `WorkerBackend` seam in `workerManager.ts`, so a model's runtime decides
-  which process starts. `WorkerState` needs the runtime kind, and
-  `inferenceScheduler.ts` must serialize across both so two 30B models can never
-  load at once.
-- Provider routing on `model.runtime`, and `canRunInline` consulting
-  `supports.infill` rather than assuming llama.cpp.
+| Path | Purpose |
+|---|---|
+| `src/worker/runtimeSession.ts` | The seam: `RuntimeSession`, `runtimeForModel`, `exitNotifier` |
+| `src/worker/transformersBackend.ts` | Verifies, probes, spawns and loads the Python runtime |
+| `src/worker/workerManager.ts` | Routes on `model.runtime`; lifecycle is now session-shaped |
+| `src/provider/localLanguageModelProvider.ts` | Runtime-specific advice on the two refusals |
+| `src/completion/localInlineCompletionProvider.ts`, `src/ui/modelCommands.ts` | Branch on `supportsInfill` |
+
+Node suite 236/236; Python 13/13; typecheck and build clean. `npm test` runs
+end to end for the first time — see "A test that had been red" below.
+
+## The seam is `RuntimeSession`, not `WorkerBackend`
+
+The scope's original wording predates a collision: `workerManifest.ts` already
+exports `WorkerBackend` for metal/sycl/cpu, and `workerManager.ts` uses
+`backend` as a local throughout the llama.cpp start path. That is a different
+axis entirely — a *backend* is how llama.cpp uses the hardware, a *runtime* is
+which engine holds the weights. The discriminator already existed as
+`ModelRuntime`.
+
+A `RuntimeSession` is a started process, the client that talks to it, and how
+it ends. `WorkerManager` holds one at a time and dispatches on
+`runtimeForModel(model)`.
+
+## No second scheduler, deliberately
+
+The concern was two 30B models resident at once. It does not arise, and adding
+queueing would not have been what prevented it: one manager owns one session,
+and every request already funnels through its single `InferenceScheduler`.
+Starting either runtime evicts the other for exactly the reason two GGUF models
+could never coexist. Splitting ownership per runtime is the change that *would*
+have created the risk.
+
+What actually needed generalizing was teardown and crash recovery. How a
+process is asked to stop differs — llama-server takes a signal, the Python
+worker takes a closed stdin — but what an unexpected exit *means* is identical,
+so `handleExit` moved onto the session and stayed in one place.
+
+`exitNotifier` fires immediately for a handler registered after the process has
+already died. Without that, a worker crashing between passing its health check
+and being watched would leave a session that looks alive forever, and the
+manager would keep handing callers a client to a process that is gone.
+
+## Three call sites the contract had to grow for
+
+Widening `run<T>` from `LlamaClient` to `InferenceClient` exposed methods the
+first cut of the interface had missed: `countChatInputTokens`, and the native
+tool-call cache (`get`/`setNativeToolCallSupport`). Both are now on the
+contract. The Python adapter implements the token count through the worker's
+`model.tokenize`, which already counts a conversation through the chat
+template — the same question. Native tool-call support is reported as
+structurally `unavailable` rather than cached, because there the answer does
+not depend on the model.
+
+`canRunInline` **cannot** consult `supports.infill`: it runs before any client
+exists. The capability guard belongs where a live client does — inline
+completion itself, and `validateFillInMiddle`, which now records `unsupported`
+without spending a load to discover what the runtime already knows.
+
+## Checkpoint verification is not the GGUF check
+
+The llama.cpp path rejects a model whose size or mtime moved since it was
+registered. Reusing that for a checkpoint would reject every one of them:
+copying a checkpoint to a faster disk rewrites every mtime and not one byte,
+which is exactly why `manifestDigest` excludes mtimes. The Safetensors path
+compares the digest instead — paths, sizes and Safetensors headers — so it
+survives a move and still catches a swap.
+
+## `localLlm.pythonPath`, until provisioning ships
+
+Phase 1 is still the open risk. Until it lands, the interpreter is a setting,
+and an empty value fails by naming it. Discovering `python3` on `PATH` would
+find the system interpreter, and several gigabytes of PyTorch is not something
+to install there on a user's behalf.
+
+The interpreter is probed with `--probe` in a throwaway process before the
+worker is spawned. That is not defensive styling: importing torch can abort the
+interpreter rather than raise — a duplicate OpenMP runtime does it on this very
+machine — and a worker cannot report its own abort.
+
+## A test that had been red
+
+`toolProtocol.test.ts` failed on a clean checkout, and because `npm test`
+chains `test:node && test:python`, the Python suite had never run from the
+top-level command. The cause was one word: `toolProtocol.ts` imported
+`ChatTool` as a value rather than `import type`, so Node's strip-only
+TypeScript kept the import and then could not resolve `../domain.js`, which
+does not exist in the source tree. Fixed.
+
+## Still to do
+
+- **UI commands** (~2–3 days). Nothing invokes `importSafetensorsDirectory`
+  yet, the model list does not show format or runtime, and `quantization` /
+  `customCodeRequired` are recorded but never surfaced before a load.
+- **Phase 1, Python provisioning** (~2–3 weeks). The largest remaining risk
+  and the only one with no upstream answer.
+- **Phase 6, tool calling** via a grammar backend such as `xgrammar`. Until
+  then Safetensors models are Chat-only, and say so.
+- **Phase 7, FIM.** No Transformers analogue exists; FIM tokens live outside
+  the chat template. The alternative is advertising `fillInMiddle:
+  'unsupported'` permanently for this runtime, which is what happens today.
