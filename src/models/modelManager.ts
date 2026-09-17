@@ -35,6 +35,10 @@ const SIDECAR_FILES = [
   'config.json',
   'tokenizer.json',
   'tokenizer_config.json',
+  // Recent checkpoints keep the template in a standalone jinja file rather
+  // than inside tokenizer_config.json; without it the loaded tokenizer
+  // reports no chat template and validation refuses the model.
+  'chat_template.jinja',
   'generation_config.json',
 ];
 

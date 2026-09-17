@@ -253,6 +253,7 @@
     "test": "npm run test:node && npm run test:python",
     "test:node": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test src/**/*.test.ts scripts/**/*.test.mjs",
     "test:python": "cd resources/runtime && python3 -m unittest discover -s tests -t .",
+    "validate:env-manifest": "node scripts/validate-python-env-manifest.mjs",
     "typecheck": "tsc --noEmit",
     "build": "node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",

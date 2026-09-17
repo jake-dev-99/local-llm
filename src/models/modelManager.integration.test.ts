@@ -187,6 +187,37 @@ test('stages a lone weights file with sibling sidecars, then registers it owned'
   }
 });
 
+test('a sibling chat_template.jinja stages with the weights file', async () => {
+  // Checkpoints increasingly keep the template standalone rather than inside
+  // tokenizer_config.json; without it the loaded tokenizer reports no chat
+  // template and validation refuses the model.
+  const ModelManager = await loadModelManager();
+  const registry = fakeRegistry();
+  const source = mkdtempSync(path.join(tmpdir(), 'local-llm-lone-'));
+  const storage = mkdtempSync(path.join(tmpdir(), 'local-llm-storage-'));
+  writeFileSync(
+    path.join(source, 'gemma4.safetensors'),
+    shard('{"w":{"dtype":"BF16","shape":[8],"data_offsets":[0,16]}}', 128),
+  );
+  writeFileSync(path.join(source, 'config.json'), JSON.stringify({
+    architectures: ['GemmaForCausalLM'],
+    max_position_embeddings: 32768,
+  }));
+  writeFileSync(path.join(source, 'chat_template.jinja'), '{{ messages }}');
+  try {
+    const manager = new ModelManager(
+      { ...context, globalStorageUri: uriFor(storage) },
+      registry,
+      logger,
+    );
+    const staged = await manager.stageSafetensorsFile(uriFor(path.join(source, 'gemma4.safetensors')));
+    assert.ok(existsSync(path.join(staged.directory, 'chat_template.jinja')), 'standalone template came along');
+  } finally {
+    rmSync(source, { recursive: true, force: true });
+    rmSync(storage, { recursive: true, force: true });
+  }
+});
+
 test('a lone file with no config and no repository fails without littering', async () => {
   const ModelManager = await loadModelManager();
   const source = mkdtempSync(path.join(tmpdir(), 'local-llm-bare-'));

@@ -17,7 +17,7 @@ import {
   MODEL_BENCHMARK_SAMPLE_COUNT,
 } from './modelBenchmark.js';
 import { supportsInfill, type InferenceClient } from '../worker/inferenceClient.js';
-import { runtimeDisplayName } from '../worker/runtimeSession.js';
+import { runtimeDisplayName, runtimeForModel } from '../worker/runtimeSession.js';
 import { describeModel, describeRemoval } from './modelSummary.ts';
 import { checkpointWarnings } from './modelSummary.ts';
 import {
@@ -508,9 +508,12 @@ async function validateModel(
               signal,
             );
             if (!profile.hasChatTemplate) {
-              throw new Error(
-                'The GGUF loaded, but it does not expose a llama.cpp chat template and cannot be used in VS Code Chat.',
-              );
+              // Same refusal as the chat provider, with advice for the
+              // runtime at hand: a Safetensors holder needs an instruct
+              // checkpoint, not a GGUF.
+              throw new Error(runtimeForModel(model) === 'transformers'
+                ? 'This checkpoint ships no chat template, so its tokenizer cannot format a conversation. Install an instruct or chat variant for VS Code Chat.'
+                : 'The GGUF loaded, but it does not expose a llama.cpp chat template and cannot be used in VS Code Chat.');
             }
             if (!profile.supportsTools || !profile.supportsToolCalls) {
               await services.models.registry.markToolCalling(model.id, 'unsupported');
