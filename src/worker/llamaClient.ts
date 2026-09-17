@@ -7,6 +7,7 @@ import type {
   ChatTool,
   InfillRequest,
 } from '../domain.js';
+import type { InferenceCapabilities, InferenceClient } from './inferenceClient.ts';
 import { parseWorkerModelProfile, type WorkerModelProfile } from './runtimeProfile.js';
 import { assertPromptFits } from './toolBudget.js';
 import { assertFinalResponse, finalResponseMessages } from './finalResponse.js';
@@ -87,7 +88,16 @@ interface ChatTrace {
   startedAt: number;
 }
 
-export class LlamaClient {
+export class LlamaClient implements InferenceClient {
+  /**
+   * llama.cpp provides both: `/infill` for fill-in-the-middle, and GBNF
+   * grammars compiled from a response schema for constrained tool decisions.
+   */
+  readonly supports: InferenceCapabilities = {
+    infill: true,
+    constrainedDecoding: true,
+  };
+
   private modelProfile: WorkerModelProfile | undefined;
   private nativeToolCalls: NativeToolCallSupport = 'unknown';
   private readonly pool: Pool;
