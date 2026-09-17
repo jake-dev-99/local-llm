@@ -226,7 +226,9 @@
   },
   "scripts": {
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
-    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test src/**/*.test.ts scripts/**/*.test.mjs",
+    "test": "npm run test:node && npm run test:python",
+    "test:node": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test src/**/*.test.ts scripts/**/*.test.mjs",
+    "test:python": "cd resources/runtime && python3 -m unittest discover -s tests -t .",
     "typecheck": "tsc --noEmit",
     "build": "node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",

@@ -15,3 +15,5 @@ esbuild.mjs
 package-lock.json
 *.vsix
 .sf
+**/__pycache__/**
+resources/runtime/tests/**

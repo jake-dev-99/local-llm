@@ -1,0 +1,7 @@
+# Baseline runtime. Optimisation-specific packages (bitsandbytes, torchao, AWQ,
+# GPTQ, flash-attn, optimum*) are deliberately absent: they are added only when
+# a real model requires them.
+torch==2.14.0
+transformers==5.17.0
+accelerate==1.15.0
+safetensors==0.8.0
