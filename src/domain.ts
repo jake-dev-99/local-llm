@@ -1,3 +1,11 @@
+import type {
+  ModelFileFingerprint,
+  ModelFormat,
+  ModelRuntime,
+} from './models/modelIdentity.ts';
+
+export type { ModelFileFingerprint, ModelFormat, ModelRuntime };
+
 export type ModelSource = 'import' | 'huggingface' | 'url';
 
 export type CapabilitySupport = 'unverified' | 'supported' | 'unsupported';
@@ -40,12 +48,40 @@ export interface InstalledModel {
   revision?: string;
   filename: string;
   installedAt: string;
+  /**
+   * On-disk shape. A `gguf` model is the single file at `filePath`; a
+   * `safetensors` model is the directory at `filePath`.
+   */
+  format: ModelFormat;
+  /** The worker that can load this model. Recorded at install, never guessed. */
+  runtime: ModelRuntime;
+  /**
+   * Per-file fingerprints, for directory models only.
+   *
+   * Change detection compares these rather than re-hashing: a Safetensors
+   * checkpoint reaches tens of gigabytes and every model is verified on
+   * activation. For a directory model `sha256` holds a manifest digest rather
+   * than a content hash — see `models/modelIdentity.ts`.
+   */
+  files?: ModelFileFingerprint[];
+  /** Quantization declared by a Safetensors checkpoint, when it declares one. */
+  quantization?: string;
+  /** True when loading this model would execute Python shipped inside it. */
+  customCodeRequired?: boolean;
+  /**
+   * Whether the extension owns the bytes at `filePath` and may delete them.
+   *
+   * Absent means owned, which is correct for every record written before
+   * checkpoints could be registered in place.
+   */
+  managed?: boolean;
   capabilities: ModelCapabilities;
   runtimeProfile?: ModelRuntimeProfile;
   nativeToolCapability?: NativeToolCapabilityRecord;
   /**
-   * Context length from the GGUF header. A bootstrap estimate only; the window
-   * actually used comes from the worker once llama.cpp has fitted the model.
+   * Context length from the GGUF header, or `config.json` for a Safetensors
+   * checkpoint. A bootstrap estimate only; the window actually used comes from
+   * the worker once the model has been fitted to this machine.
    */
   trainedContextLength?: number;
 }

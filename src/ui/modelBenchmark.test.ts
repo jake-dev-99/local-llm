@@ -18,6 +18,8 @@ test('only models with completed compatibility checks are benchmarkable', () => 
     source: 'import' as const,
     filename: 'model.gguf',
     installedAt: '2026-09-15T00:00:00.000Z',
+    format: 'gguf' as const,
+    runtime: 'llama-cpp' as const,
     capabilities: { toolCalling: 'supported' as const, fillInMiddle: 'unsupported' as const },
     runtimeProfile: {
       validatedAt: '2026-09-15T00:00:00.000Z',

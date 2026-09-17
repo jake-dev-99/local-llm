@@ -8,6 +8,11 @@ import type { InstalledModel, ModelSource } from '../domain.js';
 import type { LocalLlmLogger } from '../logging.js';
 import { readGgufMetadata } from './ggufMetadata.js';
 import { isSingleFileGguf, selectableHuggingFaceFiles } from './huggingFaceFileSelection.js';
+import { isExtensionOwned } from './modelIdentity.ts';
+import {
+  isSafetensorsDirectory,
+  readSafetensorsCheckpoint,
+} from './safetensorsDirectory.ts';
 import { ModelRegistry } from './modelRegistry.js';
 import {
   copyLocalModel,
@@ -143,10 +148,71 @@ export class ModelManager {
     });
   }
 
+  /**
+   * Registers a Safetensors checkpoint where it already lives.
+   *
+   * Unlike a GGUF import this copies nothing. These checkpoints run to tens of
+   * gigabytes and the user already has them on disk, so duplicating them into
+   * extension storage would waste the space twice over. The consequence is
+   * recorded on the model: the extension does not own these bytes and never
+   * deletes them.
+   */
+  async importSafetensorsDirectory(uri: vscode.Uri): Promise<InstalledModel> {
+    const directory = uri.fsPath;
+    if (!(await isSafetensorsDirectory(directory))) {
+      throw new Error(
+        'That folder is not a Safetensors checkpoint. It needs a config.json and at least one .safetensors file.',
+      );
+    }
+    const checkpoint = await readSafetensorsCheckpoint(
+      directory,
+      (warning) => this.logger.info(warning),
+    );
+    const name = friendlyName(path.basename(directory));
+    const model: InstalledModel = {
+      id: `${slug(name)}-${checkpoint.identity.digest.slice(0, 12)}`,
+      name,
+      filePath: directory,
+      fileSize: checkpoint.identity.totalBytes,
+      sha256: checkpoint.identity.digest,
+      source: 'import',
+      sourceUrl: uri.toString(),
+      filename: path.basename(directory),
+      installedAt: new Date().toISOString(),
+      format: 'safetensors',
+      runtime: 'transformers',
+      managed: false,
+      files: checkpoint.identity.files,
+      capabilities: { toolCalling: 'unverified', fillInMiddle: 'unverified' },
+      ...(checkpoint.quantization ? { quantization: checkpoint.quantization } : {}),
+      ...(checkpoint.customCodeRequired ? { customCodeRequired: true } : {}),
+      ...(checkpoint.trainedContextLength
+        ? { trainedContextLength: checkpoint.trainedContextLength }
+        : {}),
+    };
+    await this.registry.upsert(model);
+    this.logger.info(
+      `Registered Safetensors checkpoint: ${model.name} ` +
+      `(${checkpoint.identity.files.length} files, ${model.fileSize} bytes, in place).`,
+    );
+    return model;
+  }
+
   async remove(model: InstalledModel): Promise<void> {
-    await rm(model.filePath, { force: true });
+    // Only bytes the extension put on disk are the extension's to delete. A
+    // checkpoint registered in place is unregistered and left alone.
+    if (isExtensionOwned(model)) {
+      await rm(model.filePath, {
+        force: true,
+        recursive: model.format === 'safetensors',
+      });
+      this.logger.info(`Removed local model: ${model.name}.`);
+    } else {
+      this.logger.info(
+        `Unregistered ${model.name}. Its files were left at ${model.filePath}.`,
+      );
+    }
     await this.registry.remove(model.id);
-    this.logger.info(`Removed local model: ${model.name}.`);
   }
 
   async setHuggingFaceToken(token: string | undefined): Promise<void> {
@@ -216,6 +282,8 @@ export class ModelManager {
       source: input.source,
       filename: input.filename,
       installedAt: new Date().toISOString(),
+      format: 'gguf',
+      runtime: 'llama-cpp',
       capabilities: { toolCalling: 'unverified', fillInMiddle: 'unverified' },
       ...(input.sourceIdentity ? { sourceIdentity: input.sourceIdentity } : {}),
       ...(input.sourceUrl ? { sourceUrl: input.sourceUrl } : {}),
