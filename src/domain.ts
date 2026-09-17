@@ -86,17 +86,23 @@ export interface InstalledModel {
   trainedContextLength?: number;
 }
 
+/**
+ * The runtime is part of the state because two engines can now hold a model,
+ * and "which one is loaded" is the first thing a status readout has to answer.
+ * `port` is absent for a runtime that does not serve HTTP.
+ */
 export type WorkerState =
   | { kind: 'stopped' }
-  | { kind: 'starting'; modelId: string }
+  | { kind: 'starting'; modelId: string; runtime: ModelRuntime }
   | {
       kind: 'ready';
       modelId: string;
-      port: number;
+      runtime: ModelRuntime;
+      port?: number;
       activity?: 'generating-response';
     }
-  | { kind: 'stopping'; modelId: string }
-  | { kind: 'failed'; modelId?: string; message: string };
+  | { kind: 'stopping'; modelId: string; runtime: ModelRuntime }
+  | { kind: 'failed'; modelId?: string; runtime?: ModelRuntime; message: string };
 
 export interface WorkerConfig {
   contextSize: number;
@@ -119,6 +125,14 @@ export interface LocalLlmConfig extends WorkerConfig {
   inlineEnabled: boolean;
   inlineMaxTokens: number;
   inlineDebounceMilliseconds: number;
+  /**
+   * Interpreter for the Safetensors runtime, or empty when none is set.
+   *
+   * Explicit rather than discovered: `python3` on PATH is usually the system
+   * interpreter, and installing several gigabytes of PyTorch into it is not a
+   * thing to do to a user's machine by default.
+   */
+  pythonPath: string;
   logLevel: 'error' | 'info' | 'debug';
 }
 

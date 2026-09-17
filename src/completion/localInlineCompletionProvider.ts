@@ -3,6 +3,7 @@ import { readConfig } from '../config.js';
 import type { LocalLlmLogger } from '../logging.js';
 import type { ModelRegistry } from '../models/modelRegistry.js';
 import { toAbortSignal } from '../provider/localLanguageModelProvider.js';
+import { supportsInfill } from '../worker/inferenceClient.js';
 import type { WorkerManager } from '../worker/workerManager.js';
 
 const MAX_PREFIX_CHARS = 24_000;
@@ -67,7 +68,14 @@ implements vscode.InlineCompletionItemProvider, vscode.Disposable {
       const completion = await this.worker.run(
         model,
         'inline',
-        (client, scheduledSignal) => client.infill(
+        (client, scheduledSignal) => {
+          // Fill-in-the-middle is llama.cpp's `/infill`. A model whose runtime
+          // has no equivalent should never have been marked supported, so this
+          // is a guard against a stale capability rather than a routine branch.
+          if (!supportsInfill(client)) {
+            return Promise.resolve('');
+          }
+          return client.infill(
           {
             prefix,
             suffix,
@@ -81,7 +89,8 @@ implements vscode.InlineCompletionItemProvider, vscode.Disposable {
             ],
           },
           scheduledSignal,
-        ),
+          );
+        },
         signal,
       );
       const insertText = cleanCompletion(completion, suffix);

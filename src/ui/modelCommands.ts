@@ -14,6 +14,8 @@ import {
   isModelValidated,
   MODEL_BENCHMARK_SAMPLE_COUNT,
 } from './modelBenchmark.js';
+import { supportsInfill, type InferenceClient } from '../worker/inferenceClient.js';
+import { runtimeDisplayName } from '../worker/runtimeSession.js';
 import { isFatalWorkerError } from '../worker/workerError.js';
 import type { WorkerManager } from '../worker/workerManager.js';
 
@@ -222,7 +224,11 @@ async function showStatus(services: CommandServices): Promise<void> {
   let runtime: string;
   switch (state.kind) {
     case 'ready': {
-      runtime = `Ready on loopback port ${state.port} with ${modelName(installed, state.modelId)}`;
+      // The Safetensors runtime serves no port; naming its engine is the
+      // equivalent detail for a user trying to tell which one is loaded.
+      runtime = state.port === undefined
+        ? `Ready on ${runtimeDisplayName(state.runtime)} with ${modelName(installed, state.modelId)}`
+        : `Ready on loopback port ${state.port} with ${modelName(installed, state.modelId)}`;
       break;
     }
     case 'starting':
@@ -495,9 +501,15 @@ function isValidProbeContinuation(value: string): boolean {
 async function validateFillInMiddle(
   services: CommandServices,
   model: InstalledModel,
-  client: import('../worker/llamaClient.js').LlamaClient,
+  client: InferenceClient,
   signal: AbortSignal,
 ): Promise<boolean> {
+  // A runtime with no fill-in-the-middle is a settled answer, not a failed
+  // probe: sending a prompt to find out would only waste a load.
+  if (!supportsInfill(client)) {
+    await services.models.registry.markFillInMiddle(model.id, 'unsupported');
+    return false;
+  }
   try {
     const completion = await client.infill(
       {

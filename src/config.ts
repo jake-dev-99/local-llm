@@ -41,6 +41,7 @@ export function readConfig(context: vscode.ExtensionContext): LocalLlmConfig {
     inlineEnabled: config.get<boolean>('inline.enabled', true),
     inlineMaxTokens: config.get<number>('inline.maxTokens', 64),
     inlineDebounceMilliseconds: config.get<number>('inline.debounceMilliseconds', 250),
+    pythonPath: config.get<string>('pythonPath', '').trim(),
     logLevel: config.get<'error' | 'info' | 'debug'>('logLevel', 'info'),
   };
 }

@@ -7,9 +7,10 @@ import {
 
 test('chat work marks a ready worker as generating a response', () => {
   assert.deepEqual(
-    beginWorkerActivity({ kind: 'ready', modelId: 'qwen', port: 8080 }, 'chat'),
+    beginWorkerActivity({ kind: 'ready', runtime: 'llama-cpp', modelId: 'qwen', port: 8080 }, 'chat'),
     {
       kind: 'ready',
+      runtime: 'llama-cpp',
       modelId: 'qwen',
       port: 8080,
       activity: 'generating-response',
@@ -19,8 +20,8 @@ test('chat work marks a ready worker as generating a response', () => {
 
 test('utility work does not present itself as response generation', () => {
   assert.deepEqual(
-    beginWorkerActivity({ kind: 'ready', modelId: 'qwen', port: 8080 }, 'utility'),
-    { kind: 'ready', modelId: 'qwen', port: 8080 },
+    beginWorkerActivity({ kind: 'ready', runtime: 'llama-cpp', modelId: 'qwen', port: 8080 }, 'utility'),
+    { kind: 'ready', runtime: 'llama-cpp', modelId: 'qwen', port: 8080 },
   );
 });
 
@@ -28,10 +29,11 @@ test('finishing response generation returns the worker to ready', () => {
   assert.deepEqual(
     finishWorkerActivity({
       kind: 'ready',
+      runtime: 'llama-cpp',
       modelId: 'qwen',
       port: 8080,
       activity: 'generating-response',
     }),
-    { kind: 'ready', modelId: 'qwen', port: 8080 },
+    { kind: 'ready', runtime: 'llama-cpp', modelId: 'qwen', port: 8080 },
   );
 });

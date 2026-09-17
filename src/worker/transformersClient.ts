@@ -7,9 +7,9 @@
  * model family.
  */
 
-import type { ChatRequest, ChatStreamEvent } from '../domain.ts';
+import type { ChatMessage, ChatRequest, ChatStreamEvent, ChatTool } from '../domain.ts';
 import type { InferenceCapabilities, InferenceClient } from './inferenceClient.ts';
-import type { ChatResult } from './llamaClient.ts';
+import type { ChatResult, NativeToolCallSupport } from './llamaClient.ts';
 import type { PythonWorkerClient } from './pythonWorkerClient.ts';
 import { PythonWorkerError, type PythonModelInfo } from './pythonWorkerTypes.ts';
 import type { WorkerModelProfile } from './runtimeProfile.ts';
@@ -79,6 +79,49 @@ export class TransformersClient implements InferenceClient {
 
   async tokenize(content: string, _signal?: AbortSignal): Promise<number> {
     return await this.worker.tokenize({ text: content });
+  }
+
+  /**
+   * Counted by applying the model's own chat template, the same way a
+   * generation would be, so the role markers are included.
+   *
+   * Tools are ignored rather than counted: `chat` refuses a request carrying
+   * them, so a conversation that reaches generation never has any.
+   */
+  async countChatInputTokens(
+    messages: ChatMessage[],
+    _tools?: ChatTool[],
+    _toolChoice?: ChatRequest['toolChoice'],
+    _signal?: AbortSignal,
+  ): Promise<number> {
+    return await this.worker.tokenize({
+      messages: messages.map(({ role, content }) => ({ role, content })),
+    });
+  }
+
+  /**
+   * Structurally unavailable, so there is nothing to discover or cache.
+   *
+   * llama.cpp learns this from a model's first reply because its server may
+   * or may not parse tool calls out of one. Here the answer does not depend
+   * on the model: nothing in this runtime emits a tool call, so the setter
+   * has no observation worth recording.
+   */
+  getNativeToolCallSupport(): NativeToolCallSupport {
+    return 'unavailable';
+  }
+
+  setNativeToolCallSupport(_support: NativeToolCallSupport): void {
+    // Intentionally empty; see getNativeToolCallSupport.
+  }
+
+  /**
+   * Fails every in-flight request and closes the pipe.
+   *
+   * Stopping the process itself belongs to the session that started it.
+   */
+  async dispose(): Promise<void> {
+    this.worker.dispose();
   }
 
   /**

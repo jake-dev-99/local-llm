@@ -8,7 +8,17 @@ import { readConfig } from '../config.js';
 import type { InstalledModel, WorkerState } from '../domain.js';
 import type { LocalLlmLogger } from '../logging.js';
 import { abortError, InferenceScheduler, type InferenceKind } from './inferenceScheduler.js';
+import type { InferenceClient } from './inferenceClient.js';
 import { LlamaClient } from './llamaClient.js';
+import {
+  exitNotifier,
+  runtimeDisplayName,
+  runtimeForModel,
+  type ExitNotifier,
+  type RuntimeExit,
+  type RuntimeSession,
+} from './runtimeSession.js';
+import { startTransformersSession } from './transformersBackend.js';
 import { describeError } from '../errorDetail.js';
 import { SYCL_INITIAL_FIT_TARGET_MIB, isSyclDeviceOutOfMemory, nextSyclFitTargetMiB, parseFittedContext, parseFreeDeviceMemoryMiB, resolveFitTargetMiB } from './memoryFit.js';
 import { isFatalWorkerError } from './workerError.js';
@@ -33,11 +43,17 @@ class RetrySyclMemoryError extends Error {}
 
 export class WorkerManager implements vscode.Disposable {
   private readonly stateEmitter = new vscode.EventEmitter<WorkerState>();
-  private child: ChildProcessWithoutNullStreams | undefined;
+  /**
+   * The one runtime that may be resident.
+   *
+   * A single slot rather than one per engine: a 30B checkpoint and a 30B GGUF
+   * would not fit in memory together, so starting either has to evict the
+   * other. That is also why no second scheduler was needed.
+   */
+  private session: RuntimeSession | undefined;
   private currentModel: InstalledModel | undefined;
-  private currentClient: LlamaClient | undefined;
   private apiKeyFile: string | undefined;
-  private startPromise: Promise<LlamaClient> | undefined;
+  private startPromise: Promise<RuntimeSession> | undefined;
   private requestedStop = false;
   private restartTimes: number[] = [];
   private disposed = false;
@@ -78,13 +94,14 @@ export class WorkerManager implements vscode.Disposable {
   async run<T>(
     model: InstalledModel,
     kind: InferenceKind,
-    operation: (client: LlamaClient, signal: AbortSignal) => Promise<T>,
+    operation: (client: InferenceClient, signal: AbortSignal) => Promise<T>,
     signal?: AbortSignal,
   ): Promise<T> {
     return this.scheduler.run(
       kind,
       async (scheduledSignal) => {
-        const client = await this.ensureReady(model, scheduledSignal);
+        const session = await this.ensureReady(model, scheduledSignal);
+        const client = session.client;
         const activeState = beginWorkerActivity(this.workerState, kind);
         const generatingResponse = activeState !== this.workerState;
         if (generatingResponse) {
@@ -100,7 +117,7 @@ export class WorkerManager implements vscode.Disposable {
             );
             try {
               await this.withLifecycle(async () => {
-                if (this.currentClient === client) {
+                if (this.session === session) {
                   await this.stopProcess();
                 }
               });
@@ -110,7 +127,7 @@ export class WorkerManager implements vscode.Disposable {
           }
           throw error;
         } finally {
-          if (generatingResponse && this.currentClient === client) {
+          if (generatingResponse && this.session === session) {
             const readyState = finishWorkerActivity(this.workerState);
             if (readyState !== this.workerState) {
               this.setState(readyState);
@@ -125,14 +142,15 @@ export class WorkerManager implements vscode.Disposable {
   private async ensureReady(
     model: InstalledModel,
     signal?: AbortSignal,
-  ): Promise<LlamaClient> {
+  ): Promise<RuntimeSession> {
     return this.withLifecycle(async () => {
       if (
-        this.currentClient &&
+        this.session &&
+        !this.session.exited &&
         this.currentModel?.id === model.id &&
         this.workerState.kind === 'ready'
       ) {
-        return this.currentClient;
+        return this.session;
       }
       if (this.startPromise && this.currentModel?.id === model.id) {
         return this.startPromise;
@@ -162,13 +180,18 @@ export class WorkerManager implements vscode.Disposable {
     await this.withLifecycle(() => this.stopProcess());
   }
 
+  /**
+   * Ends whichever runtime is resident.
+   *
+   * How a process is asked to stop belongs to its session: llama.cpp takes a
+   * signal, the Safetensors worker takes a closed stdin. Everything around
+   * that — the state transitions, the API key file, the generation counter —
+   * is the same either way and stays here.
+   */
   private async stopProcess(): Promise<void> {
     this.generation += 1;
-    const child = this.child;
-    const client = this.currentClient;
-    if (!child) {
-      this.currentClient = undefined;
-      await client?.dispose();
+    const session = this.session;
+    if (!session) {
       await this.removeApiKeyFile();
       if (this.workerState.kind !== 'stopped') {
         this.setState({ kind: 'stopped' });
@@ -177,20 +200,15 @@ export class WorkerManager implements vscode.Disposable {
     }
 
     this.requestedStop = true;
-    this.currentClient = undefined;
-    await client?.dispose();
+    this.session = undefined;
     const modelId = this.currentModel?.id ?? 'unknown';
-    this.setState({ kind: 'stopping', modelId });
-    child.kill('SIGTERM');
-    const exited = await waitForExit(child, STOP_TIMEOUT_MS);
-    if (!exited) {
-      this.logger.info('Local worker did not stop gracefully; forcing termination.');
-      child.kill('SIGKILL');
-      await waitForExit(child, 2_000);
+    this.setState({ kind: 'stopping', modelId, runtime: session.runtime });
+    try {
+      await session.stop();
+    } catch (error) {
+      this.logger.error('Failed to stop the local worker cleanly', error);
     }
-    if (this.child === child) {
-      this.child = undefined;
-    }
+    await session.client.dispose();
     await this.removeApiKeyFile();
     this.requestedStop = false;
     this.setState({ kind: 'stopped' });
@@ -202,10 +220,26 @@ export class WorkerManager implements vscode.Disposable {
     this.stateEmitter.dispose();
   }
 
+  /**
+   * Starts the engine this model needs.
+   *
+   * The routing decision is the model's own: a GGUF file goes to llama.cpp, a
+   * Safetensors checkpoint to the Python runtime. Nothing above this method
+   * knows which one ran.
+   */
   private async start(
     model: InstalledModel,
     signal?: AbortSignal,
-  ): Promise<LlamaClient> {
+  ): Promise<RuntimeSession> {
+    return runtimeForModel(model) === 'transformers'
+      ? await this.startTransformers(model, signal)
+      : await this.startLlama(model, signal);
+  }
+
+  private async startLlama(
+    model: InstalledModel,
+    signal?: AbortSignal,
+  ): Promise<RuntimeSession> {
     const generation = this.generation;
     for (;;) {
       throwIfAborted(signal);
@@ -222,10 +256,85 @@ export class WorkerManager implements vscode.Disposable {
     }
   }
 
+  /**
+   * Starts the Safetensors runtime.
+   *
+   * Short next to the llama.cpp path because the work it would otherwise do
+   * is not applicable: there is no bundle to verify, no loopback port to
+   * allocate, no API key to write, and no health poll, because the worker
+   * answers `model.load` only once the weights are actually resident.
+   */
+  private async startTransformers(
+    model: InstalledModel,
+    signal?: AbortSignal,
+  ): Promise<RuntimeSession> {
+    const startGeneration = this.generation;
+    const startedAt = Date.now();
+    this.requestedStop = false;
+    this.setState({ kind: 'starting', modelId: model.id, runtime: 'transformers' });
+    try {
+      throwIfAborted(signal);
+      const config = readConfig(this.context);
+      const session = await startTransformersSession({
+        model,
+        pythonPath: config.pythonPath,
+        runtimeDirectory: safetensorsRuntimeDirectory(this.context),
+        onLog: (message) => this.logWorkerOutput(message),
+        ...(signal ? { signal } : {}),
+      });
+      throwIfAborted(signal);
+      if (startGeneration !== this.generation || this.disposed) {
+        await session.stop();
+        await session.client.dispose();
+        throw new vscode.CancellationError();
+      }
+      this.adopt(session, model, { outOfMemory: false, canRetry: false });
+      this.logger.info(
+        `[Model Loading] Complete: ${model.name}; runtime=transformers; ` +
+        `startupElapsed=${Date.now() - startedAt} ms.`,
+      );
+      return session;
+    } catch (error) {
+      const cancelled = signal?.aborted || startGeneration !== this.generation || this.disposed;
+      if (cancelled) {
+        if (startGeneration === this.generation && !this.disposed) {
+          this.setState({ kind: 'stopped' });
+        }
+        throw new vscode.CancellationError();
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      this.setState({ kind: 'failed', modelId: model.id, runtime: 'transformers', message });
+      throw error;
+    }
+  }
+
+  /**
+   * Takes ownership of a started session and announces it as ready.
+   *
+   * Registering the exit handler here rather than in each backend keeps the
+   * crash-and-restart policy in one place, and `onExit` fires immediately for
+   * a process that died before this ran, so the window between starting and
+   * being watched cannot swallow a crash.
+   */
+  private adopt(
+    session: RuntimeSession,
+    model: InstalledModel,
+    memoryAttempt: MemoryAttempt,
+  ): void {
+    this.session = session;
+    this.setState({
+      kind: 'ready',
+      modelId: model.id,
+      runtime: session.runtime,
+      ...(session.port === undefined ? {} : { port: session.port }),
+    });
+    session.onExit((exit) => void this.handleExit(session, exit, memoryAttempt));
+  }
+
   private async startAttempt(
     model: InstalledModel,
     signal?: AbortSignal,
-  ): Promise<LlamaClient> {
+  ): Promise<RuntimeSession> {
     const startGeneration = this.generation;
     const startedAt = Date.now();
     let child: ChildProcessWithoutNullStreams | undefined;
@@ -233,7 +342,7 @@ export class WorkerManager implements vscode.Disposable {
     let closed: Promise<void> | undefined;
     const memoryAttempt: MemoryAttempt = { outOfMemory: false, canRetry: false };
     this.requestedStop = false;
-    this.setState({ kind: 'starting', modelId: model.id });
+    this.setState({ kind: 'starting', modelId: model.id, runtime: 'llama-cpp' });
     try {
       throwIfAborted(signal);
       const config = readConfig(this.context);
@@ -321,7 +430,6 @@ export class WorkerManager implements vscode.Disposable {
         stdio: ['pipe', 'pipe', 'pipe'],
       });
       child.stdin.end();
-      this.child = child;
       this.logger.info(
         `[Model Loading] Local worker spawned: pid=${child.pid ?? 'unknown'} backend=${backend}. Waiting for health.`,
       );
@@ -357,10 +465,11 @@ export class WorkerManager implements vscode.Disposable {
           reject(error);
         });
       });
+      const exits = exitNotifier();
       closed = new Promise<void>((resolve) => {
         child?.once('close', (code, exitSignal) => {
           resolve();
-          void this.handleExit(child as ChildProcessWithoutNullStreams, code, exitSignal, memoryAttempt);
+          exits.notify({ code, signal: exitSignal });
         });
       });
 
@@ -378,20 +487,20 @@ export class WorkerManager implements vscode.Disposable {
         throw new vscode.CancellationError();
       }
 
-      this.currentClient = client;
-      this.setState({ kind: 'ready', modelId: model.id, port });
+      const session = llamaSession(
+        child, client, port, exits, (message: string) => this.logger.info(message),
+      );
+      this.adopt(session, model, memoryAttempt);
       this.logger.info(
         `[Model Loading] Complete: ${model.name}; backend=${backend}; ` +
         `startupElapsed=${Date.now() - startedAt} ms.`,
       );
-      return client;
+      return session;
     } catch (error) {
-      if (child && this.child === child) {
-        this.child = undefined;
+      if (child && this.session?.client !== client) {
         child.kill('SIGKILL');
       }
       const processClosed = closed ? await waitForClose(closed, STOP_TIMEOUT_MS) : true;
-      this.currentClient = undefined;
       await client?.dispose();
       await this.removeApiKeyFile();
       const cancelled = signal?.aborted || startGeneration !== this.generation || this.disposed;
@@ -409,11 +518,11 @@ export class WorkerManager implements vscode.Disposable {
           ? 'SYCL device memory exhausted after bounded memory fitting. The model is not marked invalid. '
             + 'Reduce context or batch size, free memory, or explicitly select CPU acceleration.'
           : 'SYCL device memory exhausted and worker termination was not confirmed; automatic retry stopped.';
-        this.setState({ kind: 'failed', modelId: model.id, message });
+        this.setState({ kind: 'failed', modelId: model.id, runtime: 'llama-cpp', message });
         throw new Error(message, { cause: error });
       }
       const message = error instanceof Error ? error.message : String(error);
-      this.setState({ kind: 'failed', modelId: model.id, message });
+      this.setState({ kind: 'failed', modelId: model.id, runtime: 'llama-cpp', message });
       throw error;
     }
   }
@@ -442,22 +551,27 @@ export class WorkerManager implements vscode.Disposable {
     );
   }
 
+  /**
+   * Recovers from a runtime that went away on its own.
+   *
+   * Identical for both engines, which is why it takes a session rather than a
+   * child process: what differs between them is how a process is started and
+   * stopped, not what an unexpected exit means.
+   */
   private async handleExit(
-    child: ChildProcessWithoutNullStreams,
-    code: number | null,
-    signal: NodeJS.Signals | null,
+    session: RuntimeSession,
+    exit: RuntimeExit,
     memoryAttempt: MemoryAttempt,
   ): Promise<void> {
-    if (this.child !== child || this.workerState.kind === 'starting') {
+    if (this.session !== session || this.workerState.kind === 'starting') {
       return;
     }
     const exitGeneration = this.generation;
     const wasReady = this.workerState.kind === 'ready';
     const wasRequestedStop = this.requestedStop;
-    const client = this.currentClient;
-    this.child = undefined;
-    this.currentClient = undefined;
-    await client?.dispose();
+    const runtime = session.runtime;
+    this.session = undefined;
+    await session.client.dispose();
     await this.removeApiKeyFile();
     if (wasRequestedStop || this.disposed) {
       return;
@@ -469,13 +583,14 @@ export class WorkerManager implements vscode.Disposable {
         + (memoryAttempt.canRetry
           ? 'The next load will refit GPU layers with more execution headroom.'
           : 'Automatic memory retries exhausted; reduce context or batch size, free memory, or select CPU acceleration.')
-      : `Local worker exited unexpectedly (code ${code ?? 'none'}, signal ${signal ?? 'none'}).`;
+      : `The ${runtimeDisplayName(runtime)} worker exited unexpectedly `
+        + `(code ${exit.code ?? 'none'}, signal ${exit.signal ?? 'none'}).`;
     this.logger.error(message, undefined, true);
     if (!model) {
-      this.setState({ kind: 'failed', message });
+      this.setState({ kind: 'failed', runtime, message });
       return;
     }
-    this.setState({ kind: 'failed', modelId: model.id, message });
+    this.setState({ kind: 'failed', modelId: model.id, runtime, message });
     if (!wasReady || (memoryAttempt.outOfMemory && !memoryAttempt.canRetry)) {
       return;
     }
@@ -483,7 +598,10 @@ export class WorkerManager implements vscode.Disposable {
     const cutoff = Date.now() - RESTART_WINDOW_MS;
     this.restartTimes = this.restartTimes.filter((time) => time >= cutoff);
     if (this.restartTimes.length >= MAX_RESTARTS) {
-      this.setState({ kind: 'failed', modelId: model.id, message: `${message} Restart limit reached.` });
+      this.setState({
+        kind: 'failed', modelId: model.id, runtime,
+        message: `${message} Restart limit reached.`,
+      });
       return;
     }
     this.restartTimes.push(Date.now());
@@ -566,6 +684,53 @@ export class WorkerManager implements vscode.Disposable {
       release?.();
     }
   }
+}
+
+/**
+ * Wraps a healthy llama-server child as a session.
+ *
+ * Stopping is a signal escalation rather than a protocol message: llama-server
+ * has no shutdown endpoint, so SIGTERM with a bounded SIGKILL behind it is the
+ * only way to end it.
+ */
+function llamaSession(
+  child: ChildProcessWithoutNullStreams,
+  client: LlamaClient,
+  port: number,
+  exits: ExitNotifier,
+  onInfo: (message: string) => void,
+): RuntimeSession {
+  return {
+    runtime: 'llama-cpp',
+    client,
+    port,
+    get exited() {
+      return exits.exited;
+    },
+    onExit: exits.onExit,
+    stop: async () => {
+      if (child.exitCode !== null || child.signalCode !== null) {
+        return;
+      }
+      child.kill('SIGTERM');
+      if (!await waitForExit(child, STOP_TIMEOUT_MS)) {
+        onInfo('Local worker did not stop gracefully; forcing termination.');
+        child.kill('SIGKILL');
+        await waitForExit(child, 2_000);
+      }
+    },
+  };
+}
+
+/**
+ * Where the Safetensors runtime package lives inside the installed extension.
+ *
+ * Under `resources/` because `.vscodeignore` excludes `src/` and `scripts/`
+ * from the VSIX; anything the runtime needs at execution time has to ship
+ * from a directory that survives packaging.
+ */
+function safetensorsRuntimeDirectory(context: vscode.ExtensionContext): string {
+  return `${context.extensionUri.fsPath}/resources/runtime`;
 }
 
 export function buildWorkerArguments(

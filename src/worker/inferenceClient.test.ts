@@ -13,6 +13,10 @@ function clientWith(overrides: Partial<InferenceClient>): InferenceClient {
     supports: { infill: false, constrainedDecoding: false },
     chat: async () => ({ inputTokens: 0, textCharacters: 0, toolCallCount: 0 }),
     tokenize: async () => 0,
+    countChatInputTokens: async () => 0,
+    getNativeToolCallSupport: () => 'unknown' as const,
+    setNativeToolCallSupport: () => undefined,
+    dispose: async () => undefined,
     getModelProfile: async () => ({
       loadedContextSize: 4096,
       hasChatTemplate: true,

@@ -10,11 +10,13 @@
  */
 
 import type {
+  ChatMessage,
   ChatRequest,
   ChatStreamEvent,
+  ChatTool,
   InfillRequest,
 } from '../domain.ts';
-import type { ChatResult } from './llamaClient.ts';
+import type { ChatResult, NativeToolCallSupport } from './llamaClient.ts';
 import type { WorkerModelProfile } from './runtimeProfile.ts';
 
 export interface InferenceCapabilities {
@@ -41,7 +43,32 @@ export interface InferenceClient {
   /** Token count from the model's own tokenizer, never an estimate. */
   tokenize(content: string, signal?: AbortSignal): Promise<number>;
 
+  /**
+   * Input size for a conversation, counted through the chat template.
+   *
+   * Concatenating the messages would undercount: the role markers and the
+   * generation prompt the template adds are tokens the model still has to fit.
+   */
+  countChatInputTokens(
+    messages: ChatMessage[],
+    tools?: ChatTool[],
+    toolChoice?: ChatRequest['toolChoice'],
+    signal?: AbortSignal,
+  ): Promise<number>;
+
   getModelProfile(signal?: AbortSignal): Promise<WorkerModelProfile>;
+
+  /**
+   * Whether this model emits tool calls natively, as learned from its replies.
+   *
+   * Cached on the client because the answer costs a failed request to
+   * discover, and the client lives exactly as long as the loaded model does.
+   */
+  getNativeToolCallSupport(): NativeToolCallSupport;
+  setNativeToolCallSupport(support: NativeToolCallSupport): void;
+
+  /** Releases client-side resources. Does not stop the worker process. */
+  dispose(): Promise<void>;
 
   /** Present only when `supports.infill` is true. */
   infill?(request: InfillRequest, signal?: AbortSignal): Promise<string>;
