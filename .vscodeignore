@@ -17,3 +17,6 @@ package-lock.json
 .sf
 **/__pycache__/**
 resources/runtime/tests/**
+**/.venv/**
+**/venv/**
+**/*.partial

@@ -292,10 +292,10 @@ export function sourceUrlForRegistry(value: string): string {
   }
 }
 
-export function safeModelFilename(value: string): string {
+export function safeModelFilename(value: string, allowedExtensions: readonly string[] = ['.gguf']): string {
   const filename = path.basename(value).replace(/[^a-zA-Z0-9._-]+/g, '-');
-  if (!filename.toLowerCase().endsWith('.gguf')) {
-    throw new Error('The selected model must be a .gguf file.');
+  if (!allowedExtensions.some((extension) => filename.toLowerCase().endsWith(extension))) {
+    throw new Error(`The selected model must be a ${allowedExtensions.join(' or ')} file.`);
   }
   return filename;
 }

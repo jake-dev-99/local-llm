@@ -50,6 +50,10 @@
         "title": "Local LLM: Import GGUF Model"
       },
       {
+        "command": "localLlm.importSafetensorsFile",
+        "title": "Local LLM: Import Single Safetensors File"
+      },
+      {
         "command": "localLlm.importSafetensorsDirectory",
         "title": "Local LLM: Import Safetensors Checkpoint"
       },

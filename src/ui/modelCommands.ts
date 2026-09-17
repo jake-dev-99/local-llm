@@ -1,3 +1,5 @@
+import { rm, stat } from 'node:fs/promises';
+import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { readConfig, setDefaultModelId } from '../config.js';
 import type {
@@ -46,6 +48,7 @@ export function registerModelCommands(services: CommandServices): vscode.Disposa
     command('localLlm.manageModels', () => manageModels(services)),
     command('localLlm.importModel', () => importModel(services)),
     command('localLlm.importSafetensorsDirectory', () => importSafetensorsDirectory(services)),
+    command('localLlm.importSafetensorsFile', () => importSafetensorsFile(services)),
     command('localLlm.downloadHuggingFace', () => downloadHuggingFace(services)),
     command('localLlm.downloadUrl', () => downloadUrl(services)),
     command('localLlm.removeModel', () => removeModel(services)),
@@ -86,6 +89,11 @@ async function manageModels(services: CommandServices): Promise<void> {
         label: '$(file-add) Import Safetensors checkpoint',
         description: 'Register a local folder in place, without copying',
         command: 'localLlm.importSafetensorsDirectory',
+      },
+      {
+        label: '$(file-add) Import single .safetensors file',
+        description: 'Copy one weights file into managed storage with its config',
+        command: 'localLlm.importSafetensorsFile',
       },
       ...(installed.length
         ? [
@@ -199,6 +207,69 @@ async function importSafetensorsDirectory(services: CommandServices): Promise<vo
     }
   }
   const model = await services.models.importSafetensorsDirectory(uri);
+  if (warnings.advisory) {
+    void vscode.window.showInformationMessage(warnings.advisory);
+  }
+  await finishInstall(services, model);
+}
+
+async function importSafetensorsFile(services: CommandServices): Promise<void> {
+  const selection = await vscode.window.showOpenDialog({
+    title: 'Import Safetensors Weights File',
+    canSelectMany: false,
+    canSelectFiles: true,
+    canSelectFolders: false,
+    filters: { 'Safetensors weights': ['safetensors'] },
+  });
+  const uri = selection?.[0];
+  if (!uri) {
+    return;
+  }
+  // Siblings next to the file avoid a repository round trip; ask up front so
+  // a missing config fails before gigabytes are copied.
+  let repository: string | undefined;
+  try {
+    await stat(path.join(path.dirname(uri.fsPath), 'config.json'));
+  } catch {
+    repository = await vscode.window.showInputBox({
+      title: 'Model Repository for Config',
+      prompt: 'No config.json sits next to this file. Give the Hugging Face repository to fetch it (and the tokenizer) from.',
+      placeHolder: 'owner/model-name',
+      ignoreFocusOut: true,
+      validateInput: (value) =>
+        /^[\w.-]+\/[\w.-]+$/.test(value.trim())
+          ? undefined
+          : 'Enter a repository as owner/name.',
+    });
+    if (!repository) {
+      return;
+    }
+    repository = repository.trim();
+  }
+  const staged = await services.models.stageSafetensorsFile(
+    uri,
+    repository ? { repository } : {},
+  );
+  const cudaAvailable = await isCudaFlavor(services);
+  const warnings = checkpointWarnings(
+    {
+      ...(staged.checkpoint.quantization ? { quantization: staged.checkpoint.quantization } : {}),
+      ...(staged.checkpoint.customCodeRequired ? { customCodeRequired: true as const } : {}),
+    },
+    { cudaAvailable },
+  );
+  if (warnings.consent) {
+    const answer = await vscode.window.showWarningMessage(
+      warnings.consent,
+      { modal: true },
+      'Register Anyway',
+    );
+    if (answer !== 'Register Anyway') {
+      await rm(staged.directory, { recursive: true, force: true });
+      return;
+    }
+  }
+  const model = await services.models.registerStagedSafetensorsDirectory(staged.directory);
   if (warnings.advisory) {
     void vscode.window.showInformationMessage(warnings.advisory);
   }

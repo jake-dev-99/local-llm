@@ -1,6 +1,6 @@
 
 import { createHash, randomUUID } from 'node:crypto';
-import { open, rm, stat } from 'node:fs/promises';
+import { copyFile, mkdir, open, rm, stat } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { readConfig } from '../config.js';
@@ -12,6 +12,7 @@ import { isExtensionOwned } from './modelIdentity.ts';
 import {
   isSafetensorsDirectory,
   readSafetensorsCheckpoint,
+  type SafetensorsCheckpoint,
 } from './safetensorsDirectory.ts';
 import { ModelRegistry } from './modelRegistry.js';
 import {
@@ -25,6 +26,17 @@ import {
 } from './modelSources.js';
 
 const HF_TOKEN_SECRET = 'localLlm.huggingFaceToken';
+
+/**
+ * Files that turn bare weights into a loadable checkpoint, in fetch order.
+ * config.json is required; the rest are best-effort.
+ */
+const SIDECAR_FILES = [
+  'config.json',
+  'tokenizer.json',
+  'tokenizer_config.json',
+  'generation_config.json',
+];
 
 export class ModelManager {
   constructor(
@@ -168,6 +180,98 @@ export class ModelManager {
       directory,
       (warning) => this.logger.info(warning),
     );
+    return this.registerCheckpointDirectory(directory, checkpoint, {
+      managed: false,
+      source: 'import',
+      sourceUrl: uri.toString(),
+    });
+  }
+
+  /**
+   * Stages a single `.safetensors` file as a managed checkpoint directory.
+   *
+   * A bare weights file cannot load: Transformers needs its config and
+   * tokenizer. Siblings next to the file win; otherwise they are fetched
+   * from the given Hugging Face repository (config required, tokenizer
+   * best-effort). Nothing is registered — the caller inspects the returned
+   * checkpoint (warnings, consent) and registers explicitly.
+   */
+  async stageSafetensorsFile(
+    fileUri: vscode.Uri,
+    options: { repository?: string } = {},
+  ): Promise<{ directory: string; checkpoint: SafetensorsCheckpoint }> {
+    const sourcePath = fileUri.fsPath;
+    if (!sourcePath.toLowerCase().endsWith('.safetensors')) {
+      throw new Error('Select a .safetensors weights file.');
+    }
+    const filename = safeModelFilename(path.basename(sourcePath), ['.safetensors']);
+    const stem = filename.replace(/\.safetensors$/i, '');
+    const directory = path.join(readConfig(this.context).modelDirectory, `${randomUUID()}-${stem}`);
+    await mkdir(directory, { recursive: true });
+    try {
+      await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: `Importing ${filename}`,
+          cancellable: true,
+        },
+        (progress, token) => copyLocalModel(sourcePath, path.join(directory, filename), progress, token),
+      );
+      const sourceDir = path.dirname(sourcePath);
+      for (const sidecar of SIDECAR_FILES) {
+        try {
+          await stat(path.join(sourceDir, sidecar));
+          await copyFile(path.join(sourceDir, sidecar), path.join(directory, sidecar));
+        } catch {
+          // Absent siblings are normal for a lone download; HF or error below.
+        }
+      }
+      try {
+        await stat(path.join(directory, 'config.json'));
+      } catch {
+        await this.fetchCheckpointSidecars(directory, options.repository);
+      }
+      if (!(await isSafetensorsDirectory(directory))) {
+        throw new Error(
+          'That file cannot become a checkpoint here: config.json is missing and ' +
+          'no Hugging Face repository was given to fetch it from.',
+        );
+      }
+      const checkpoint = await readSafetensorsCheckpoint(
+        directory,
+        (warning) => this.logger.info(warning),
+      );
+      return { directory, checkpoint };
+    } catch (error) {
+      await rm(directory, { recursive: true, force: true });
+      throw error;
+    }
+  }
+
+  /**
+   * Registers a staged directory as extension-owned. Staged bytes were put
+   * on disk by `stageSafetensorsFile`, so unlike an in-place import the
+   * extension owns and may delete them.
+   */
+  async registerStagedSafetensorsDirectory(
+    directory: string,
+    source: ModelSource = 'import',
+  ): Promise<InstalledModel> {
+    const checkpoint = await readSafetensorsCheckpoint(
+      directory,
+      (warning) => this.logger.info(warning),
+    );
+    return this.registerCheckpointDirectory(directory, checkpoint, {
+      managed: true,
+      source,
+    });
+  }
+
+  private async registerCheckpointDirectory(
+    directory: string,
+    checkpoint: SafetensorsCheckpoint,
+    options: { managed: boolean; source: ModelSource; sourceUrl?: string },
+  ): Promise<InstalledModel> {
     const name = friendlyName(path.basename(directory));
     const model: InstalledModel = {
       id: `${slug(name)}-${checkpoint.identity.digest.slice(0, 12)}`,
@@ -175,15 +279,15 @@ export class ModelManager {
       filePath: directory,
       fileSize: checkpoint.identity.totalBytes,
       sha256: checkpoint.identity.digest,
-      source: 'import',
-      sourceUrl: uri.toString(),
+      source: options.source,
+      ...(options.sourceUrl ? { sourceUrl: options.sourceUrl } : {}),
       filename: path.basename(directory),
       installedAt: new Date().toISOString(),
       format: 'safetensors',
       runtime: 'transformers',
-      managed: false,
+      managed: options.managed,
       files: checkpoint.identity.files,
-      capabilities: { toolCalling: 'unverified', fillInMiddle: 'unverified' },
+      capabilities: { toolCalling: 'unverified', fillInMiddle: 'unsupported' },
       ...(checkpoint.quantization ? { quantization: checkpoint.quantization } : {}),
       ...(checkpoint.customCodeRequired ? { customCodeRequired: true } : {}),
       ...(checkpoint.trainedContextLength
@@ -193,9 +297,42 @@ export class ModelManager {
     await this.registry.upsert(model);
     this.logger.info(
       `Registered Safetensors checkpoint: ${model.name} ` +
-      `(${checkpoint.identity.files.length} files, ${model.fileSize} bytes, in place).`,
+      `(${checkpoint.identity.files.length} files, ${model.fileSize} bytes` +
+      `${options.managed ? '' : ', in place'}).`,
     );
     return model;
+  }
+
+  /** Fetches a checkpoint's sidecars; config.json is required, the rest best-effort. */
+  private async fetchCheckpointSidecars(directory: string, repository: string | undefined): Promise<void> {
+    if (!repository) {
+      return;
+    }
+    const token = await this.context.secrets.get(HF_TOKEN_SECRET);
+    const revision = 'main';
+    for (const sidecar of SIDECAR_FILES) {
+      const url = huggingFaceDownloadUrl(repository, revision, sidecar);
+      try {
+        await vscode.window.withProgress(
+          {
+            location: vscode.ProgressLocation.Notification,
+            title: `Downloading ${sidecar}`,
+            cancellable: true,
+          },
+          (progress, cancellation) => downloadModel(
+            url, path.join(directory, sidecar), undefined, token, progress, cancellation,
+          ),
+        );
+      } catch (error) {
+        if (sidecar === 'config.json') {
+          throw new Error(
+            `Could not fetch config.json from ${repository}: ` +
+            `${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+        this.logger.info(`Optional ${sidecar} not fetched from ${repository}; continuing.`);
+      }
+    }
   }
 
   async remove(model: InstalledModel): Promise<void> {

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import test from 'node:test';
@@ -13,6 +13,11 @@ import type { InstalledModel } from '../domain.ts';
  */
 interface TestModelManager {
   importSafetensorsDirectory(uri: { fsPath: string; toString(): string }): Promise<InstalledModel>;
+  stageSafetensorsFile(
+    uri: { fsPath: string; toString(): string },
+    options?: { repository?: string },
+  ): Promise<{ directory: string; checkpoint: { architecture?: string } }>;
+  registerStagedSafetensorsDirectory(directory: string): Promise<InstalledModel>;
   remove(model: InstalledModel): Promise<void>;
 }
 
@@ -140,6 +145,70 @@ test('registers a checkpoint in place without copying it', async () => {
     assert.equal(registry.models.length, 1);
   } finally {
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('stages a lone weights file with sibling sidecars, then registers it owned', async () => {
+  const ModelManager = await loadModelManager();
+  const registry = fakeRegistry();
+  const source = mkdtempSync(path.join(tmpdir(), 'local-llm-lone-'));
+  const storage = mkdtempSync(path.join(tmpdir(), 'local-llm-storage-'));
+  writeFileSync(
+    path.join(source, 'gemma4.safetensors'),
+    shard('{"w":{"dtype":"BF16","shape":[8],"data_offsets":[0,16]}}', 128),
+  );
+  writeFileSync(path.join(source, 'config.json'), JSON.stringify({
+    architectures: ['GemmaForCausalLM'],
+    max_position_embeddings: 32768,
+  }));
+  writeFileSync(path.join(source, 'tokenizer.json'), '{}');
+  try {
+    const manager = new ModelManager(
+      { ...context, globalStorageUri: uriFor(storage) },
+      registry,
+      logger,
+    );
+    const staged = await manager.stageSafetensorsFile(uriFor(path.join(source, 'gemma4.safetensors')));
+    assert.ok(staged.directory.startsWith(path.join(storage, 'models')), 'staged into managed storage');
+    assert.equal(staged.checkpoint.architecture, 'GemmaForCausalLM');
+    assert.ok(existsSync(path.join(staged.directory, 'config.json')), 'sibling config came along');
+
+    const model = await manager.registerStagedSafetensorsDirectory(staged.directory);
+    assert.equal(model.format, 'safetensors');
+    assert.equal(model.managed, true, 'staged bytes are extension-owned');
+    assert.equal(model.filePath, staged.directory);
+
+    await manager.remove(model);
+    assert.ok(!existsSync(staged.directory), 'owned bytes are deleted');
+    assert.ok(existsSync(path.join(source, 'gemma4.safetensors')), 'the original is untouched');
+  } finally {
+    rmSync(source, { recursive: true, force: true });
+    rmSync(storage, { recursive: true, force: true });
+  }
+});
+
+test('a lone file with no config and no repository fails without littering', async () => {
+  const ModelManager = await loadModelManager();
+  const source = mkdtempSync(path.join(tmpdir(), 'local-llm-bare-'));
+  const storage = mkdtempSync(path.join(tmpdir(), 'local-llm-storage-'));
+  writeFileSync(
+    path.join(source, 'bare.safetensors'),
+    shard('{"w":{"dtype":"BF16","shape":[8],"data_offsets":[0,16]}}', 128),
+  );
+  try {
+    const manager = new ModelManager(
+      { ...context, globalStorageUri: uriFor(storage) },
+      fakeRegistry(),
+      logger,
+    );
+    await assert.rejects(
+      manager.stageSafetensorsFile(uriFor(path.join(source, 'bare.safetensors'))),
+      /config\.json is missing/,
+    );
+    assert.deepEqual(readdirSync(path.join(storage, 'models')), [], 'no orphaned stage directory');
+  } finally {
+    rmSync(source, { recursive: true, force: true });
+    rmSync(storage, { recursive: true, force: true });
   }
 });
 
