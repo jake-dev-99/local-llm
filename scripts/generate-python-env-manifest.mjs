@@ -180,7 +180,7 @@ function pipDownload(specs, { platform, pythonVersion, dest, extraIndexUrls = []
         '-m', 'pip',
         'download', ...specs,
         '--platform', platform,
-        '--python-version', pythonVersion.replace('.', ''),
+        '--python-version', pythonVersion,
         '--implementation', 'cp',
         '--abi', `cp${pythonVersion.replace('.', '')}`,
         '--only-binary', ':all:',
