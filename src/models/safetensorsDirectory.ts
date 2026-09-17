@@ -131,6 +131,60 @@ export async function fingerprintCheckpoint(directory: string) {
  * extension can show a model's shape before the Python runtime is provisioned
  * or on a machine where it is broken.
  */
+export interface CheckpointValidation {
+  ok: boolean;
+  /** Fatal problems; the checkpoint cannot load as it stands. */
+  errors: string[];
+  /** Non-fatal concerns worth showing before first use. */
+  warnings: string[];
+}
+
+/**
+ * Static validation: everything checkable without the Python runtime.
+ *
+ * Runs automatically after import. Loading itself stays the explicit
+ * Validate command — it provisions gigabytes on first use, so it must
+ * never run uninvited.
+ */
+export async function validateCheckpointStatic(directory: string): Promise<CheckpointValidation> {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  let entries: string[];
+  try {
+    entries = await readdir(directory);
+  } catch (error) {
+    return { ok: false, errors: [`Cannot read ${directory}: ${describeError(error)}.`], warnings };
+  }
+  const names = new Set(entries.map((entry) => entry.toLowerCase()));
+  const config = await readJsonFile(path.join(directory, 'config.json'));
+  if (!names.has('config.json') || config === undefined) {
+    errors.push('config.json is missing or unreadable — Transformers cannot load these weights without it.');
+  }
+  const weights = entries.filter((entry) => entry.toLowerCase().endsWith('.safetensors'));
+  if (weights.length === 0) {
+    errors.push('No .safetensors weights files found.');
+  } else {
+    let readable = 0;
+    for (const file of weights) {
+      if ((await readSafetensorsHeader(path.join(directory, file))) !== undefined) {
+        readable += 1;
+      }
+    }
+    if (readable === 0) {
+      errors.push('No weights file has a readable header — the files may be truncated or corrupt.');
+    } else if (readable < weights.length) {
+      warnings.push(`${weights.length - readable} of ${weights.length} weights files have unreadable headers and contribute size only.`);
+    }
+  }
+  if (!names.has('tokenizer.json') && !names.has('tokenizer_config.json')) {
+    warnings.push('No tokenizer files — chat will fail at load with missing_tokenizer until they are added.');
+  }
+  if (config !== undefined && architectureOf(config) === undefined) {
+    warnings.push('config.json names no recognized architecture — Transformers decides at load whether it runs.');
+  }
+  return { ok: errors.length === 0, errors, warnings };
+}
+
 export async function readSafetensorsCheckpoint(
   directory: string,
   onWarning?: (message: string) => void,

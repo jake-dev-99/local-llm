@@ -15,7 +15,7 @@ interface TestModelManager {
   importSafetensorsDirectory(uri: { fsPath: string; toString(): string }): Promise<InstalledModel>;
   stageSafetensorsFile(
     uri: { fsPath: string; toString(): string },
-    options?: { repository?: string },
+    options?: { repository?: string; configFile?: string; configJson?: string },
   ): Promise<{ directory: string; checkpoint: { architecture?: string } }>;
   registerStagedSafetensorsDirectory(directory: string): Promise<InstalledModel>;
   remove(model: InstalledModel): Promise<void>;
@@ -204,6 +204,69 @@ test('a lone file with no config and no repository fails without littering', asy
     await assert.rejects(
       manager.stageSafetensorsFile(uriFor(path.join(source, 'bare.safetensors'))),
       /config\.json is missing/,
+    );
+    assert.deepEqual(readdirSync(path.join(storage, 'models')), [], 'no orphaned stage directory');
+  } finally {
+    rmSync(source, { recursive: true, force: true });
+    rmSync(storage, { recursive: true, force: true });
+  }
+});
+
+test('a lone file takes an explicit config file or pasted JSON', async () => {
+  const ModelManager = await loadModelManager();
+  const config = JSON.stringify({ architectures: ['GemmaForCausalLM'] });
+  for (const variant of ['file', 'pasted'] as const) {
+    const source = mkdtempSync(path.join(tmpdir(), 'local-llm-lone-'));
+    const storage = mkdtempSync(path.join(tmpdir(), 'local-llm-storage-'));
+    writeFileSync(
+      path.join(source, 'bare.safetensors'),
+      shard('{"w":{"dtype":"BF16","shape":[8],"data_offsets":[0,16]}}', 128),
+    );
+    try {
+      const manager = new ModelManager(
+        { ...context, globalStorageUri: uriFor(storage) },
+        fakeRegistry(),
+        logger,
+      );
+      const options = variant === 'file'
+        ? (() => {
+          writeFileSync(path.join(source, 'mine.json'), config);
+          return { configFile: path.join(source, 'mine.json') };
+        })()
+        : { configJson: config };
+      const staged = await manager.stageSafetensorsFile(
+        uriFor(path.join(source, 'bare.safetensors')),
+        options,
+      );
+      assert.equal(staged.checkpoint.architecture, 'GemmaForCausalLM');
+      assert.ok(existsSync(path.join(staged.directory, 'config.json')));
+    } finally {
+      rmSync(source, { recursive: true, force: true });
+      rmSync(storage, { recursive: true, force: true });
+    }
+  }
+});
+
+test('pasted garbage is refused without littering', async () => {
+  const ModelManager = await loadModelManager();
+  const source = mkdtempSync(path.join(tmpdir(), 'local-llm-lone-'));
+  const storage = mkdtempSync(path.join(tmpdir(), 'local-llm-storage-'));
+  writeFileSync(
+    path.join(source, 'bare.safetensors'),
+    shard('{"w":{"dtype":"BF16","shape":[8],"data_offsets":[0,16]}}', 128),
+  );
+  try {
+    const manager = new ModelManager(
+      { ...context, globalStorageUri: uriFor(storage) },
+      fakeRegistry(),
+      logger,
+    );
+    await assert.rejects(
+      manager.stageSafetensorsFile(
+        uriFor(path.join(source, 'bare.safetensors')),
+        { configJson: 'not json at all' },
+      ),
+      /not valid JSON/,
     );
     assert.deepEqual(readdirSync(path.join(storage, 'models')), [], 'no orphaned stage directory');
   } finally {

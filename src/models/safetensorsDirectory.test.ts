@@ -10,6 +10,7 @@ import {
   MAX_SAFETENSORS_HEADER_BYTES,
   readSafetensorsCheckpoint,
   readSafetensorsHeader,
+  validateCheckpointStatic,
 } from './safetensorsDirectory.ts';
 
 function shard(header: string, payloadBytes = 32): Buffer {
@@ -67,6 +68,54 @@ test('a truncated or absurd header is reported as absent, not thrown', async () 
     assert.equal(await readSafetensorsHeader(path.join(directory, 'missing.safetensors')), undefined);
   } finally {
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('static validation passes a complete checkpoint', async () => {
+  const directory = checkpoint({ architectures: ['LlamaForCausalLM'] });
+  writeFileSync(path.join(directory, 'tokenizer.json'), '{}');
+  try {
+    const result = await validateCheckpointStatic(directory);
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.errors, []);
+    assert.deepEqual(result.warnings, []);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('static validation warns on missing tokenizer and unknown arch', async () => {
+  const directory = checkpoint();
+  try {
+    const result = await validateCheckpointStatic(directory);
+    assert.equal(result.ok, true);
+    assert.match(result.warnings.join(' '), /tokenizer/);
+    assert.match(result.warnings.join(' '), /architecture/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('static validation fails corrupt weights and missing config', async () => {
+  const corrupt = checkpoint();
+  writeFileSync(path.join(corrupt, 'model.safetensors'), Buffer.from('garbage'));
+  const noconfig = mkdtempSync(path.join(tmpdir(), 'local-llm-nocfg-'));
+  writeFileSync(
+    path.join(noconfig, 'model.safetensors'),
+    shard('{"w":{"dtype":"BF16","shape":[16],"data_offsets":[0,32]}}'),
+  );
+  try {
+    const badHeaders = await validateCheckpointStatic(corrupt);
+    assert.equal(badHeaders.ok, false);
+    assert.match(badHeaders.errors.join(' '), /header/);
+    const missing = await validateCheckpointStatic(noconfig);
+    assert.equal(missing.ok, false);
+    assert.match(missing.errors.join(' '), /config\.json/);
+    const gone = await validateCheckpointStatic('/definitely/not/here');
+    assert.equal(gone.ok, false);
+  } finally {
+    rmSync(corrupt, { recursive: true, force: true });
+    rmSync(noconfig, { recursive: true, force: true });
   }
 });
 

@@ -23,6 +23,7 @@ import { checkpointWarnings } from './modelSummary.ts';
 import {
   isSafetensorsDirectory,
   readSafetensorsCheckpoint,
+  validateCheckpointStatic,
 } from '../models/safetensorsDirectory.js';
 import { resolveEnvFlavor, resolveEnvTarget } from '../worker/pythonEnvironment.js';
 import { isFatalWorkerError } from '../worker/workerError.js';
@@ -225,31 +226,14 @@ async function importSafetensorsFile(services: CommandServices): Promise<void> {
   if (!uri) {
     return;
   }
-  // Siblings next to the file avoid a repository round trip; ask up front so
-  // a missing config fails before gigabytes are copied.
-  let repository: string | undefined;
-  try {
-    await stat(path.join(path.dirname(uri.fsPath), 'config.json'));
-  } catch {
-    repository = await vscode.window.showInputBox({
-      title: 'Model Repository for Config',
-      prompt: 'No config.json sits next to this file. Give the Hugging Face repository to fetch it (and the tokenizer) from.',
-      placeHolder: 'owner/model-name',
-      ignoreFocusOut: true,
-      validateInput: (value) =>
-        /^[\w.-]+\/[\w.-]+$/.test(value.trim())
-          ? undefined
-          : 'Enter a repository as owner/name.',
-    });
-    if (!repository) {
-      return;
-    }
-    repository = repository.trim();
+  // Siblings next to the file avoid all of this; otherwise the user picks
+  // how config.json arrives, up front, so a missing config fails before
+  // gigabytes are copied.
+  const stageOptions = await configSourceForLoneFile(uri.fsPath);
+  if (!stageOptions) {
+    return;
   }
-  const staged = await services.models.stageSafetensorsFile(
-    uri,
-    repository ? { repository } : {},
-  );
+  const staged = await services.models.stageSafetensorsFile(uri, stageOptions);
   const cudaAvailable = await isCudaFlavor(services);
   const warnings = checkpointWarnings(
     {
@@ -274,6 +258,82 @@ async function importSafetensorsFile(services: CommandServices): Promise<void> {
     void vscode.window.showInformationMessage(warnings.advisory);
   }
   await finishInstall(services, model);
+}
+
+/**
+ * How config.json arrives for a lone weights file. Siblings win silently;
+ * otherwise the user picks: point at a file, paste the contents, or fetch
+ * from Hugging Face. Returns undefined when the user bails out.
+ */
+async function configSourceForLoneFile(
+  weightsPath: string,
+): Promise<{ repository?: string; configFile?: string; configJson?: string } | undefined> {
+  try {
+    await stat(path.join(path.dirname(weightsPath), 'config.json'));
+    return {};
+  } catch {
+    // No sibling; ask.
+  }
+  const choice = await vscode.window.showQuickPick(
+    [
+      {
+        label: 'Select a config.json file',
+        description: 'You already have the model config on disk',
+      },
+      {
+        label: 'Paste config.json contents',
+        description: 'Copy the JSON from the model page or a file',
+      },
+      {
+        label: 'Download from Hugging Face',
+        description: 'Fetch config and tokenizer from a repository',
+      },
+    ],
+    { title: 'No config.json sits next to this file — how should it arrive?' },
+  );
+  if (!choice) {
+    return undefined;
+  }
+  if (choice.label.startsWith('Select')) {
+    const selection = await vscode.window.showOpenDialog({
+      title: 'Select config.json',
+      canSelectMany: false,
+      canSelectFiles: true,
+      canSelectFolders: false,
+      filters: { 'JSON config': ['json'] },
+    });
+    const configFile = selection?.[0]?.fsPath;
+    return configFile ? { configFile } : undefined;
+  }
+  if (choice.label.startsWith('Paste')) {
+    const pasted = await vscode.window.showInputBox({
+      title: 'Paste config.json Contents',
+      prompt: 'Paste the full JSON, then confirm. Invalid JSON is refused with a retry.',
+      ignoreFocusOut: true,
+      validateInput: (value) => {
+        try {
+          const parsed: unknown = JSON.parse(value);
+          return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+            ? undefined
+            : 'That is not a JSON object.';
+        } catch {
+          return 'That is not valid JSON.';
+        }
+      },
+    });
+    return pasted ? { configJson: pasted } : undefined;
+  }
+  const repository = await vscode.window.showInputBox({
+    title: 'Model Repository for Config',
+    prompt: 'Give the Hugging Face repository to fetch config (and tokenizer) from.',
+    placeHolder: 'owner/model-name',
+    ignoreFocusOut: true,
+    validateInput: (value) =>
+      /^[\w.-]+\/[\w.-]+$/.test(value.trim())
+        ? undefined
+        : 'Enter a repository as owner/name.',
+  });
+  return repository ? { repository: repository.trim() } : undefined;
 }
 
 /** Whether the provisioned flavor has CUDA; false on any doubt. */
@@ -746,6 +806,27 @@ async function finishInstall(
 ): Promise<void> {
   if (!readConfig(services.context).defaultModelId) {
     await setDefaultModelId(model.id);
+  }
+  // Safetensors checkpoints get automatic static validation: headers, config,
+  // tokenizer presence — everything checkable without provisioning the Python
+  // runtime. Anything heavier stays behind the explicit Validate button.
+  if (model.format === 'safetensors') {
+    const validation = await validateCheckpointStatic(model.filePath);
+    if (!validation.ok) {
+      const retry = await vscode.window.showWarningMessage(
+        `${model.name} installed, but validation failed: ${validation.errors.join(' ')}`,
+        'Validate Model',
+      );
+      if (retry === 'Validate Model') {
+        await validateModel(services, model);
+      }
+      return;
+    }
+    if (validation.warnings.length > 0) {
+      void vscode.window.showWarningMessage(
+        `${model.name} installed with warnings: ${validation.warnings.join(' ')}`,
+      );
+    }
   }
   const selection = await vscode.window.showInformationMessage(
     `Installed ${model.name} (${formatBytes(model.fileSize)}). It is now available in the Chat model picker.`,

@@ -342,12 +342,16 @@ verified during implementation; failure degrades to naming the setting.
 
 ## 11. UI and acquisition gaps
 
-- Nothing invokes `importSafetensorsDirectory` (defined in
-  `modelManager.ts:160`, no non-test caller); the model picker shows no
-  format/runtime; `quantization` / `customCodeRequired` are recorded but never
-  surfaced pre-load. Partial progress exists: status readout names the engine
-  via `runtimeDisplayName` (`modelCommands.ts`). Still GGUF-assumed: the
-  remove dialog asks about the "GGUF file" unconditionally. Estimate ~2–3 days.
+- Aligned: both import flows invoked from commands and palette
+  (`localLlm.importSafetensorsDirectory` for folders in place,
+  `localLlm.importSafetensorsFile` for lone files staged as owned).
+  Lone files resolve config via siblings, explicit file, pasted JSON, or
+  HF fetch, in that order. Picker rows name runtime/quant/in-place state
+  (`describeModel`); removal wording matches ownership (`describeRemoval`);
+  `quantization` / `customCodeRequired` surface pre-register
+  (`checkpointWarnings`). `checkpointWarnings` still awaits its tokenizer
+  call site only in the sense that staged dirs without tokenizer files
+  fail later at load with `missing_tokenizer` — acceptable, named error.
 - HF acquisition is GGUF-only (see §2). Designing Safetensors selection
   (which files, what size, revision pinning) is unscheduled scope.
 

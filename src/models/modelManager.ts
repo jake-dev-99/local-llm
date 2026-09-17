@@ -1,6 +1,6 @@
 
 import { createHash, randomUUID } from 'node:crypto';
-import { copyFile, mkdir, open, rm, stat } from 'node:fs/promises';
+import { copyFile, mkdir, open, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { readConfig } from '../config.js';
@@ -198,7 +198,7 @@ export class ModelManager {
    */
   async stageSafetensorsFile(
     fileUri: vscode.Uri,
-    options: { repository?: string } = {},
+    options: { repository?: string; configFile?: string; configJson?: string } = {},
   ): Promise<{ directory: string; checkpoint: SafetensorsCheckpoint }> {
     const sourcePath = fileUri.fsPath;
     if (!sourcePath.toLowerCase().endsWith('.safetensors')) {
@@ -229,7 +229,7 @@ export class ModelManager {
       try {
         await stat(path.join(directory, 'config.json'));
       } catch {
-        await this.fetchCheckpointSidecars(directory, options.repository);
+        await this.supplyStagedConfig(directory, options);
       }
       if (!(await isSafetensorsDirectory(directory))) {
         throw new Error(
@@ -301,6 +301,29 @@ export class ModelManager {
       `${options.managed ? '' : ', in place'}).`,
     );
     return model;
+  }
+
+  /**
+   * Supplies a missing config.json for a staged file, first source wins:
+   * an explicit file, pasted JSON, then the Hugging Face repository.
+   */
+  private async supplyStagedConfig(
+    directory: string,
+    options: { repository?: string; configFile?: string; configJson?: string },
+  ): Promise<void> {
+    if (options.configFile) {
+      if (!options.configFile.toLowerCase().endsWith('.json')) {
+        throw new Error('The selected config must be a .json file.');
+      }
+      await copyFile(options.configFile, path.join(directory, 'config.json'));
+      assertValidConfigJson(directory);
+      return;
+    }
+    if (options.configJson) {
+      await writeStagedConfig(directory, options.configJson);
+      return;
+    }
+    await this.fetchCheckpointSidecars(directory, options.repository);
   }
 
   /** Fetches a checkpoint's sidecars; config.json is required, the rest best-effort. */
@@ -482,6 +505,32 @@ function friendlyName(filename: string): string {
 
 function slug(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 64) || 'model';
+}
+
+/** A staged config must at least be a JSON object; Transformers judges the rest at load. */
+async function assertValidConfigJson(directory: string): Promise<void> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await readFile(path.join(directory, 'config.json'), 'utf8'));
+  } catch {
+    throw new Error('That config.json is not valid JSON.');
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('That config.json must be a JSON object.');
+  }
+}
+
+async function writeStagedConfig(directory: string, raw: string): Promise<void> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error('That text is not valid JSON — paste the contents of a config.json file.');
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('That text must be a JSON object — paste the contents of a config.json file.');
+  }
+  await writeFile(path.join(directory, 'config.json'), JSON.stringify(parsed, null, 2));
 }
 
 function formatSize(bytes: number): string {
