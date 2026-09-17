@@ -1,0 +1,279 @@
+{
+  "manifestVersion": 1,
+  "targets": {
+    "darwin-arm64": {
+      "interpreter": {
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.10.21%2B20260901-aarch64-apple-darwin-install_only.tar.gz",
+        "sha256": "cee232aabfb6790eec78f3cca935caeb7bd4eedca4dcb0a10dbcdb4302320b38",
+        "exe": "bin/python3"
+      },
+      "wheels": [
+        {
+          "name": "torch==2.14.0",
+          "url": "https://files.pythonhosted.org/packages/76/28/14c2462ade87a149a794cfb1fbff9c9810638afbaf67122d9bc116270069/torch-2.14.0-cp310-cp310-macosx_14_0_arm64.whl",
+          "sha256": "2fb30099be1fec9d163a6dd05ace176305ce8cf914b4d7a5f4f6d7a326aa4b60"
+        },
+        {
+          "name": "transformers==5.17.0",
+          "url": "https://files.pythonhosted.org/packages/e8/d0/c502b60d684adbd98a8dc7d5bb866842772b816ac4354e4608be240041ae/transformers-5.17.0-py3-none-any.whl",
+          "sha256": "78ec1ce21579b38dfb83950a0658cd119f87212a2fcfdff478096ce9d6c03801"
+        },
+        {
+          "name": "accelerate==1.15.0",
+          "url": "https://files.pythonhosted.org/packages/8a/4c/34f0450479d01195027260da68d8a3880683f1640c3ca5adf64acb3185f1/accelerate-1.15.0-py3-none-any.whl",
+          "sha256": "97eacca0b73e45cb867dbf8c5d5d4dc32219544300e0c8992c7334dc2ef33cec"
+        },
+        {
+          "name": "safetensors==0.8.0",
+          "url": "https://files.pythonhosted.org/packages/f5/b1/fa7c600e7dceae12e9606c7578cbc9ff1e1ed55844883ee5c92205e86226/safetensors-0.8.0-cp310-abi3-macosx_11_0_arm64.whl",
+          "sha256": "c80201d22cbf405b80647a60ada77bba06c8fba2da2743ba1e89cdcc39a81f25"
+        }
+      ]
+    },
+    "win32-x64": {
+      "interpreter": {
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.10.21%2B20260901-x86_64-pc-windows-msvc-install_only.tar.gz",
+        "sha256": "b3edb1dacad300c7117ce4d6df97cd2e411afc0d173db43c224f904deb6253b5",
+        "exe": "python.exe"
+      },
+      "wheels": [
+        {
+          "name": "torch==2.14.0+cpu",
+          "url": "https://download-r2.pytorch.org/whl/cpu/torch-2.14.0%2Bcpu-cp310-cp310-win_amd64.whl",
+          "sha256": "ff2e3a049e4c6d406d2f87acad9b2907d5052a3fa6d0e658b5f6e48d46bae11b"
+        },
+        {
+          "name": "transformers==5.17.0",
+          "url": "https://files.pythonhosted.org/packages/e8/d0/c502b60d684adbd98a8dc7d5bb866842772b816ac4354e4608be240041ae/transformers-5.17.0-py3-none-any.whl",
+          "sha256": "78ec1ce21579b38dfb83950a0658cd119f87212a2fcfdff478096ce9d6c03801"
+        },
+        {
+          "name": "accelerate==1.15.0",
+          "url": "https://files.pythonhosted.org/packages/8a/4c/34f0450479d01195027260da68d8a3880683f1640c3ca5adf64acb3185f1/accelerate-1.15.0-py3-none-any.whl",
+          "sha256": "97eacca0b73e45cb867dbf8c5d5d4dc32219544300e0c8992c7334dc2ef33cec"
+        },
+        {
+          "name": "safetensors==0.8.0",
+          "url": "https://files.pythonhosted.org/packages/1b/6d/3fba214c1e5e0f69991677ec3bc17023f0421776975e1de0c682dca475e2/safetensors-0.8.0-cp310-abi3-win_amd64.whl",
+          "sha256": "096ec1a98435df7beb08853bb5aa9081a84f23d0adc67ed1a0a10550f608373f"
+        }
+      ],
+      "packs": {
+        "cuda": {
+          "wheels": [
+            {
+              "name": "filelock==4.0.0",
+              "url": "https://files.pythonhosted.org/packages/01/fb/0e4489505dac46a0487ba925ea4b046612f1a40f432d63a000421de78549/filelock-4.0.0-py3-none-any.whl",
+              "sha256": "a850aa9ec2acba8db9ca2e9fcf8a327fbc2f85e432725715b37bd76b7dd1f798"
+            },
+            {
+              "name": "fsspec==2026.7.0",
+              "url": "https://files.pythonhosted.org/packages/fd/3c/6a2bf344106328fd04963664a60b9bb6496fc25df8e962fcdc1367285fb9/fsspec-2026.7.0-py3-none-any.whl",
+              "sha256": "b57ddbafedfaef7018c1ecab32aa200a9d7ca26b77965f64e48b70061249d279"
+            },
+            {
+              "name": "jinja2==3.1.6",
+              "url": "https://files.pythonhosted.org/packages/62/a1/3d680cbfd5f4b8f15abc1d571870c5fc3e594bb582bc3b64ea099db13e56/jinja2-3.1.6-py3-none-any.whl",
+              "sha256": "85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67"
+            },
+            {
+              "name": "markupsafe==3.0.3",
+              "url": "https://files.pythonhosted.org/packages/d6/25/55dc3ab959917602c96985cb1253efaa4ff42f71194bddeb61eb7278b8be/markupsafe-3.0.3-cp310-cp310-win_amd64.whl",
+              "sha256": "c4ffb7ebf07cfe8931028e3e4c85f0357459a3f9f9490886198848f4fa002ec8"
+            },
+            {
+              "name": "mpmath==1.3.0",
+              "url": "https://files.pythonhosted.org/packages/43/e3/7d92a15f894aa0c9c4b49b8ee9ac9850d6e63b03c9c32c0367a13ae62209/mpmath-1.3.0-py3-none-any.whl",
+              "sha256": "a0b2b9fe80bbcd81a6647ff13108738cfb482d481d826cc0e02f5b35e5c88d2c"
+            },
+            {
+              "name": "networkx==3.4.2",
+              "url": "https://files.pythonhosted.org/packages/b9/54/dd730b32ea14ea797530a4479b2ed46a6fb250f682a9cfb997e968bf0261/networkx-3.4.2-py3-none-any.whl",
+              "sha256": "df5d4365b724cf81b8c6a7312509d0c22386097011ad1abe274afd5e9d3bbc5f"
+            },
+            {
+              "name": "setuptools==84.0.0",
+              "url": "https://files.pythonhosted.org/packages/95/9c/c510029fc6ef33a6275cd2c5d3cecd6613dfd6aa401d57c54f1c18852ccf/setuptools-84.0.0-py3-none-any.whl",
+              "sha256": "51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670"
+            },
+            {
+              "name": "sympy==1.14.0",
+              "url": "https://files.pythonhosted.org/packages/a2/09/77d55d46fd61b4a135c444fc97158ef34a095e5681d0a6c10b75bf356191/sympy-1.14.0-py3-none-any.whl",
+              "sha256": "e091cc3e99d2141a0ba2847328f5479b05d94a6635cb96148ccb3f34671bd8f5"
+            },
+            {
+              "name": "torch==2.14.0",
+              "url": "https://files.pythonhosted.org/packages/19/df/ebf2d5d82ee3d89c5e066239b097e779c42696f0609bfa8e30628c1ba53f/torch-2.14.0-cp310-cp310-win_amd64.whl",
+              "sha256": "d70c2b41bde81efde59fcefb147b9247fd062497e778677661b7de1bee5c8c99"
+            },
+            {
+              "name": "typing-extensions==4.16.0",
+              "url": "https://files.pythonhosted.org/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl",
+              "sha256": "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8"
+            }
+          ],
+          "replaces": [
+            "torch"
+          ]
+        },
+        "xpu": {
+          "wheels": [
+            {
+              "name": "dpcpp-cpp-rt==2025.3.2",
+              "url": "https://files.pythonhosted.org/packages/6e/8b/9c9bf12d09033de5721070701b859917c0d3a2da214467caf1378a38df98/dpcpp_cpp_rt-2025.3.2-py2.py3-none-win_amd64.whl",
+              "sha256": "3a8645e0ae570f54e2514c92fbfb57c0759158afe576b8c966ba06dc90729ca5"
+            },
+            {
+              "name": "filelock==4.0.0",
+              "url": "https://files.pythonhosted.org/packages/01/fb/0e4489505dac46a0487ba925ea4b046612f1a40f432d63a000421de78549/filelock-4.0.0-py3-none-any.whl",
+              "sha256": "a850aa9ec2acba8db9ca2e9fcf8a327fbc2f85e432725715b37bd76b7dd1f798"
+            },
+            {
+              "name": "fsspec==2026.7.0",
+              "url": "https://files.pythonhosted.org/packages/fd/3c/6a2bf344106328fd04963664a60b9bb6496fc25df8e962fcdc1367285fb9/fsspec-2026.7.0-py3-none-any.whl",
+              "sha256": "b57ddbafedfaef7018c1ecab32aa200a9d7ca26b77965f64e48b70061249d279"
+            },
+            {
+              "name": "intel-cmplr-lib-rt==2025.3.2",
+              "url": "https://files.pythonhosted.org/packages/de/02/46ec0e8aad41a7d95ba62dc65238c88fc302120c9a143c211990eef9c0b2/intel_cmplr_lib_rt-2025.3.2-py2.py3-none-win_amd64.whl",
+              "sha256": "89bba5899d0e057f0ecbc55768558e55bd7a3740950d0e4d0b01d25d8b62b020"
+            },
+            {
+              "name": "intel-cmplr-lib-ur==2025.3.2",
+              "url": "https://files.pythonhosted.org/packages/b5/ef/a6de04eb38a359004e9b6d8fd8bbbaedbc5fce1379e16bd26374aade67db/intel_cmplr_lib_ur-2025.3.2-py2.py3-none-win_amd64.whl",
+              "sha256": "28dcf7e7401e54f16c4ece55c07029d9ef2b8fe8602b6530f0bcfec906c63823"
+            },
+            {
+              "name": "intel-cmplr-lic-rt==2025.3.2",
+              "url": "https://files.pythonhosted.org/packages/fd/9f/4d9b6e8d93cc0685323b617023716132c6b65796f4103e167a296973db1f/intel_cmplr_lic_rt-2025.3.2-py2.py3-none-win_amd64.whl",
+              "sha256": "b4d79398df82325dbd121ad7239735117e541b768c45ae4ad29fb40b07531d7e"
+            },
+            {
+              "name": "intel-opencl-rt==2025.3.2",
+              "url": "https://files.pythonhosted.org/packages/fd/f4/3c859afc3965fd4ccd5d32e979fae446b1f9c7388f95f23eef6bd8d57dc5/intel_opencl_rt-2025.3.2-py2.py3-none-win_amd64.whl",
+              "sha256": "fa0df93b218eb1b690729ac2b842aba491648b52556d9d520ac88e0c73a9f8e6"
+            },
+            {
+              "name": "intel-openmp==2025.3.2",
+              "url": "https://files.pythonhosted.org/packages/52/e7/31d84b2c547a9319c2ad5dc744ca0b45e23ddf5a6959e96718d3c93d963a/intel_openmp-2025.3.2-py2.py3-none-win_amd64.whl",
+              "sha256": "8950bb59ffd146232aaf5c0d4272acdfcbe251f5982b83b329dab2e67069dc11"
+            },
+            {
+              "name": "intel-pti==0.16.0",
+              "url": "https://files.pythonhosted.org/packages/dd/16/a100ed54b8d2f91a62bfac325b09276bf38602ae9676c07cc657e05a0328/intel_pti-0.16.0-py2.py3-none-win_amd64.whl",
+              "sha256": "5f50056cea4ef1dbfb0a52c96feab2137e9fc2fbd742e8d4081adfb467d221be"
+            },
+            {
+              "name": "intel-sycl-rt==2025.3.2",
+              "url": "https://files.pythonhosted.org/packages/a4/ac/82eccd64c17cfac23e265af44400897f1cb30bd5c0830099a39c8425a293/intel_sycl_rt-2025.3.2-py2.py3-none-win_amd64.whl",
+              "sha256": "c3a38e2ec1f15417c77f67ece1e8ebb0aef81ffab946e0bf8b1aaa2052e700bb"
+            },
+            {
+              "name": "jinja2==3.1.6",
+              "url": "https://download.pytorch.org/whl/jinja2-3.1.6-py3-none-any.whl",
+              "sha256": "85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67"
+            },
+            {
+              "name": "markupsafe==3.0.3",
+              "url": "https://download.pytorch.org/whl/markupsafe-3.0.3-cp310-cp310-win_amd64.whl",
+              "sha256": "c4ffb7ebf07cfe8931028e3e4c85f0357459a3f9f9490886198848f4fa002ec8"
+            },
+            {
+              "name": "mkl==2025.3.1",
+              "url": "https://files.pythonhosted.org/packages/99/c2/97c8df6e8c0663903ab7b0fe4d9529e6a75ffeeeef7b1727bc14996d389b/mkl-2025.3.1-py2.py3-none-win_amd64.whl",
+              "sha256": "74084f58784c4cde1dc3284bdf3a19df30fbfe11416567e4ba6419d3bd9ce33e"
+            },
+            {
+              "name": "mpmath==1.3.0",
+              "url": "https://files.pythonhosted.org/packages/43/e3/7d92a15f894aa0c9c4b49b8ee9ac9850d6e63b03c9c32c0367a13ae62209/mpmath-1.3.0-py3-none-any.whl",
+              "sha256": "a0b2b9fe80bbcd81a6647ff13108738cfb482d481d826cc0e02f5b35e5c88d2c"
+            },
+            {
+              "name": "networkx==3.4.2",
+              "url": "https://files.pythonhosted.org/packages/b9/54/dd730b32ea14ea797530a4479b2ed46a6fb250f682a9cfb997e968bf0261/networkx-3.4.2-py3-none-any.whl",
+              "sha256": "df5d4365b724cf81b8c6a7312509d0c22386097011ad1abe274afd5e9d3bbc5f"
+            },
+            {
+              "name": "onemkl-license==2025.3.1",
+              "url": "https://files.pythonhosted.org/packages/1b/7f/732bd62f4ce4ddcbf97003efa856fcafc99c29e6b05deb0c1bb9cb85bdc4/onemkl_license-2025.3.1-py2.py3-none-win_amd64.whl",
+              "sha256": "9fa45b274f05a61797f9ec3166b136124250ec7c9c91dedb87f3a926bfed9a54"
+            },
+            {
+              "name": "onemkl-sycl-blas==2025.3.1",
+              "url": "https://files.pythonhosted.org/packages/e1/4b/1c60d831fb54c13fead3bb8e98d44721059b9bbad44184a507c42589234f/onemkl_sycl_blas-2025.3.1-py2.py3-none-win_amd64.whl",
+              "sha256": "8a094fb2d6f393e6beb030e507475cdb704178ac7afec80b634a5d1eb848b557"
+            },
+            {
+              "name": "onemkl-sycl-dft==2025.3.1",
+              "url": "https://files.pythonhosted.org/packages/17/e9/2a20a5130f4ec203ee62fdd7adbaacd413f22729522988d112a48a1f7f11/onemkl_sycl_dft-2025.3.1-py2.py3-none-win_amd64.whl",
+              "sha256": "720d31ef23d5fe15355e6b95434244b27e254f817c45c89057f576a8a3e087a1"
+            },
+            {
+              "name": "onemkl-sycl-lapack==2025.3.1",
+              "url": "https://files.pythonhosted.org/packages/80/33/3aef7852a99a08ec6a6535268f63e600e998b011bffafa5cd6205050b46f/onemkl_sycl_lapack-2025.3.1-py2.py3-none-win_amd64.whl",
+              "sha256": "b4df2a705422a7c27d5ad35ea853a26103a39dbfc1fe4c5180c4d7b39ba34e7e"
+            },
+            {
+              "name": "onemkl-sycl-rng==2025.3.1",
+              "url": "https://files.pythonhosted.org/packages/81/57/d9e2941e40cdcbfc6a6dbd6c1184d4be5138965e63f978c8a595dcb2ce65/onemkl_sycl_rng-2025.3.1-py2.py3-none-win_amd64.whl",
+              "sha256": "fe9bf5b9db1bb72578df997beb7e8ff7e4c0345b692fe947ee4a0af284709006"
+            },
+            {
+              "name": "onemkl-sycl-sparse==2025.3.1",
+              "url": "https://files.pythonhosted.org/packages/58/88/970baf908e8be5d5d7d0ed7e86863b350f1419cf9b6a9bd015a020e03bf2/onemkl_sycl_sparse-2025.3.1-py2.py3-none-win_amd64.whl",
+              "sha256": "994969efc1a4ee0483466ce0b75c510df4c5ffc89a6a12a0e878d5536ce29c69"
+            },
+            {
+              "name": "pyelftools==0.33",
+              "url": "https://files.pythonhosted.org/packages/46/2a/f9697576603dae937727827505a6126a066affb227034e77e6f9068910da/pyelftools-0.33-py3-none-any.whl",
+              "sha256": "f215ad5f47d3f1373a21496a6c9e0707c622840d0622f23ff7ce08678b020036"
+            },
+            {
+              "name": "setuptools==81.0.0",
+              "url": "https://files.pythonhosted.org/packages/e1/e3/c164c88b2e5ce7b24d667b9bd83589cf4f3520d97cad01534cd3c4f55fdb/setuptools-81.0.0-py3-none-any.whl",
+              "sha256": "fdd925d5c5d9f62e4b74b30d6dd7828ce236fd6ed998a08d81de62ce5a6310d6"
+            },
+            {
+              "name": "sympy==1.14.0",
+              "url": "https://files.pythonhosted.org/packages/a2/09/77d55d46fd61b4a135c444fc97158ef34a095e5681d0a6c10b75bf356191/sympy-1.14.0-py3-none-any.whl",
+              "sha256": "e091cc3e99d2141a0ba2847328f5479b05d94a6635cb96148ccb3f34671bd8f5"
+            },
+            {
+              "name": "tbb==2022.3.1",
+              "url": "https://files.pythonhosted.org/packages/68/ef/d01ec56a854949efc727c8cac8941325a2020f345a786e64ca6ad3a05611/tbb-2022.3.1-py3-none-win_amd64.whl",
+              "sha256": "8187e4c50a77c75c51ca9395febddd3a67d88dcb4cc537947d68d244925710f7"
+            },
+            {
+              "name": "tcmlib==1.4.1",
+              "url": "https://files.pythonhosted.org/packages/eb/4d/2b1d55dba475f602197e284b9a5e5460139a9c5ef2bfb63c8d2a1fafc163/tcmlib-1.4.1-py2.py3-none-win_amd64.whl",
+              "sha256": "5202a1fd8541182fbd4ef72848784e4bf94340152d7ddff33d401d30930fa53c"
+            },
+            {
+              "name": "torch==2.12.0+xpu",
+              "url": "https://download-r2.pytorch.org/whl/xpu/torch-2.12.0%2Bxpu-cp310-cp310-win_amd64.whl",
+              "sha256": "b9779b71457b5a916ae052ed2467c10273cae4862d469b191359173b2038c53e"
+            },
+            {
+              "name": "triton-xpu==3.7.1",
+              "url": "https://download-r2.pytorch.org/whl/triton_xpu-3.7.1-cp310-cp310-win_amd64.whl",
+              "sha256": "0d7730651c3e52fbf3a430cc201455f0c6600dc72e681aec495f131ea44f341a"
+            },
+            {
+              "name": "typing-extensions==4.16.0",
+              "url": "https://files.pythonhosted.org/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl",
+              "sha256": "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8"
+            },
+            {
+              "name": "umf==1.0.3",
+              "url": "https://files.pythonhosted.org/packages/97/49/23b714e4ca9655f04d5b958ca8b4ef8361e10743581a637f141755b9f4fb/umf-1.0.3-py2.py3-none-win_amd64.whl",
+              "sha256": "2182a623433329bd53863ac3b15a4af253d0eda62c603dc7c4e2bdce78658270"
+            }
+          ],
+          "replaces": [
+            "torch"
+          ]
+        }
+      }
+    }
+  }
+}

@@ -22,7 +22,7 @@ import { directoryIdentity, type DirectoryIdentity, type ModelFileInput } from '
  * this means the file is not what it claims to be and is not worth allocating
  * for.
  */
-export const MAX_SAFETENSORS_HEADER_BYTES = 100 * 1024 * 1024;
+export const MAX_SAFETENSORS_HEADER_BYTES = 128 * 1024 * 1024;
 
 export interface SafetensorsCheckpoint {
   identity: DirectoryIdentity;

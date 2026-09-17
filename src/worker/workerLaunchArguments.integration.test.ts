@@ -131,6 +131,7 @@ function config(overrides: Partial<LocalLlmConfig> = {}): LocalLlmConfig {
     modelDirectory: '/models',
     defaultModelId: '',
     pythonPath: '',
+    pythonEnvFlavor: 'auto',
     contextSize: 32768,
     maxTools: 8,
     maxAgentToolRounds: 8,

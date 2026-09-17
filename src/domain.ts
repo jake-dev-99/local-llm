@@ -133,6 +133,12 @@ export interface LocalLlmConfig extends WorkerConfig {
    * thing to do to a user's machine by default.
    */
   pythonPath: string;
+  /**
+   * Provisioned Python env flavor on Windows x64. `auto` detects: CUDA when
+   * `nvidia-smi` succeeds, XPU when an Intel Arc GPU is reported, else CPU.
+   * macOS has a single flavor; the setting is accepted and ignored there.
+   */
+  pythonEnvFlavor: 'auto' | 'cpu' | 'cuda' | 'xpu';
   logLevel: 'error' | 'info' | 'debug';
 }
 

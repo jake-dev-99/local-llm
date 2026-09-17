@@ -7,6 +7,7 @@ import {
   collectCheckpointFiles,
   fingerprintCheckpoint,
   isSafetensorsDirectory,
+  MAX_SAFETENSORS_HEADER_BYTES,
   readSafetensorsCheckpoint,
   readSafetensorsHeader,
 } from './safetensorsDirectory.ts';
@@ -67,6 +68,24 @@ test('a truncated or absurd header is reported as absent, not thrown', async () 
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('the header cap matches the Python inspector (128 MiB)', async () => {
+  // Parity contract with resources/runtime/runtime/inspector.py
+  // MAX_HEADER_BYTES. Both sides must agree or one side inspects what the
+  // other refuses to load.
+  assert.equal(MAX_SAFETENSORS_HEADER_BYTES, 128 * 1024 * 1024);
+});
+
+test('a header claim above the shared cap is refused without allocating', async () => {
+  // Shared fixture with resources/runtime/tests/test_runtime.py: a 14-byte
+  // file claiming a 200 MiB header. Must return undefined, not throw or
+  // attempt a 200 MiB allocation.
+  const fixture = path.join(
+    import.meta.dirname, '..', '..', 'resources', 'runtime', 'tests',
+    'fixtures', 'oversize-header-claim.safetensors',
+  );
+  assert.equal(await readSafetensorsHeader(fixture), undefined);
 });
 
 test('collects every regular file and skips nested directories', async () => {

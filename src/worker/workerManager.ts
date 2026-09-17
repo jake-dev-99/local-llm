@@ -18,7 +18,9 @@ import {
   type RuntimeExit,
   type RuntimeSession,
 } from './runtimeSession.js';
-import { startTransformersSession } from './transformersBackend.js';
+import { probePythonRuntime, startTransformersSession } from './transformersBackend.js';
+import { ensureEnvironment, removeStaleEnvironments } from './pythonProvision.js';
+import { resolveEnvTarget } from './pythonEnvironment.js';
 import { describeError } from '../errorDetail.js';
 import { SYCL_INITIAL_FIT_TARGET_MIB, isSyclDeviceOutOfMemory, nextSyclFitTargetMiB, parseFittedContext, parseFreeDeviceMemoryMiB, resolveFitTargetMiB } from './memoryFit.js';
 import { isFatalWorkerError } from './workerError.js';
@@ -264,6 +266,41 @@ export class WorkerManager implements vscode.Disposable {
    * allocate, no API key to write, and no health poll, because the worker
    * answers `model.load` only once the weights are actually resident.
    */
+  /**
+   * Provisions the Python env behind a cancellable notification, then blesses
+   * it with the throwaway probe before any worker spawns from it.
+   */
+  private async provisionPythonEnv(
+    runtimeDirectory: string,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    throwIfAborted(signal);
+    const config = readConfig(this.context);
+    const target = resolveEnvTarget();
+    const storagePath = this.context.globalStorageUri.fsPath;
+    const env = await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: 'Installing Python environment for Safetensors models',
+        cancellable: true,
+      },
+      async (progress, token) =>
+        ensureEnvironment({
+          storagePath,
+          target,
+          flavorSetting: config.pythonEnvFlavor,
+          releaseManifestPath: `${runtimeDirectory}/env-manifest.json`,
+          progress,
+          token,
+          onLog: (message) => this.logWorkerOutput(message),
+          probe: (pythonPath) => probePythonRuntime(pythonPath, runtimeDirectory),
+        }),
+    );
+    throwIfAborted(signal);
+    await removeStaleEnvironments(storagePath, { target: env.target, flavor: env.flavor });
+    return env.pythonPath;
+  }
+
   private async startTransformers(
     model: InstalledModel,
     signal?: AbortSignal,
@@ -275,10 +312,14 @@ export class WorkerManager implements vscode.Disposable {
     try {
       throwIfAborted(signal);
       const config = readConfig(this.context);
+      const runtimeDirectory = safetensorsRuntimeDirectory(this.context);
+      // An explicit interpreter always wins; otherwise provision on first use.
+      const pythonPath = config.pythonPath.trim() ||
+        (await this.provisionPythonEnv(runtimeDirectory, signal));
       const session = await startTransformersSession({
         model,
-        pythonPath: config.pythonPath,
-        runtimeDirectory: safetensorsRuntimeDirectory(this.context),
+        pythonPath,
+        runtimeDirectory,
         onLog: (message) => this.logWorkerOutput(message),
         ...(signal ? { signal } : {}),
       });

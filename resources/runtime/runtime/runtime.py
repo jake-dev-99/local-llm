@@ -17,6 +17,7 @@ import os
 import platform
 import sys
 import threading
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -42,6 +43,13 @@ from .models import (
     RuntimeInfo,
     RuntimePolicy,
 )
+
+# Fraction of device/host memory treated as usable for weights; the rest is
+# headroom for activations, KV cache and framework overhead.
+USABLE_MEMORY_FRACTION = 0.9
+# Loads within this fraction above usable capacity are allowed with a warning
+# rather than refused: header estimates carry error. Decided per scope.
+MEMORY_TOLERANCE = 0.05
 
 TokenSink = Callable[[str], None]
 
@@ -322,6 +330,11 @@ class LocalLLM:
         fallbacks: exceeding device memory is only acceptable when CPU offload is
         allowed, and exceeding host memory means disk offload is unavoidable no
         matter what CPU offload permits.
+
+        The line is a band, not an edge: header estimates carry error
+        (framework overhead, fragmentation, resident-vs-weight deltas), so a
+        load within MEMORY_TOLERANCE above usable capacity is allowed with a
+        warning rather than refused.
         """
 
         if policy.allowDiskOffload or weight_bytes <= 0:
@@ -330,26 +343,49 @@ class LocalLLM:
         def mib(value: int) -> int:
             return value // 1024 ** 2
 
+        def usable(total: int) -> int:
+            # Activations, the KV cache and framework overhead all sit on top
+            # of the weights, so a checkpoint filling the whole device will
+            # not run.
+            return int(total * USABLE_MEMORY_FRACTION)
+
+        def limit(total: int) -> int:
+            return int(usable(total) * (1 + MEMORY_TOLERANCE))
+
+        def warn_over(usable_bytes: int, where: str) -> None:
+            over = (weight_bytes / usable_bytes - 1) * 100
+            warnings.warn(
+                f"Model weights need about {mib(weight_bytes)} MiB against "
+                f"{mib(usable_bytes)} MiB usable {where} "
+                f"({over:.1f}% over). Loading anyway: close the gap if "
+                "generation is slow or unstable.",
+                stacklevel=3,
+            )
+
         device = available_device_bytes()
-        # Activations, the KV cache and framework overhead all sit on top of the
-        # weights, so a checkpoint filling the whole device will not run.
-        if device is not None and weight_bytes > int(device * 0.9):
-            if not policy.allowCpuOffload:
-                raise InsufficientMemoryError(
-                    f"Model weights need about {mib(weight_bytes)} MiB and only "
-                    f"{mib(int(device * 0.9))} MiB is usable on this device. "
-                    "Enable CPU offload to load it anyway."
-                )
-            host = available_host_bytes()
-            # On unified-memory hardware this is the same pool as the device, so
-            # CPU offload buys nothing and disk is the only place left to go.
-            if host is not None and weight_bytes > int(host * 0.9):
-                raise InsufficientMemoryError(
-                    f"Model weights need about {mib(weight_bytes)} MiB, more than "
-                    f"the {mib(int(host * 0.9))} MiB usable on this machine. "
-                    "Loading it would offload to disk and generate far too "
-                    "slowly to use; a quantized build of this model will fit."
-                )
+        if device is not None and weight_bytes > usable(device):
+            if weight_bytes > limit(device):
+                if not policy.allowCpuOffload:
+                    raise InsufficientMemoryError(
+                        f"Model weights need about {mib(weight_bytes)} MiB and only "
+                        f"{mib(usable(device))} MiB is usable on this device. "
+                        "Enable CPU offload to load it anyway."
+                    )
+                host = available_host_bytes()
+                # On unified-memory hardware this is the same pool as the device,
+                # so CPU offload buys nothing and disk is the only place left.
+                if host is not None:
+                    if weight_bytes > limit(host):
+                        raise InsufficientMemoryError(
+                            f"Model weights need about {mib(weight_bytes)} MiB, more than "
+                            f"the {mib(usable(host))} MiB usable on this machine. "
+                            "Loading it would offload to disk and generate far too "
+                            "slowly to use; a quantized build of this model will fit."
+                        )
+                    if weight_bytes > usable(host):
+                        warn_over(usable(host), "on this machine")
+            else:
+                warn_over(usable(device), "on this device")
 
     def unload(self) -> None:
         # Nothing was loaded, so there are no caches to drop. Returning early

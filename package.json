@@ -50,6 +50,10 @@
         "title": "Local LLM: Import GGUF Model"
       },
       {
+        "command": "localLlm.importSafetensorsDirectory",
+        "title": "Local LLM: Import Safetensors Checkpoint"
+      },
+      {
         "command": "localLlm.downloadHuggingFace",
         "title": "Local LLM: Download from Hugging Face"
       },
@@ -215,6 +219,17 @@
           "type": "string",
           "default": "",
           "description": "Absolute path to a Python interpreter with the Safetensors runtime requirements installed (torch, transformers, accelerate, safetensors). Required only for Safetensors models; GGUF models use the bundled llama.cpp worker. See resources/runtime/requirements.txt."
+        },
+        "localLlm.pythonEnvFlavor": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "cpu",
+            "cuda",
+            "xpu"
+          ],
+          "default": "auto",
+          "description": "Provisioned Python environment flavor on Windows x64 (auto detects: CUDA when nvidia-smi succeeds, XPU when an Intel Arc GPU is reported, else CPU). macOS has a single flavor; accepted and ignored there."
         },
         "localLlm.logLevel": {
           "type": "string",

@@ -16,6 +16,13 @@ import {
 } from './modelBenchmark.js';
 import { supportsInfill, type InferenceClient } from '../worker/inferenceClient.js';
 import { runtimeDisplayName } from '../worker/runtimeSession.js';
+import { describeModel, describeRemoval } from './modelSummary.ts';
+import { checkpointWarnings } from './modelSummary.ts';
+import {
+  isSafetensorsDirectory,
+  readSafetensorsCheckpoint,
+} from '../models/safetensorsDirectory.js';
+import { resolveEnvFlavor, resolveEnvTarget } from '../worker/pythonEnvironment.js';
 import { isFatalWorkerError } from '../worker/workerError.js';
 import type { WorkerManager } from '../worker/workerManager.js';
 
@@ -38,6 +45,7 @@ export function registerModelCommands(services: CommandServices): vscode.Disposa
   return [
     command('localLlm.manageModels', () => manageModels(services)),
     command('localLlm.importModel', () => importModel(services)),
+    command('localLlm.importSafetensorsDirectory', () => importSafetensorsDirectory(services)),
     command('localLlm.downloadHuggingFace', () => downloadHuggingFace(services)),
     command('localLlm.downloadUrl', () => downloadUrl(services)),
     command('localLlm.removeModel', () => removeModel(services)),
@@ -73,6 +81,11 @@ async function manageModels(services: CommandServices): Promise<void> {
         label: '$(file-add) Import local GGUF',
         description: 'Copy an existing model into managed storage',
         command: 'localLlm.importModel',
+      },
+      {
+        label: '$(file-add) Import Safetensors checkpoint',
+        description: 'Register a local folder in place, without copying',
+        command: 'localLlm.importSafetensorsDirectory',
       },
       ...(installed.length
         ? [
@@ -147,6 +160,61 @@ async function importModel(services: CommandServices): Promise<void> {
   await finishInstall(services, model);
 }
 
+async function importSafetensorsDirectory(services: CommandServices): Promise<void> {
+  const selection = await vscode.window.showOpenDialog({
+    title: 'Import Safetensors Checkpoint',
+    canSelectMany: false,
+    canSelectFiles: false,
+    canSelectFolders: true,
+  });
+  const uri = selection?.[0];
+  if (!uri) {
+    return;
+  }
+  if (!(await isSafetensorsDirectory(uri.fsPath))) {
+    throw new Error(
+      'That folder is not a Safetensors checkpoint. It needs a config.json and at least one .safetensors file.',
+    );
+  }
+  // Pre-register inspection: describe and warn before anything is recorded.
+  const checkpoint = await readSafetensorsCheckpoint(uri.fsPath, (warning) =>
+    services.logger.info(warning),
+  );
+  const cudaAvailable = await isCudaFlavor(services);
+  const warnings = checkpointWarnings(
+    {
+      ...(checkpoint.quantization ? { quantization: checkpoint.quantization } : {}),
+      ...(checkpoint.customCodeRequired ? { customCodeRequired: true as const } : {}),
+    },
+    { cudaAvailable },
+  );
+  if (warnings.consent) {
+    const answer = await vscode.window.showWarningMessage(
+      warnings.consent,
+      { modal: true },
+      'Register Anyway',
+    );
+    if (answer !== 'Register Anyway') {
+      return;
+    }
+  }
+  const model = await services.models.importSafetensorsDirectory(uri);
+  if (warnings.advisory) {
+    void vscode.window.showInformationMessage(warnings.advisory);
+  }
+  await finishInstall(services, model);
+}
+
+/** Whether the provisioned flavor has CUDA; false on any doubt. */
+async function isCudaFlavor(services: CommandServices): Promise<boolean> {
+  try {
+    const config = readConfig(services.context);
+    return (await resolveEnvFlavor(resolveEnvTarget(), config.pythonEnvFlavor)) === 'cuda';
+  } catch {
+    return false;
+  }
+}
+
 async function downloadHuggingFace(services: CommandServices): Promise<void> {
   const repository = await vscode.window.showInputBox({
     title: 'Download GGUF from Hugging Face',
@@ -187,12 +255,15 @@ async function removeModel(services: CommandServices): Promise<void> {
   if (!selected) {
     return;
   }
+  // In-place checkpoints are unregistered, never deleted; the wording
+  // lives with the ownership rules in modelSummary.ts.
+  const removal = describeRemoval(selected);
   const confirmation = await vscode.window.showWarningMessage(
-    `Delete ${selected.name} and its ${formatBytes(selected.fileSize)} GGUF file?`,
+    removal.message,
     { modal: true },
-    'Delete Model',
+    removal.confirmLabel,
   );
-  if (confirmation !== 'Delete Model') {
+  if (confirmation !== removal.confirmLabel) {
     return;
   }
   if (
@@ -658,15 +729,18 @@ async function chooseModel(
   services: CommandServices,
   title: string,
   models: readonly InstalledModel[] = services.models.registry.list(),
-  emptyMessage = 'No local GGUF models are installed.',
+  emptyMessage = 'No local models are installed.',
 ): Promise<InstalledModel | undefined> {
   const config = readConfig(services.context);
-  const items = models.map((model) => ({
-    label: model.name,
-    description: `${formatBytes(model.fileSize)} · ${model.source}`,
-    detail: `${model.filename}${model.id === config.defaultModelId ? ' · default' : ''}`,
-    model,
-  }));
+  const items = models.map((model) => {
+    const summary = describeModel(model, { isDefault: model.id === config.defaultModelId });
+    return {
+      label: model.name,
+      description: summary.description,
+      detail: summary.detail,
+      model,
+    };
+  });
   if (!items.length) {
     void vscode.window.showInformationMessage(emptyMessage);
     return undefined;

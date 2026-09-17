@@ -42,6 +42,7 @@ export function readConfig(context: vscode.ExtensionContext): LocalLlmConfig {
     inlineMaxTokens: config.get<number>('inline.maxTokens', 64),
     inlineDebounceMilliseconds: config.get<number>('inline.debounceMilliseconds', 250),
     pythonPath: config.get<string>('pythonPath', '').trim(),
+    pythonEnvFlavor: config.get<'auto' | 'cpu' | 'cuda' | 'xpu'>('pythonEnvFlavor', 'auto'),
     logLevel: config.get<'error' | 'info' | 'debug'>('logLevel', 'info'),
   };
 }

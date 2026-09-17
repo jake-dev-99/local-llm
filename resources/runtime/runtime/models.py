@@ -129,7 +129,7 @@ class RuntimePolicy:
     """
 
     device: str = "auto"
-    allowCpuOffload: bool = True
+    allowCpuOffload: bool = False
     allowDiskOffload: bool = False
     trustRemoteCode: bool = False
 

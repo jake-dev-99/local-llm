@@ -66,9 +66,15 @@ class MemoryGateTest(unittest.TestCase):
 
     def test_allows_cpu_offload_when_host_memory_can_hold_the_model(self) -> None:
         # A discrete GPU with plenty of system RAM behind it: offload is slow
-        # but real, so the load is allowed.
+        # but real, so the load is allowed — but only when explicitly opted in.
         self.patch(device=8 * GIB, host=64 * GIB)
-        self.llm._assert_fits(30 * GIB, RuntimePolicy())
+        self.llm._assert_fits(30 * GIB, RuntimePolicy(allowCpuOffload=True))
+
+    def test_default_policy_refuses_device_exceed_without_opt_in(self) -> None:
+        self.patch(device=8 * GIB, host=64 * GIB)
+        with self.assertRaises(InsufficientMemoryError) as caught:
+            self.llm._assert_fits(30 * GIB, RuntimePolicy())
+        self.assertIn("CPU offload", str(caught.exception))
 
     def test_rejects_a_model_larger_than_host_memory(self) -> None:
         # Unified memory: CPU offload buys nothing, so disk is the only place
@@ -76,8 +82,20 @@ class MemoryGateTest(unittest.TestCase):
         # slip through and produce a model generating at unusable speed.
         self.patch(device=36 * GIB, host=36 * GIB)
         with self.assertRaises(InsufficientMemoryError) as caught:
-            self.llm._assert_fits(60 * GIB, RuntimePolicy())
+            self.llm._assert_fits(60 * GIB, RuntimePolicy(allowCpuOffload=True))
         self.assertIn("disk", str(caught.exception))
+
+    def test_load_within_tolerance_warns_but_proceeds(self) -> None:
+        # Usable is 90 GiB of a 100 GiB device; 92 GiB is ~2% over the line.
+        self.patch(device=100 * GIB, host=100 * GIB)
+        with self.assertWarns(UserWarning):
+            self.llm._assert_fits(92 * GIB, RuntimePolicy())
+
+    def test_load_beyond_tolerance_refuses(self) -> None:
+        # 100 GiB is ~11% over the 90 GiB usable line: past the 5% band.
+        self.patch(device=100 * GIB, host=100 * GIB)
+        with self.assertRaises(InsufficientMemoryError):
+            self.llm._assert_fits(100 * GIB, RuntimePolicy())
 
     def test_disk_offload_opt_in_bypasses_the_gate_entirely(self) -> None:
         self.patch(device=4 * GIB, host=8 * GIB)
@@ -102,6 +120,12 @@ class OptionParsingTest(unittest.TestCase):
         policy = RuntimePolicy.from_params(None)
         self.assertFalse(policy.allowDiskOffload)
         self.assertFalse(policy.trustRemoteCode)
+
+    def test_policy_defaults_refuse_cpu_offload(self) -> None:
+        # Decided per scope: silent CPU offload is never the default; the
+        # caller opts in explicitly. CPU offload that is allowed is slow but
+        # real, so it stays available behind the flag.
+        self.assertFalse(RuntimePolicy.from_params(None).allowCpuOffload)
 
 
 class InspectorTest(unittest.TestCase):
@@ -145,6 +169,20 @@ class InspectorTest(unittest.TestCase):
             (path / "config.json").write_text("{}")
             with self.assertRaises(MissingWeightsError):
                 inspector.inspect(path)
+
+    def test_header_cap_matches_typescript_side(self) -> None:
+        # Parity contract with src/models/safetensorsDirectory.ts
+        # MAX_SAFETENSORS_HEADER_BYTES. Decided: 128 MiB both sides.
+        self.assertEqual(inspector.MAX_HEADER_BYTES, 128 * 1024 * 1024)
+
+    def test_shared_oversize_fixture_is_refused_without_allocating(self) -> None:
+        # Shared fixture with src/models/safetensorsDirectory.test.ts: a
+        # 14-byte file claiming a 200 MiB header. Must return {} — the cap
+        # check runs before any 200 MiB allocation.
+        fixture = (
+            Path(__file__).parent / "fixtures" / "oversize-header-claim.safetensors"
+        )
+        self.assertEqual(inspector.read_safetensors_header(fixture), {})
 
     def test_rejects_a_missing_directory(self) -> None:
         with self.assertRaises(InvalidModelError):

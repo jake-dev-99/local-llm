@@ -1,512 +1,421 @@
-# Safetensors support — scope against the Universal Local Safetensors LLM Runtime spec
+# Safetensors support — scope (rescope v2)
 
-Status: scope only. Date: 2026-09-16.
-Scopes the Transformers-worker design into this extension as it exists today.
+Status: scope. Date: 2026-09-17. Supersedes the 2026-09-16 scope in this file.
 
-## Bottom line
+This document is self-contained. It does not depend on the external
+"Universal Local Safetensors LLM Runtime" spec: every section reference
+(`§2`, `§4`, `§15`–`§36`) from v1 is replaced below by an inline definition
+grounded in this repo. Where v1 cited an outside body, this version states
+the rule directly and names the code that owns it. Inferred gaps are marked
+`[inference]`; verified facts name the file.
 
-**MVP (chat + streaming + cancel): 7–9 weeks. Full parity with the GGUF path:
-11–15 weeks.**
+## 1. Goal and positioning
 
-The spec is sound and the delegate-to-upstream rule is the right one. The cost is
-not in the runtime — the prototype already covers most of §35 CURRENT. It is in
-three things the spec does not cover, because the spec describes a runtime and
-this is a shipping extension:
+Support Hugging Face Safetensors checkpoint directories alongside single-file
+GGUF models in this VS Code extension.
 
-1. Provisioning Python inside a VSIX (§4 assumes the stack is installed).
-2. Tool calling — absent from all 36 sections, and it is this extension's
-   headline feature.
-3. Running two runtimes side by side in a `WorkerManager` built for exactly one.
+- Safetensors = the *universal, day-one* path: run any architecture
+  Transformers supports, including models with no GGUF conversion.
+- GGUF via llama.cpp = the *fast, daily-driver* path. Both stay.
+- Do not position Safetensors as a performance path. bf16 checkpoints are
+  large and offload easily into unusable speed (see §7).
 
-Everything else in §16–§36 is ordinary work with a clear upstream answer.
+MVP: install / inspect / load / stream chat / cancel / unload / recover for a
+local checkpoint directory. Local Agent (tool calling) and inline completion
+(FIM) stay GGUF-only until their phases land, advertised through existing
+capability flags.
 
-## Verified facts
+## 2. Supported artifact
 
-Checked 2026-09-16 against PyPI and llama.cpp at the pinned commit
-`60eeeb6082c1126bb8bc72902c83123cd056811b` (b10472).
+A Safetensors checkpoint is a **flat directory** containing:
 
-| Fact | Result |
+- `config.json` (architecture, context, quantization — see §6),
+- one or more `*.safetensors` files (case-insensitive match).
+
+Rules (verified in `src/models/safetensorsDirectory.ts`):
+
+- Detection is shallow: `config.json` present plus any `*.safetensors`.
+  Transformers stays authoritative for whether it actually loads.
+- Collection is flat and non-recursive. A nested directory is not part of
+  the checkpoint.
+- Each `.safetensors` file starts with an 8-byte little-endian header length
+  followed by a JSON header naming every tensor with dtype, shape, and byte
+  offsets. Only headers are ever read on the extension side; payloads are
+  never touched.
+- Sharding: multiple `*.safetensors` files are one checkpoint. The Python
+  inspector additionally notes `model.safetensors.index.json` presence and
+  multi-file layout as `sharded` for display; sharded verification is per-file
+  (path + size + header), not via the index.
+- An unreadable header (short read, non-positive or oversize length, parse
+  failure) never blocks install. The file still contributes path + size to
+  identity, with reduced precision plus an optional warning.
+
+Header cap rationale: the header length is an untrusted u64 read from the
+first 8 bytes of the file, and both sides allocate that many bytes before
+validating. The cap bounds the allocation, so a corrupt or hostile file
+claiming exabytes cannot OOM the extension host or worker. The cap is
+necessary structure; only its value is judgment (legitimate headers are
+KBs to low MBs, large vocabs tens of MB — both caps sit far above that).
+Known defect to fix: the two sides disagree. TS rejects above
+`MAX_SAFETENSORS_HEADER_BYTES = 100 MiB`; Python `inspector.py` rejects above
+`MAX_HEADER_BYTES = 128 MiB`. Unify on one value — **decided and aligned: 128 MiB** both sides, with a
+shared cross-side fixture test.
+
+Out of scope for MVP: downloading Safetensors from Hugging Face
+(`src/models/modelSources.ts:70` filters `.gguf` only and throws when none
+match), copying checkpoints into extension storage, and any GGUF↔Safetensors
+conversion.
+
+## 3. Architecture
+
+Two engines, one manager, one inference contract.
+
+- `src/models/`: GGUF file path (`ggufMetadata.ts`) and Safetensors
+  directory path (`safetensorsDirectory.ts` + `modelIdentity.ts`).
+  `src/domain.ts` tags `InstalledModel` with `format` and
+  `runtime: 'llama-cpp' | 'transformers'`, plus `managed: false` for
+  in-place checkpoints.
+- `resources/runtime/`: Python worker (`runtime.py`, `worker.py`,
+  `protocol.py`, `models.py`, `errors.py`, `inspector.py`).
+  Pinned baseline in `resources/runtime/requirements.txt`:
+  `torch==2.14.0`, `transformers==5.17.0`, `accelerate==1.15.0`,
+  `safetensors==0.8.0`. Optimisation backends (bitsandbytes, torchao, AWQ,
+  GPTQ, flash-attn, optimum) are added only when a real model requires them.
+- `src/worker/runtimeSession.ts`: the seam. A session is a started process +
+  the client that talks to it + how it ends. `WorkerManager` holds **one**
+  session at a time and dispatches on `runtimeForModel(model)`. Starting
+  either runtime evicts the other, so two large models are never resident.
+  No second scheduler: the single `InferenceScheduler` already serializes
+  across both runtimes.
+- `src/worker/inferenceClient.ts`: `InferenceClient`, what the extension asks
+  of a loaded model whichever worker holds it. `llamaClient.ts` implements it;
+  `transformersClient.ts` adapts the Python runtime to it.
+- Naming: `WorkerBackend` (in `workerManifest.ts`) means metal/sycl/cpu for
+  llama.cpp — a hardware axis. `ModelRuntime` means which engine holds the
+  weights. Do not conflate them.
+- Lifecycle asymmetry is contained in the session: llama-server stops by
+  signal, the Python worker by closed stdin; unexpected-exit meaning and
+  crash recovery stay in one `handleExit`. `exitNotifier` must fire
+  immediately for handlers registered after death, or a crash between health
+  check and watch leaves a phantom-live session.
+
+## 4. Worker contract (protocol version 1)
+
+`PROTOCOL_VERSION = 1` (`resources/runtime/runtime/models.py`) must equal
+`SUPPORTED_PROTOCOL_VERSION = 1` (`src/worker/pythonWorkerTypes.ts`);
+mismatch is a hard error telling the user to reinstall.
+
+Transport: stdio JSONL. stdout is protocol-only; stderr is logs
+(`protocol.py`). Every request carries an id for correlation; `runtime.info`
+is the version/compat handshake.
+
+Methods (verified in `resources/runtime/runtime/worker.py`):
+
+| Method | Purpose |
 |---|---|
-| `llama-server` loading safetensors | Impossible. Zero `safetensor` references in any `.c/.cpp/.h/.hpp` at the pin. Conversion is the only llama.cpp path — which is what this design correctly bypasses. |
-| torch wheel platforms | `macosx`, `manylinux`, `win_amd64`. **No `win_arm64` on PyPI.** |
-| torch wheel size | 121.4 MB macOS arm64, 118.4 MB win_amd64 |
-| `transformers` 5.17.0, `accelerate` 1.15.0 | Pure Python, small |
-| `safetensors` 0.8.0 | Native wheels, small |
-| Constrained decoding libs | `xgrammar` 0.2.7, `outlines` 1.3.3, `lm-format-enforcer` 0.11.3 — all current |
+| `runtime.info` | protocol version, worker state, diagnosability |
+| `model.inspect` | pre-load inspection without weights (§6) |
+| `model.load` / `model.unload` / `model.info` | lifecycle |
+| `model.tokenize` | chat-template token counting (also backs `countChatInputTokens`) |
+| `generate.chat` | streaming chat generation |
+| `generate.complete` | plain completion (kept for symmetry; FIM is separate, §8) |
+| `--probe` / `--inspect` / `--worker` | throwaway interpreter check, offline inspect, serve loop |
 
-**§2 correction:** Windows ARM64 has no PyPI torch. The spec's hedge is accurate,
-but in practice that target is CPU-only via unofficial builds, or unsupported.
-Worth stating plainly in the extension's requirements rather than discovering it
-at install time.
+Streaming: token notifications stream, then the ordinary `{id, ok, result}`
+response signals completion. There is deliberately **no** separate
+`generation.complete` notification — two completion signals invite client /
+worker disagreement. `GenerationResult` carries text plus the prompt token
+count computed at encode time (no second round trip).
 
-## Gap 1 — Tool calling (not in the spec)
+Cancellation names its `requestId`. The worker rejects a cancel for a request
+not in flight, so a cancel racing a just-finished generation cannot kill its
+successor.
 
-This is the largest single finding.
+Capabilities are declared, not inferred (`supports: { infill,
+constrainedDecoding }` on `InferenceClient`; `supportsInfill()` requires both
+declaration and implementation). The Transformers client declares neither
+today. A chat request carrying tools is refused with a reason before reaching
+the worker.
 
-`localLanguageModelProvider.ts` and the bundled Local Agent depend on
-schema-constrained decoding. `llamaClient.ts:493` sends `response_format` to
-llama.cpp, which compiles it to a GBNF grammar and constrains sampling. Per this
-project's own operating notes, on Qwen2.5-Coder the schema-constrained fallback
-is the **only** working tool path — the native pass produces nothing.
+## 5. Error contract
 
-Transformers `generate()` has no equivalent. Without one, Local Agent does not
-work on safetensors models at all.
+Owned by `resources/runtime/runtime/errors.py`. Codes observed:
 
-The fix is consistent with §32 — it is an upstream library, not a custom
-implementation — but it is a dependency §4 does not list:
+`unsupported_architecture`, `unsupported_quantization`,
+`unsupported_grammar`, `grammar_compile_failed`, `custom_code_required`
+(`auto_map` present), `missing_tokenizer`, `missing_weights`,
+`device_unavailable`, `insufficient_memory`, `context_overflow`,
+`model_load_failed`, `model_not_loaded`, `chat_not_supported`,
+`generation_failed`, `generation_cancelled`, `generation_busy`,
+`invalid_request`, `unknown_method`, `internal_error`.
+
+`unsupported_grammar` is already a live refusal: `runtime.py` raises
+`GrammarUnsupportedError` when tools/grammar are requested without a backend,
+and `transformersClient.ts` maps it. `grammar_compile_failed` is defined in
+`errors.py` for the future backend. Neither code path is reachable for
+successful generation until §8 ships.
+
+## 6. Inspection gate (`model.inspect`)
+
+Inspection runs **before** load, without weights, and must keep working when
+the ML stack is broken or unprovisioned. The Python inspector is standard
+library only.
+
+From `config.json` + headers it reports: architecture (`architectures[0]` /
+`model_type`), trained context length (including `text_config` nesting),
+quantization (`quantization_config`), weight bytes + dominant dtype summed
+over shards, `sharded`, `customCodeRequired` (`auto_map` in config), and a
+per-file list. The TS mirror (`readSafetensorsCheckpoint`) reports the same
+subset so the UI works before Python is provisioned or where it is broken.
+
+`customCodeRequired: true` refuses to load (no `trust_remote_code` path in
+MVP). Quantized checkpoints (FP8, NVFP4, AWQ, GPTQ) report
+`unsupported_quantization` up front where the kernel is CUDA-only (MPS/XPU
+would fail mid-load or dequantize to bf16, doubling memory).
+
+## 7. Memory and offload policy
+
+Safetensors checkpoints are typically bf16: 27–30B ≈ 54–60 GB of weights.
+`device_map="auto"` will not refuse — Accelerate offloads to CPU then disk
+and yields a model that loads and generates unusably slowly. llama.cpp does
+the opposite (shrink context or refuse).
+
+Policy:
+
+- `model.inspect` estimates weight bytes from headers before load and
+  compares against device and host memory.
+- Policy object is `allowCpuOffload`, optional on the TS side
+  (`pythonWorkerTypes.ts`). **Decided and aligned: defaults to `false`.**
+  The caller may opt in to CPU offload explicitly; silent offload is never
+  the default.
+- The gate is a tolerance band, not a binary. Estimates from headers carry
+  error (framework overhead, fragmentation, resident-vs-weight deltas), so a
+  checkpoint estimated within **5% over** calculated capacity is allowed
+  (surfaced as a warning where the UI can show it); beyond 5% refuses with
+  `insufficient_memory`. Exceeding host memory such that disk offload is
+  unavoidable refuses regardless of the CPU-offload flag.
+- On unified-memory hardware (Apple Silicon) the pools coincide, so CPU
+  offload buys nothing — the host-memory check is the one that fires.
+- Covered by a memory-gate test (e.g. 60 GB checkpoint on a 36 GB machine
+  refuses).
+
+## 8. Explicitly deferred: tool calling and FIM
+
+Tool calling (Local Agent): Transformers `generate()` has no equivalent of
+llama.cpp's `response_format` → GBNF constrained sampling, which per project
+notes is the only working tool path on reference models. Fix is an upstream
+grammar library (recommend `xgrammar` as a `LogitsProcessor` behind the
+existing `response_format` contract so `toolProtocol.ts` is untouched), added
+to the required baseline — not optional. Until then Safetensors models are
+Chat-only: profile reports `supportsTools/supportsToolCalls: false`, the
+agent will not select them, and tool-bearing chats are refused with advice.
+
+FIM (inline completion): no Transformers analogue; FIM tokens live outside
+the chat template (`tokenizer_config.json` / `generation_config.json`), so
+template delegation does not reach them. MVP advertises
+`fillInMiddle: 'unsupported'` for this runtime. `canRunInline` runs before
+any client exists, so the guard lives in inline completion +
+`validateFillInMiddle`, not in client construction. A future phase may
+assemble prefix/suffix prompts from tokenizer config as a narrow exception.
+
+## 9. Identity, verification, migration, ownership
+
+- GGUF identity is SHA-256 over file bytes. Checkpoint identity is a manifest
+  digest over per-file path + size + Safetensors header (tensor names,
+  dtypes, shapes, offsets). Rationale: re-hashing tens of GB on every
+  activation is not viable; header coverage keeps activation proportional to
+  file count. Accepted reduction: a payload value flip preserving shape,
+  dtype, and size is **not** detected. Document it; do not silently
+  strengthen later without measuring activation cost.
+- Change detection is cheaper still: one stat per file (size + mtime); headers
+  re-read only after movement. mtimes are excluded from the digest so copying
+  a checkpoint to a faster disk does not invalidate it; the digest still
+  catches re-quantize, re-shard, truncate, and substitution.
+- Ownership: checkpoints register **in place** (`managed: false`); `remove`
+  unregisters and leaves files alone (a test asserts weights survive — deleting
+  a user's 60 GB directory on list-removal is unacceptable). GGUF models
+  remain copied into extension storage.
+- Migration: `localLlm.installedModels.v1` keeps its key. Legacy records with
+  no `format` are single GGUF files on llama.cpp — label on load, do not
+  discard. Checkpoints with no fingerprints are backfilled, not invalidated.
+  Tests assert legacy capabilities and runtime profiles survive.
+
+## 10. Provisioning (largest open risk)
+
+The worker stack cannot be assumed installed, and a VSIX cannot carry
+the interpreter + torch. `localLlm.pythonPath`, when set, always wins and
+is used directly. When empty, `ensureEnvironment()` provisions per the
+manifest design below; on machines without a manifest entry (or until the
+release manifest is generated) that path fails by naming the setting.
+Do not auto-use `python3` from `PATH` — installing gigabytes into a system
+interpreter on the user's behalf is unacceptable, and the dev machine itself
+demonstrates the failure (torch import abort via duplicate OpenMP runtime,
+no Transformers present).
+
+- Probe with `python -m runtime.worker --probe` in a throwaway process before
+  spawning a session. Rationale: torch can abort rather than raise, and a
+  worker cannot report its own abort — a dead probe is cheaper than a dead
+  session. Lazy detection (resolve on first use) keeps `model.inspect` usable
+  while provisioning is pending.
+- Download-on-first-use into global storage, hash-pinned, diagnosable via
+  `runtime.info`. Trade-off: small VSIX, but a network + corporate-proxy
+  failure mode. Keep the extension's existing per-byte integrity discipline
+  rather than trusting pip resolution.
+- Until provisioning ships, everything in this scope must degrade to a named
+  error, never a hang.
+
+### Env manifest design (in-scope targets: macOS arm64, Windows x64)
+
+Layout under `globalStorageUri`:
 
 ```text
-xgrammar          # fastest, used by vLLM/SGLang; LogitsProcessor integration
-lm-format-enforcer # simplest to wire, broadest model support
-outlines          # richest API, heaviest dependency
+python-env/
+  <target>/<flavor>/          # venv root, e.g. win32-x64/cuda
+  <target>/<flavor>.json      # installed manifest (what + when)
 ```
 
-Recommend `xgrammar` as a `LogitsProcessor`, exposed as a new
-`generate.chat` parameter mirroring the existing `response_format` contract, so
-`toolProtocol.ts` and `localAgentToolChoice.ts` need no changes. Add to §4 as a
-required baseline dependency, not an optional one.
-
-Add to the §15 error contract: `unsupported_grammar`, `grammar_compile_failed`.
-
-## Gap 2 — Fill-in-the-middle
-
-`completion/localInlineCompletionProvider.ts` calls llama.cpp's `/infill`
-endpoint, which knows each model family's FIM tokens. Transformers has no
-analogue, and FIM tokens do not live in the chat template, so §9.3's
-delegate-to-the-template rule does not reach them.
-
-Two honest options:
-
-- Read FIM special tokens from `tokenizer_config.json` / `generation_config.json`
-  where present and assemble the prefix/suffix prompt in `runtime.py`. This is a
-  narrow, defensible exception to §32.
-- **Recommended for MVP:** scope inline completion to GGUF models only. Advertise
-  `fillInMiddle: 'unsupported'` for safetensors models through the existing
-  `ModelCapabilities` in `domain.ts`. The plumbing for that already exists.
-
-## Gap 3 — Two runtimes in one WorkerManager
-
-`worker/workerManager.ts` (772 lines) assumes one llama-server child, HTTP on an
-allocated loopback port, health-polled, with `WorkerState` in `domain.ts` keyed
-to a single `modelId` and `port`. The Python worker is a different shape: stdio,
-JSONL, no port, different lifecycle (§24).
-
-Required changes:
-
-| File | Change |
-|---|---|
-| `src/domain.ts` | Tag `InstalledModel` with `runtime: 'llama-cpp' \| 'transformers'`; `WorkerState` gains the runtime kind. Persisted-schema migration on `localLlm.installedModels.v1`. |
-| `src/worker/workerManager.ts` | Extract a `WorkerBackend` interface over start/stop/health; llama.cpp and Python become two implementations. |
-| `src/worker/inferenceScheduler.ts` | Already serializes work; must now serialize across both runtimes so two 30B models never load at once. |
-| `src/worker/pythonWorkerClient.ts` *(new)* | JSONL transport, request-ID correlation, §18 streaming notifications, §25 crash recovery. |
-| `src/provider/localLanguageModelProvider.ts` | Route by `model.runtime`. `messageAdapter.ts` output already matches the spec's `messages` shape. |
-
-The `ChatStreamEvent` union in `domain.ts` maps cleanly onto §18's
-`generation.token` / `generation.complete`. No provider-layer redesign needed.
-
-## Gap 4 — Python provisioning and integrity
-
-The spec assumes the stack is installed. A VSIX cannot.
-
-This extension currently SHA-256-pins every worker byte
-(`resources/workers/manifest.json`, verified at launch by
-`worker/workerIntegrity.ts`). A pip-resolved environment has no equivalent
-guarantee, and the README's opening promise — "without installing Ollama,
-Python, Docker, or llama.cpp separately" — is broken by this feature regardless
-of how it is delivered.
-
-Options:
-
-- **Download on first use** into global storage, hash-pinned per wheel. Fits the
-  existing integrity discipline, keeps the VSIX small, introduces a network
-  dependency and a corporate-proxy failure mode.
-- **Bundle** a standalone interpreter plus wheels. ~400–600 MB installed per
-  platform, doubling VSIX size across two targets.
-
-Recommend download-on-first-use with a pinned lockfile and per-file SHA-256,
-surfaced through `runtime.info` (§28) so a mismatch is diagnosable.
-
-## Gap 5 — Memory, and the honest performance story
-
-§22 identifies this correctly; here is the concrete consequence.
-
-Safetensors are typically bf16. A 27–30B model is ~54–60 GB of weights. It will
-not fit in most Apple Silicon unified memory. `device_map="auto"` will not
-refuse — Accelerate will offload to CPU and then disk and produce a model that
-loads successfully and generates at unusable speed.
-
-llama.cpp does the opposite: `--fit` reduces the context window or refuses,
-and `memoryFit.ts` / `modelCapacity.ts` are built on parsing that decision.
-There is no upstream equivalent to port.
-
-So `model.inspect` (§16 P3) is not a nice-to-have — it is the gate that keeps
-this feature from feeling broken. It must estimate weight bytes from the
-safetensors headers before load, compare against available device memory, and
-apply §23's `allow_disk_offload=False` default.
-
-**Product consequence worth stating explicitly:** safetensors is the *universal,
-day-one* path — run any architecture Transformers supports, including models
-with no GGUF conversion. GGUF remains the *fast, daily-driver* path. Both stay.
-Positioning safetensors as a performance path would set up users to be
-disappointed.
-
-### Pre-quantized safetensors caveat
-
-§19's delegate-to-Transformers rule is right, with a platform catch: FP8, NVFP4,
-AWQ, and GPTQ kernels are largely CUDA-only. On MPS and XPU those checkpoints
-either fail to load or must dequantize to bf16, which *doubles* the memory a user
-was trying to save. `model.inspect` should read `quantization_config` and report
-`unsupported_quantization` up front rather than failing mid-load.
-
-## Effort
-
-| Phase | Work | Est. | MVP? |
-|---|---|---|---|
-| 1 | Python provisioning + integrity pinning | 2–3 wks | yes |
-| 2 | Worker protocol, lifecycle, crash recovery (§24–26) | 1 wk | yes |
-| 3 | Streaming + cancellation (§35 P1, P2) | 1–1.5 wks | yes |
-| 4 | Dual-runtime integration (Gap 3) | 1.5–2 wks | yes |
-| 5 | `model.inspect`, capabilities, context validation (§16, §17, §29) | 1 wk | yes |
-| 6 | Tool calling via xgrammar (Gap 1) | 1.5–2 wks | no |
-| 7 | FIM (Gap 2) — or advertise unsupported | 0.5–1 wk | no |
-| 8 | Memory estimation + offload policy (§22–23) | 1 wk | no |
-| 9 | Tests — this repo keeps a `.test.ts` per module | 1.5–2 wks | partial |
-| | **MVP (1–5, partial 9)** | **7–9 wks** | |
-| | **Full parity (1–9)** | **11–15 wks** | |
-
-MVP delivers §34 criteria 1–15 except tool calling and FIM: load any
-Transformers-supported safetensors model, stream chat, cancel, unload, recover.
-Local Agent and inline completion stay GGUF-only until phases 6–7 land, which the
-existing `ModelCapabilities` flags already express without UI work.
-
-## Recommendation
-
-Build it as specified. Three amendments to the spec:
-
-1. **§4** — add a constrained-decoding library (`xgrammar`) to the required
-   baseline. It is not optional for this extension; Local Agent depends on it.
-2. **§2** — state that Windows ARM64 has no PyPI torch, so that target is CPU-only
-   or unsupported.
-3. **Add a section on environment provisioning.** It is the single largest risk
-   and the only part with no upstream answer to delegate to.
-
-The §36 design rule holds and is the reason to do this: new architecture appears,
-upgrade Transformers, it loads. That is worth 7–9 weeks.
-
----
-
-# Implementation status — 2026-09-16
-
-Phase 2 of the table above (worker protocol, lifecycle, crash recovery) is built,
-along with `model.inspect` from phase 5. Nothing is wired into the extension yet;
-`WorkerManager` is untouched.
-
-## Built
-
-| Path | Purpose |
-|---|---|
-| `resources/runtime/runtime/errors.py` | The §15 error contract, with `unsupported_grammar` added |
-| `resources/runtime/runtime/models.py` | Wire dataclasses, `PROTOCOL_VERSION`, §24 worker states |
-| `resources/runtime/runtime/inspector.py` | §16 P3 pre-load inspection — **standard library only** |
-| `resources/runtime/runtime/runtime.py` | `LocalLLM` lifecycle, generation, streaming, cancellation |
-| `resources/runtime/runtime/protocol.py` | JSONL framing; stdout protocol-only, stderr logs (§26) |
-| `resources/runtime/runtime/worker.py` | Reader loop, dispatch, `--worker` / `--inspect` / `--probe` |
-| `resources/runtime/requirements.txt` | Pinned baseline (§4) |
-| `src/worker/pythonWorkerTypes.ts` | Wire contracts mirroring the dataclasses |
-| `src/worker/pythonWorkerClient.ts` | Correlation, streaming, crash recovery; transport injected |
-| `src/worker/pythonWorkerProcess.ts` | Real spawn transport |
-
-Also `resources/runtime/tests/test_runtime.py`, run by the new `test:python`
-script. 29 tests added: 13 TypeScript unit, 3 integration against a spawned
-worker, 13 Python. Node suite is 175 tests / 174 passing; Python is 13/13;
-`npm run build` succeeds.
-
-**`npm test` now chains `test:node && test:python`.** Because
-`src/worker/toolProtocol.test.ts` fails on a clean checkout of HEAD, the chain
-stops before the Python suite. Run `npm run test:python` directly until that
-pre-existing failure is fixed.
-
-## Deviations from the spec, and why
-
-**§18 `generation.complete` is not emitted.** Token notifications stream, then
-the ordinary `{id, ok, result}` response signals completion. Two completion
-signals for one request is redundant framing that invites the client and worker
-to disagree about which is authoritative.
-
-**Runtime detection is lazy, not constructed eagerly.** Discovered while
-testing: importing torch can *abort the interpreter* rather than raise — a
-duplicate OpenMP runtime is the common cause, and it reproduces on this
-development machine today. Eager detection therefore killed the worker before it
-could answer anything. Detection now resolves on first use, so `model.inspect`
-keeps working when the ML stack is broken or still being provisioned.
-
-**A `--probe` mode was added.** Because that abort cannot be caught in-process,
-the extension should run `python -m runtime.worker --probe` as a throwaway
-process before trusting a worker. A torch that kills its process then costs a
-probe rather than the session.
-
-## Corrected after review
-
-**The memory gate was inverted.** `_assert_fits` originally raised only when
-`allowCpuOffload` was false, which is off by default — so a 60 GB checkpoint on
-a 36 GB machine passed the very gate meant to stop it. It now checks in two
-steps, because the two policy flags gate different fallbacks: exceeding device
-memory is acceptable only when CPU offload is allowed, and exceeding *host*
-memory means disk offload is unavoidable regardless. On unified-memory hardware
-the two pools are the same, so CPU offload buys nothing and the second check is
-the one that fires. Covered by `test_rejects_a_model_larger_than_host_memory`.
-
-**Cancel now names its target.** It previously sent no `requestId`, so a cancel
-racing a generation that had just finished would have stopped whichever one
-started next. Both sides now follow §18, and the worker rejects a cancel naming
-a request that is not in flight.
-
-**`generate.complete` sits one letter from §18's `generation.complete`.** The
-request name is kept for spec fidelity; the dispatch site now states explicitly
-that the similarly-named notification is deliberately absent.
-
-**`from_params` read `cls.__slots__`.** That happens to hold the field names
-under `@dataclass(slots=True)`, but it is an implementation detail;
-`dataclasses.fields()` is the contract.
-
-## What this validated
-
-Provisioning an isolated environment is not optional. The development machine
-here has a torch whose import aborts and no Transformers at all — exactly the
-condition a user's system Python will present. Relying on `python3` from PATH
-would fail for reasons the extension cannot diagnose or repair.
-
-## Next
-
-Phase 3 remains streaming and cancellation *wired through the extension*; the
-runtime side of both is built and the protocol carries them, but nothing calls
-it yet. Then phase 1 (provisioning) and phase 4 (dual-runtime integration).
-
-## Packaging
-
-Verified with `vsce ls` that the VSIX carries exactly the eight runtime files and
-excludes `__pycache__` and the test package. `npm run package` itself currently
-fails, but only at the `vscode:prepublish` typecheck, on the uncommitted
-`finalResponse.ts` edit below.
-
-## Unrelated, noticed in passing
-
-`src/worker/finalResponse.ts` has an uncommitted edit importing `'../domain'`
-without the `.js` extension, which fails `npm run typecheck` under NodeNext
-resolution. `src/worker/toolProtocol.test.ts` fails on a clean checkout of HEAD.
-Neither is touched by this work.
-
----
-
-# Implementation status — increment 2
-
-Phase 5 (domain, inspection, capabilities) is built. A Safetensors checkpoint can
-now be represented, installed and tracked. It still cannot be *run*: nothing
-routes to the Python worker yet.
-
-## Built
-
-| Path | Purpose |
-|---|---|
-| `src/models/modelIdentity.ts` | Manifest digest, directory change detection, format→runtime, ownership |
-| `src/models/safetensorsDirectory.ts` | The filesystem half: header reads, fingerprints, checkpoint description |
-| `src/domain.ts` | `format`, `runtime`, `files`, `quantization`, `customCodeRequired`, `managed` |
-| `src/models/modelRegistry.ts` | Migration and per-format verification, split out of `initialize` |
-| `src/models/modelManager.ts` | `importSafetensorsDirectory`, and an ownership guard on `remove` |
-
-Node suite 210 tests / 209 passing; Python 13/13; typecheck and build clean.
-
-## Two decisions worth knowing about
-
-**A checkpoint is registered where it already lives.** GGUF models are copied
-into extension storage; Safetensors checkpoints are not. Copying tens of
-gigabytes to duplicate what the user already has on disk cannot be justified, and
-these models are routinely kept on an external volume.
-
-The consequence is recorded as `managed: false`, and `remove` honours it: an
-in-place checkpoint is unregistered and its files are left alone. A test asserts
-the weights survive removal, because the failure mode — deleting a user's 60 GB
-checkpoint because they took it out of a list — is unacceptable.
-
-**Identity is a manifest digest, not a content hash.** A GGUF model is identified
-by SHA-256 over its bytes. Re-hashing a directory that size on every activation
-is not viable, so a checkpoint is identified by a digest over each file's path,
-size and *Safetensors header* — which names every tensor with its dtype, shape
-and offsets.
-
-This detects a re-quantized, re-sharded, truncated or substituted checkpoint. It
-does **not** detect a value flipped inside a tensor payload that leaves shape,
-dtype and file size intact. That is a real reduction against the guarantee GGUF
-models get, and it buys an activation that stays proportional to file count
-rather than to bytes on disk.
-
-Change *detection* is separate and cheaper still: one stat per file comparing
-size and mtime. Headers are re-read only once something has actually moved.
-Modification times are excluded from the digest deliberately, so that copying a
-checkpoint does not discard capabilities it was already verified for.
-
-## Migration
-
-`localLlm.installedModels.v1` keeps its key. Records written before this work
-carry no `format`, and every one of them is a single GGUF file served by
-llama.cpp, so they are labelled on load rather than discarded. A checkpoint with
-no recorded fingerprints is backfilled rather than invalidated, for the same
-reason. Both are covered by tests that assert a legacy record keeps its verified
-capabilities and its runtime profile across the migration.
-
-## Next
-
-Phase 4, the dual-runtime integration: `WorkerManager` still assumes one
-llama-server child on a loopback port, and the provider does not yet route on
-`model.runtime`. After that, phase 1 provisioning, which is what makes any of it
-run on a machine other than a developer's.
-
----
-
-# Implementation status — increment 3 (phase 4, in progress)
-
-The runtime seam is built: both workers now satisfy one contract. What remains
-in phase 4 is the plumbing behind it — `WorkerManager` still spawns only
-llama-server, and the provider still does not route on `model.runtime`.
-
-## Built
-
-| Path | Purpose |
-|---|---|
-| `src/worker/inferenceClient.ts` | `InferenceClient` — what the extension asks of a loaded model, whichever worker holds it |
-| `src/worker/transformersClient.ts` | Adapts the Python runtime to that contract |
-| `src/worker/llamaClient.ts` | Now declares `implements InferenceClient` and its capabilities |
-| `resources/runtime/runtime/runtime.py` | `count_tokens`, and `generate` returns a `GenerationResult` |
-| `resources/runtime/runtime/worker.py` | `model.tokenize` |
-
-Node suite 226 tests / 225 passing; Python 13/13; typecheck and build clean.
-
-## Capabilities are declared, not inferred
-
-`InferenceClient` carries a `supports` record rather than letting callers test
-for a method. Inline completion asks `supportsInfill(client)`, which requires
-*both* the declaration and the implementation — a client claiming a capability
-it does not implement is rejected rather than called and crashed. llama.cpp
-declares `infill` and `constrainedDecoding`; the Transformers client declares
-neither, for now.
-
-That is what makes the missing pieces safe to ship before they exist. A
-Safetensors model reports `supportsTools: false` through the ordinary profile,
-so the Local Agent will not select it, and a chat request carrying tools is
-refused with a reason before anything reaches the worker rather than returning
-prose the agent cannot parse.
-
-## One thing that got faster
-
-The prompt token count now travels with the generation response. The first cut
-asked the worker for it separately, which cost a round trip per reply to report
-a number the worker had already computed at encode time. `generate` returns a
-`GenerationResult` carrying both.
-
-Found because the first version of the adapter test hung: it answered the
-token-count request before that request had been sent. The fix removed the
-request rather than the race.
-
-# Implementation status — increment 4 (phase 4, complete)
-
-| Path | Purpose |
-|---|---|
-| `src/worker/runtimeSession.ts` | The seam: `RuntimeSession`, `runtimeForModel`, `exitNotifier` |
-| `src/worker/transformersBackend.ts` | Verifies, probes, spawns and loads the Python runtime |
-| `src/worker/workerManager.ts` | Routes on `model.runtime`; lifecycle is now session-shaped |
-| `src/provider/localLanguageModelProvider.ts` | Runtime-specific advice on the two refusals |
-| `src/completion/localInlineCompletionProvider.ts`, `src/ui/modelCommands.ts` | Branch on `supportsInfill` |
-
-Node suite 236/236; Python 13/13; typecheck and build clean. `npm test` runs
-end to end for the first time — see "A test that had been red" below.
-
-## The seam is `RuntimeSession`, not `WorkerBackend`
-
-The scope's original wording predates a collision: `workerManifest.ts` already
-exports `WorkerBackend` for metal/sycl/cpu, and `workerManager.ts` uses
-`backend` as a local throughout the llama.cpp start path. That is a different
-axis entirely — a *backend* is how llama.cpp uses the hardware, a *runtime* is
-which engine holds the weights. The discriminator already existed as
-`ModelRuntime`.
-
-A `RuntimeSession` is a started process, the client that talks to it, and how
-it ends. `WorkerManager` holds one at a time and dispatches on
-`runtimeForModel(model)`.
-
-## No second scheduler, deliberately
-
-The concern was two 30B models resident at once. It does not arise, and adding
-queueing would not have been what prevented it: one manager owns one session,
-and every request already funnels through its single `InferenceScheduler`.
-Starting either runtime evicts the other for exactly the reason two GGUF models
-could never coexist. Splitting ownership per runtime is the change that *would*
-have created the risk.
-
-What actually needed generalizing was teardown and crash recovery. How a
-process is asked to stop differs — llama-server takes a signal, the Python
-worker takes a closed stdin — but what an unexpected exit *means* is identical,
-so `handleExit` moved onto the session and stayed in one place.
-
-`exitNotifier` fires immediately for a handler registered after the process has
-already died. Without that, a worker crashing between passing its health check
-and being watched would leave a session that looks alive forever, and the
-manager would keep handing callers a client to a process that is gone.
-
-## Three call sites the contract had to grow for
-
-Widening `run<T>` from `LlamaClient` to `InferenceClient` exposed methods the
-first cut of the interface had missed: `countChatInputTokens`, and the native
-tool-call cache (`get`/`setNativeToolCallSupport`). Both are now on the
-contract. The Python adapter implements the token count through the worker's
-`model.tokenize`, which already counts a conversation through the chat
-template — the same question. Native tool-call support is reported as
-structurally `unavailable` rather than cached, because there the answer does
-not depend on the model.
-
-`canRunInline` **cannot** consult `supports.infill`: it runs before any client
-exists. The capability guard belongs where a live client does — inline
-completion itself, and `validateFillInMiddle`, which now records `unsupported`
-without spending a load to discover what the runtime already knows.
-
-## Checkpoint verification is not the GGUF check
-
-The llama.cpp path rejects a model whose size or mtime moved since it was
-registered. Reusing that for a checkpoint would reject every one of them:
-copying a checkpoint to a faster disk rewrites every mtime and not one byte,
-which is exactly why `manifestDigest` excludes mtimes. The Safetensors path
-compares the digest instead — paths, sizes and Safetensors headers — so it
-survives a move and still catches a swap.
-
-## `localLlm.pythonPath`, until provisioning ships
-
-Phase 1 is still the open risk. Until it lands, the interpreter is a setting,
-and an empty value fails by naming it. Discovering `python3` on `PATH` would
-find the system interpreter, and several gigabytes of PyTorch is not something
-to install there on a user's behalf.
-
-The interpreter is probed with `--probe` in a throwaway process before the
-worker is spawned. That is not defensive styling: importing torch can abort the
-interpreter rather than raise — a duplicate OpenMP runtime does it on this very
-machine — and a worker cannot report its own abort.
-
-## A test that had been red
-
-`toolProtocol.test.ts` failed on a clean checkout, and because `npm test`
-chains `test:node && test:python`, the Python suite had never run from the
-top-level command. The cause was one word: `toolProtocol.ts` imported
-`ChatTool` as a value rather than `import type`, so Node's strip-only
-TypeScript kept the import and then could not resolve `../domain.js`, which
-does not exist in the source tree. Fixed.
-
-## Still to do
-
-- **UI commands** (~2–3 days). Nothing invokes `importSafetensorsDirectory`
-  yet, the model list does not show format or runtime, and `quantization` /
-  `customCodeRequired` are recorded but never surfaced before a load.
-- **Phase 1, Python provisioning** (~2–3 weeks). The largest remaining risk
-  and the only one with no upstream answer.
-- **Phase 6, tool calling** via a grammar backend such as `xgrammar`. Until
-  then Safetensors models are Chat-only, and say so.
-- **Phase 7, FIM.** No Transformers analogue exists; FIM tokens live outside
-  the chat template. The alternative is advertising `fillInMiddle:
-  'unsupported'` permanently for this runtime, which is what happens today.
+A release-time generated manifest (checked in, e.g.
+`resources/runtime/env-manifest.json`) pins per target:
+
+```text
+target:
+  interpreter: { url, sha256, exe }   # python-build-standalone build
+  wheels: [{ name, url, sha256 }]      # full closure, no PyPI at install time
+  packs: { cuda: {...}, ipex: {...} } # Windows-only optional packs
+```
+
+Targets and flavors (see platform matrix for the full map):
+
+- `darwin-arm64`: one flavor. Standalone CPython + PyPI CPU torch (MPS
+  included), transformers/accelerate/safetensors per `requirements.txt`.
+  ~0.5–1 GB installed.
+- `win32-x64/cpu`: standalone CPython + PyPI CPU torch. ~0.5–1 GB.
+- `win32-x64/cuda`: cpu base + CUDA torch wheel set (torch + `nvidia-*`
+  closure). ~3–5 GB. Selected when `nvidia-smi` succeeds.
+- `win32-x64/xpu`: cpu base with stock torch *replaced* by torch's own
+  `+xpu` build from the PyTorch XPU channel (in-tree `torch.xpu`, no IPEX
+  needed; required: Intel Arc Pro 140T work laptop). A pack replaces rather
+  than adds: one torch per env, and pack wheels win incidental collisions.
+  Selected when Intel graphics is detected; probe must confirm `torch.xpu`
+  sees the GPU or the env is rejected as broken. The XPU channel lags stock
+  torch slightly (2.12 vs 2.14 at manifest time) — see the platform matrix.
+  Regenerate with `--xpu <torch-version>` as new builds appear.
+  Flavor override setting `localLlm.pythonEnvFlavor: auto | cpu | cuda |
+  xpu` always wins over detection.
+
+### Windows GPU detection (decided)
+
+No in-repo precedent (backend selection is by setting, not probing). New
+`detectWindowsGpu()` in the environment module, result cached per session:
+
+1. `nvidia-smi -L` exit 0 → `cuda`.
+2. Else PowerShell `Get-CimInstance Win32_VideoController`, names matching
+   `/intel.*arc|arc.*intel/i` (covers discrete Arc and 140T-class iGPUs
+   reporting as e.g. `Intel(R) Arc(TM) 140T Graphics`) → `ipex`.
+3. Else (or any spawn failure) → `cpu`. Detection never throws; failure
+   degrades to CPU, and the setting always wins.
+
+### Proxy posture (decided)
+
+Env downloads reuse `downloadModel`, inheriting exactly the existing model
+path's behavior: plain `fetch` honoring `HTTP(S)_PROXY` env, with no
+VS Code `http.proxy`-setting integration. Full setting-aware proxy support
+is backlog shared with model downloads, not a provisioning blocker; failure
+degrades to naming `localLlm.pythonPath`.
+
+Install flow (`ensureEnvironment()`, before first spawn):
+
+1. Read installed manifest; match against release manifest (target, flavor,
+   wheel SHAs). Match → use.
+2. Else VS Code progress download: interpreter archive + each wheel via the
+   existing `downloadModel` (resume, per-file SHA-256, single-flight).
+3. Extract interpreter, create venv, `pip install --no-index` the local
+   wheels (hermetic: PyPI is never consulted at install time).
+4. `--probe` in a throwaway process; probe failure deletes nothing but
+   refuses to write the installed manifest, so next use retries.
+5. Write installed manifest. Env replacement is by new directory;
+   stale dirs are removed lazily on next successful provision.
+
+Fallbacks: `localLlm.pythonPath` remains the permanent manual escape hatch
+(proxy, air-gap, custom CUDA). Proxy behavior of `fetch` download is
+verified during implementation; failure degrades to naming the setting.
+
+## 11. UI and acquisition gaps
+
+- Nothing invokes `importSafetensorsDirectory` (defined in
+  `modelManager.ts:160`, no non-test caller); the model picker shows no
+  format/runtime; `quantization` / `customCodeRequired` are recorded but never
+  surfaced pre-load. Partial progress exists: status readout names the engine
+  via `runtimeDisplayName` (`modelCommands.ts`). Still GGUF-assumed: the
+  remove dialog asks about the "GGUF file" unconditionally. Estimate ~2–3 days.
+- HF acquisition is GGUF-only (see §2). Designing Safetensors selection
+  (which files, what size, revision pinning) is unscheduled scope.
+
+## 12. Acceptance (replaces v1 §34)
+
+MVP is done when, on macOS arm64 + Windows x64 (Windows ARM64 unsupported —
+no PyPI torch; Linux deferred per platform matrix; state both in requirements):
+
+1. Local directory installs as `transformers` runtime, detected shallowly,
+   headers-only.
+2. `model.inspect` reports arch / context / quant / weight bytes / dtype /
+   sharded / custom-code without loading weights, including when Python is
+   broken (TS mirror).
+3. Memory gate: estimate within 5% over capacity loads (with warning);
+   beyond 5% refuses pre-load with `insufficient_memory`. CPU offload only
+   when explicitly opted in (default `false`). Quantized-unsupported and
+   custom-code checkpoints refuse with their codes.
+4. Chat streams tokens, `GenerationResult` carries prompt count, cancel of an
+   in-flight id stops it and a stale cancel is rejected.
+5. Unload + reload, unexpected-exit recovery (no phantom-live session), and
+   one-session eviction across runtimes.
+6. Digest survives a directory move; shard substitution / truncation
+   invalidates; `remove` leaves in-place files on disk.
+7. Legacy GGUF records migrate with capabilities and runtime intact.
+8. Tool-bearing chat on a Safetensors model refuses with runtime-specific
+   advice; Local Agent never selects it; FIM reports `unsupported` without
+   loading.
+9. Protocol mismatch fails with reinstall guidance; probe failure fails by
+   naming `localLlm.pythonPath`.
+10. `npm test` (node + python), typecheck, and build green on a clean
+    checkout.
+
+## 13. Phases with done criteria [inference, recalibrated]
+
+| Phase | Done when | Est. |
+|---|---|---|
+| 1. Provisioning + pinning | Clean machine installs pinned env into global storage, hash-verified, `runtime.info` diagnosable | 2–3 wks |
+| 2. Worker protocol + lifecycle | Table in §4 + error codes in §5 over stdio JSONL, crash recovery tested | done (verify) |
+| 3. Streaming + cancel via extension | §12 items 4–5 through `WorkerManager`, not just worker-direct tests | ~1 wk |
+| 4. Dual-runtime integration | `runtimeForModel` routing, one-session eviction, refusals with advice | done (verify) |
+| 5. Inspect + capabilities + memory gate | §12 items 2–3, unified header cap, host+device checks | ~1 wk + defect fix |
+| 6. HF + UI acquisition | HF Safetensors select/download + invoke/surface import | 1–2 wks (new vs v1) |
+| 7. Tool calling (grammar) | `xgrammar` baseline, agent selects Safetensors, error codes live | 1.5–2 wks, post-MVP |
+| 8. FIM decision | Permanent `unsupported` or tokenizer-config assembly | 0.5–1 wk, post-MVP |
+| 9. Test hardening | Per-module tests, cross-side header fixture, red-on-clean-checkout ban | 1–1.5 wks |
+
+MVP (1–5 + partial 9): ~7–9 wks from v1 baseline, minus verified-done items 2/4
+pending a green clean-checkout run. Full scope (+6–9): ~11–15 wks.
+Estimates are judgment, not measurement — re-estimate after provisioning
+spikes on all three OS targets.
+
+## 14. Non-goals
+
+No conversion as the primary path (llama.cpp cannot load Safetensors;
+convert-then-run keeps the Python dependency while adding per-model time,
+disk, fidelity loss, and architecture lag — rejected). No curated model list:
+any Transformers-supported checkpoint must be loadable, not only approved
+ones. No `trust_remote_code`. No second scheduler or per-runtime queues. No
+bundled interpreter in the VSIX. No bundled optimisation backends until a real
+model needs them.
+
+## 15. Open questions
+
+1. Decided and aligned: header cap 128 MiB both sides, shared fixture test each side.
+2. HF Safetensors file-selection UX (full dir vs filtered subset, revision pin)?
+3. Windows ARM64: CPU-only via unofficial torch vs explicit unsupported?
+4. Permanent FIM `unsupported` vs tokenizer-config assembly?
+5. Strengthen digest toward payload sampling later, and at what activation
+   budget?
+6. Decided and aligned: `allowCpuOffload` defaults to `false`; 5% tolerance
+   band with warning in the `runtime.py` gate; usable = 90% of pool.

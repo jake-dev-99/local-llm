@@ -21,18 +21,11 @@ export function finalResponseMessages(messages: readonly ChatMessage[]): ChatMes
 
 export function assertFinalResponse(text: string, hasToolCalls: boolean): void {
   if (hasToolCalls || containsUnquotedToolCall(text)) {
-    if(hasToolCalls){
-      console.error('The model returned tool-call output while tool execution was disabled for the final answer.');
-      console.error(text);
-    }
-    if(containsUnquotedToolCall(text)){
-      console.error('The model returned unquoted tool-call output while tool execution was disabled for the final answer.');
-      console.error(text);
-    }
-    // throw new Error(
-    //   'The model returned tool-call output while tool execution was disabled for the final answer. ' +
-    //   'No additional tool was executed.',
-    // );
+    throw new Error(
+      'The model returned tool-call output while tool execution was disabled for the final answer. ' +
+      'No additional tool was executed. Review the existing edits and tool results; ' +
+      'start a follow-up request if more work is needed.',
+    );
   }
 }
 
