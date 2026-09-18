@@ -85,6 +85,18 @@ export function validateToolCallInput(
   }
 }
 
+/**
+ * The raw JSON Schema for a tool decision, for runtimes that compile the
+ * grammar themselves. `toolDecisionResponseFormat` wraps this for servers
+ * that take an OpenAI-style response_format envelope.
+ */
+export function toolDecisionJsonSchema(
+  tools: readonly ChatTool[],
+  toolRequired: boolean,
+): Record<string, unknown> {
+  return toolDecisionSchema(tools, toolRequired);
+}
+
 function toolDecisionSchema(
   tools: readonly ChatTool[],
   toolRequired: boolean,

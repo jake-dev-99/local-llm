@@ -77,20 +77,31 @@ test('wheel filenames parse, with and without a build tag', () => {
 });
 
 test('a percent-encoded local version is not a wheel filename pip accepts', () => {
-  // pip 26 raises InvalidWheelFilename on this exact name; safeWheelFilename
-  // writes it to disk verbatim, so the install dies after the download.
+  // pip 26 raises InvalidWheelFilename on this exact name, which is why
+  // safeWheelFilename decodes the url segment before it reaches disk.
   assert.equal(parseWheelFilename('torch-2.14.0%2Bcpu-cp310-cp310-win_amd64.whl'), undefined);
   assert.equal(parseWheelFilename('transformers-5.17.0.tar.gz'), undefined);
 });
 
-test('safeWheelFilename mirrors the provisioner: last url segment, no decoding', () => {
-  assert.equal(
-    safeWheelFilename({ name: 'torch==2.14.0+cpu', url: 'https://h/whl/cpu/torch-2.14.0%2Bcpu-cp310-cp310-win_amd64.whl' }),
-    'torch-2.14.0%2Bcpu-cp310-cp310-win_amd64.whl',
-  );
+test('safeWheelFilename mirrors the provisioner: last url segment, percent-decoded', () => {
+  const encoded = { name: 'torch==2.14.0+cpu', url: 'https://h/whl/cpu/torch-2.14.0%2Bcpu-cp310-cp310-win_amd64.whl' };
+  assert.equal(safeWheelFilename(encoded), 'torch-2.14.0+cpu-cp310-cp310-win_amd64.whl');
+  // The point of the decode: the name that reaches pip has to parse.
+  assert.equal(parseWheelFilename(safeWheelFilename(encoded)).version, '2.14.0+cpu');
   assert.equal(
     safeWheelFilename({ name: 'x==1', url: 'https://h/x-1-py3-none-any.whl?token=abc' }),
     'x-1-py3-none-any.whl',
+  );
+  // A malformed escape keeps the raw segment: it still names the wheel, where
+  // the `${name}.whl` fallback ("torch==2.14.0+cpu.whl") would not.
+  assert.equal(
+    safeWheelFilename({ name: 'torch==2.14.0+cpu', url: 'https://h/whl/torch-2.14.0%2zcpu-cp310-cp310-win_amd64.whl' }),
+    'torch-2.14.0%2zcpu-cp310-cp310-win_amd64.whl',
+  );
+  // Decoding must not introduce a path separator; the wheel stays in its dir.
+  assert.equal(
+    safeWheelFilename({ name: 'x==1', url: 'https://h/..%2F..%2Fx-1-py3-none-any.whl' }),
+    '..%2F..%2Fx-1-py3-none-any.whl',
   );
 });
 

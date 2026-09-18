@@ -151,9 +151,17 @@ export function platformTagAdmits(platformTag, target) {
  * The on-disk name the provisioner gives a downloaded wheel. Mirrors
  * `safeWheelFilename` in `src/worker/pythonProvision.ts` — pip is handed this
  * path, so this is the name that has to parse, not the manifest's `name`.
+ * Including the percent-decode: an encoded local version segment is a legal url
+ * but not a legal wheel filename, so the decode is what keeps the two apart.
  */
 export function safeWheelFilename(wheel) {
-  return String(wheel.url).split('/').pop()?.split('?')[0] || `${wheel.name}.whl`;
+  const segment = String(wheel.url).split('/').pop()?.split('?')[0] || `${wheel.name}.whl`;
+  try {
+    const decoded = decodeURIComponent(segment);
+    return /[/\\]/.test(decoded) ? segment : decoded;
+  } catch {
+    return segment;
+  }
 }
 
 /**
@@ -383,10 +391,11 @@ function validateWheelList(wheels, where, target, pythonTag, findings, hashByUrl
     const parsed = parseWheelFilename(diskName);
     if (!parsed) {
       findings.push(finding('error', where, 'BAD_WHEEL_FILENAME',
-        `${label}: the url's last path segment is "${diskName}", which is not a filename pip ` +
-        `accepts (pip 26.2.1 raises InvalidWheelFilename on it; older pip derives a version that ` +
-        `disagrees with the archive's METADATA). safeWheelFilename() writes that name to disk ` +
-        `verbatim — it does not percent-decode — and pip parses the name before reading the archive.`));
+        `${label}: the url's last path segment lands on disk as "${diskName}", which is not a ` +
+        `filename pip accepts (pip 26.2.1 raises InvalidWheelFilename on it; older pip derives a ` +
+        `version that disagrees with the archive's METADATA). safeWheelFilename() percent-decodes ` +
+        `the segment but changes nothing else, and pip parses the name before reading the archive, ` +
+        `so this fails the install after the whole download.`));
       continue;
     }
     if (normalizeName(parsed.name) !== normalized) {

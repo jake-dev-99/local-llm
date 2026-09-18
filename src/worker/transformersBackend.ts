@@ -134,7 +134,7 @@ export async function probePythonRuntime(
   if (!pythonPath.trim()) {
     throw new Error(
       'No Python interpreter is configured for Safetensors models. Set "localLlm.pythonPath" ' +
-      'to an interpreter with torch, transformers, accelerate and safetensors installed ' +
+      'to an interpreter with torch, transformers, accelerate, safetensors and xgrammar installed ' +
       `(see ${runtimeDirectory}/requirements.txt).`,
     );
   }

@@ -72,7 +72,9 @@ const RELEASE = {
   },
 };
 
-function harness(storage: string) {
+type ReleaseEntry = typeof RELEASE.targets['darwin-arm64'];
+
+function harness(storage: string, entry: ReleaseEntry = RELEASE.targets['darwin-arm64']) {
   const commands: Array<{ exe: string; args: string[] }> = [];
   const downloads: string[] = [];
   return {
@@ -97,7 +99,7 @@ function harness(storage: string) {
         }
         return { stdout: '', stderr: '' };
       },
-      readReleaseManifest: async () => RELEASE.targets['darwin-arm64'],
+      readReleaseManifest: async () => entry,
     },
     options: {
       storagePath: storage,
@@ -134,6 +136,37 @@ test('first use provisions in order, second use is cached', async () => {
     assert.equal(cachedResult.fresh, false);
     assert.equal(second.downloads.length, 0);
     assert.equal(second.commands.length, 0);
+  } finally {
+    rmSync(storage, { recursive: true, force: true });
+  }
+});
+
+test('a percent-encoded wheel url lands on disk under a name pip parses', async () => {
+  const provision = await loadProvision();
+  const storage = mkdtempSync(path.join(tmpdir(), 'local-llm-prov-'));
+  try {
+    // PyTorch serves local version segments encoded. pip parses a wheel's
+    // filename before it opens the archive, so handing it the raw segment
+    // fails with InvalidWheelFilename — after the whole download.
+    const attempt = harness(storage, {
+      interpreter: { url: 'https://example.invalid/py.tar.gz', sha256: 'aa', exe: 'bin/python3' },
+      wheels: [{
+        name: 'torch==2.14.0+cpu',
+        url: 'https://download-r2.pytorch.org/whl/cpu/torch-2.14.0%2Bcpu-cp310-cp310-win_amd64.whl',
+        sha256: 'bb',
+      }],
+    });
+    await provision.ensureEnvironment(attempt.options, attempt.deps);
+
+    const wheelPath = attempt.downloads.find((destination: string) => destination.endsWith('.whl'));
+    assert.ok(wheelPath, 'the wheel was downloaded');
+    // The name pip accepts: a decoded `+`, nothing else touched.
+    assert.equal(path.basename(wheelPath), 'torch-2.14.0+cpu-cp310-cp310-win_amd64.whl');
+    assert.ok(!wheelPath.includes('%'), 'no percent escape survives to disk');
+
+    const pip = attempt.commands.find((command: { args: string[] }) => command.args.includes('--no-index'));
+    assert.ok(pip, 'pip install ran');
+    assert.ok(pip.args.includes(wheelPath), 'pip is handed the decoded path');
   } finally {
     rmSync(storage, { recursive: true, force: true });
   }

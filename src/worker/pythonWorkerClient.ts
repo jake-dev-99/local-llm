@@ -10,6 +10,7 @@ import {
   PythonWorkerError,
   SUPPORTED_PROTOCOL_VERSION,
   type ModelInspection,
+  type PythonChatMessage,
   type PythonErrorCode,
   type PythonGenerationOptions,
   type PythonGenerationResult,
@@ -104,14 +105,14 @@ export class PythonWorkerClient {
    * so the count includes the role markers the model actually receives.
    */
   async tokenize(
-    input: { text: string } | { messages: ReadonlyArray<{ role: string; content: string }> },
+    input: { text: string } | { messages: ReadonlyArray<PythonChatMessage> },
   ): Promise<number> {
     const result = await this.request<{ tokens: number }>('model.tokenize', { ...input });
     return result.tokens;
   }
 
   async chat(
-    messages: ReadonlyArray<{ role: string; content: string }>,
+    messages: ReadonlyArray<PythonChatMessage>,
     request: GenerateRequest = {},
   ): Promise<PythonGenerationResult> {
     return await this.generate('generate.chat', { messages }, request);

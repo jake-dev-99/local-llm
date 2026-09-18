@@ -13,3 +13,6 @@ safetensors==0.8.0
 exceptiongroup==1.3.1
 tomli==2.4.1
 colorama==0.4.6
+# Grammar backend for schema-constrained tool decisions. Guidance masks on the
+# CPU from token IDs, so one build serves CPU, CUDA, XPU and MPS alike.
+xgrammar==0.2.7

@@ -9,12 +9,20 @@ from __future__ import annotations
 
 import json
 import struct
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 
 from runtime import inspector, runtime as runtime_module
-from runtime.errors import InsufficientMemoryError, InvalidModelError, MissingWeightsError
+from runtime.errors import (
+    GrammarCompileFailedError,
+    GrammarUnsupportedError,
+    InsufficientMemoryError,
+    InvalidModelError,
+    MissingWeightsError,
+)
 from runtime.models import GenerationOptions, RuntimePolicy
 
 GIB = 1024 ** 3
@@ -107,6 +115,154 @@ class MemoryGateTest(unittest.TestCase):
         self.llm._assert_fits(60 * GIB, RuntimePolicy())
 
 
+class ContextLengthTest(unittest.TestCase):
+    """The loaded worker sees the same window as inspection.
+
+    Multimodal configs nest it under text_config; the loaded worker used to
+    look only at the top level and reported unknown context, which collapsed
+    every context-derived budget to a single token.
+    """
+
+    def length_of(self, config) -> int | None:
+        llm = runtime_module.LocalLLM()
+        llm.config = config
+        return llm._context_length()
+
+    def test_top_level_window(self) -> None:
+        self.assertEqual(
+            self.length_of(SimpleNamespace(max_position_embeddings=32768)), 32768,
+        )
+
+    def test_nested_text_config_window(self) -> None:
+        self.assertEqual(
+            self.length_of(SimpleNamespace(
+                text_config=SimpleNamespace(max_position_embeddings=131072),
+            )),
+            131072,
+        )
+
+    def test_missing_window_is_unknown(self) -> None:
+        self.assertIsNone(self.length_of(SimpleNamespace()))
+
+
+class UnloadCachePurgeTest(unittest.TestCase):
+    """Unload purges only available backends.
+
+    Merely exposing empty_cache is not enough: a half-initialized backend
+    aborts the interpreter when purged, and no except clause catches that.
+    """
+
+    def _torch(self, cuda=False, xpu=False, mps=False):
+        calls = []
+
+        def empty():
+            calls.append(True)
+
+        torch = ModuleType("torch")
+        torch.cuda = SimpleNamespace(is_available=lambda: cuda, empty_cache=empty)
+        torch.backends = SimpleNamespace(
+            mps=SimpleNamespace(is_available=lambda: mps) if mps is not None else None
+        )
+        if xpu:
+            torch.xpu = SimpleNamespace(is_available=lambda: True, empty_cache=empty)
+        sys.modules["torch"] = torch
+        return calls
+
+    def setUp(self) -> None:
+        self._saved = sys.modules.pop("torch", ...)
+
+    def tearDown(self) -> None:
+        sys.modules.pop("torch", None)
+        if self._saved is not ...:
+            sys.modules["torch"] = self._saved
+
+    def unload_with(self, **backends):
+        calls = self._torch(**backends)
+        llm = runtime_module.LocalLLM()
+        llm.model = object()
+        llm.unload()
+        return calls
+
+    def test_unavailable_backends_are_not_purged(self) -> None:
+        self.assertEqual(self.unload_with(), [])
+
+    def test_available_backend_is_purged(self) -> None:
+        self.assertEqual(len(self.unload_with(cuda=True)), 1)
+
+
+class ThinkingChannelTest(unittest.TestCase):
+    """Reasoning traces strip to the answered text, per vendor protocol."""
+
+    def test_gemma_channel_keeps_final_text(self) -> None:
+        self.assertEqual(
+            runtime_module.strip_thinking_channels(
+                "<|channel>thought\nI called it; result ok.\n<channel|>ok"
+            ),
+            "ok",
+        )
+
+    def test_qwen_think_block_is_dropped(self) -> None:
+        self.assertEqual(
+            runtime_module.strip_thinking_channels("<think>hmm</think>the value is ok"),
+            "the value is ok",
+        )
+
+    def test_plain_text_passes_through(self) -> None:
+        self.assertEqual(
+            runtime_module.strip_thinking_channels("The validation value is ok."),
+            "The validation value is ok.",
+        )
+
+    def test_unclosed_thought_drops_to_end(self) -> None:
+        self.assertEqual(
+            runtime_module.strip_thinking_channels("ok<think>never finished"),
+            "ok",
+        )
+
+    def test_lone_closer_drops_orphaned_thought(self) -> None:
+        # The prompt ends inside the open channel, so generation emits only
+        # the closer after thinking.
+        self.assertEqual(
+            runtime_module.strip_thinking_channels(
+                "The function returned ok.\n<channel|>ok"
+            ),
+            "ok",
+        )
+
+    def test_specials_clean_after_channel_strip(self) -> None:
+        class FakeTokenizer:
+            def encode(self, text, add_special_tokens=False):
+                assert text == "kept"
+                assert add_special_tokens is False
+                return [7]
+
+            def decode(self, ids, skip_special_tokens=True):
+                assert ids == [7]
+                assert skip_special_tokens is True
+                return "kept"
+
+        llm = runtime_module.LocalLLM()
+        llm.tokenizer = FakeTokenizer()
+        self.assertEqual(llm._clean_special_tokens("kept"), "kept")
+
+    def test_thinking_kwarg_reaches_the_template_only_when_set(self) -> None:
+        seen = {}
+
+        class FakeTokenizer:
+            chat_template = "template"
+
+            def apply_chat_template(self, _messages, **kwargs):
+                seen.update(kwargs)
+                return {"input_ids": [[1]]}
+
+        llm = runtime_module.LocalLLM()
+        llm.tokenizer = FakeTokenizer()
+        llm._encode_chat([], GenerationOptions.from_params({}))
+        self.assertNotIn("enable_thinking", seen)
+        llm._encode_chat([], GenerationOptions.from_params({"enableThinking": True}))
+        self.assertTrue(seen["enable_thinking"])
+
+
 class OptionParsingTest(unittest.TestCase):
     def test_unknown_keys_are_dropped_rather_than_raising(self) -> None:
         # A newer extension paired with an older worker must degrade, not fail.
@@ -126,6 +282,90 @@ class OptionParsingTest(unittest.TestCase):
         # caller opts in explicitly. CPU offload that is allowed is slow but
         # real, so it stays available behind the flag.
         self.assertFalse(RuntimePolicy.from_params(None).allowCpuOffload)
+
+    def test_json_schema_survives_option_parsing(self) -> None:
+        schema = {"type": "object"}
+        self.assertEqual(GenerationOptions.from_params({"jsonSchema": schema}).jsonSchema, schema)
+
+
+class GrammarBackendTest(unittest.TestCase):
+    """Schema-constrained kwargs without importing torch or xgrammar.
+
+    The backend is stubbed in sys.modules: the point under test is the
+    refusal codes and the wiring, not xgrammar's masking (proven separately
+    against the provisioned interpreter).
+    """
+
+    STUBBED = ("xgrammar", "xgrammar.contrib", "xgrammar.contrib.hf", "transformers")
+
+    def setUp(self) -> None:
+        self.llm = runtime_module.LocalLLM()
+        self.llm.config = SimpleNamespace(vocab_size=1000)
+        self.llm.tokenizer = object()
+        self._saved = {name: sys.modules.get(name, ...) for name in self.STUBBED}
+        for name in self.STUBBED:
+            sys.modules.pop(name, None)
+
+    def tearDown(self) -> None:
+        for name in self.STUBBED:
+            sys.modules.pop(name, None)
+        for name, module in self._saved.items():
+            if module is not ...:
+                sys.modules[name] = module
+
+    def _stub_backend(self, compile_result=None, compile_error=None):
+        calls = {"compiled": 0}
+
+        class FakeCompiler:
+            def compile_json_schema(self, _schema):
+                calls["compiled"] += 1
+                if compile_error is not None:
+                    raise compile_error
+                return compile_result
+
+        package = ModuleType("xgrammar")
+        package.GrammarCompiler = lambda _info: FakeCompiler()  # noqa: E731
+        package.TokenizerInfo = SimpleNamespace(from_huggingface=lambda _tok, **_kw: "info")
+        contrib = ModuleType("xgrammar.contrib")
+        hf = ModuleType("xgrammar.contrib.hf")
+        hf.LogitsProcessor = lambda compiled: ("processor", compiled)
+        transformers = ModuleType("transformers")
+        transformers.LogitsProcessorList = lambda items: ("list", list(items))
+        sys.modules["xgrammar"] = package
+        sys.modules["xgrammar.contrib"] = contrib
+        sys.modules["xgrammar.contrib.hf"] = hf
+        sys.modules["transformers"] = transformers
+        return calls
+
+    def options(self):
+        return GenerationOptions.from_params(
+            {"maxNewTokens": 64, "jsonSchema": {"type": "object"}}
+        )
+
+    def test_missing_backend_refuses_with_code(self) -> None:
+        sys.modules["xgrammar"] = None  # type: ignore[assignment]
+        with self.assertRaises(GrammarUnsupportedError) as caught:
+            self.llm._generation_kwargs(self.options())
+        self.assertEqual(caught.exception.code, "unsupported_grammar")
+
+    def test_no_schema_wires_no_processor(self) -> None:
+        kwargs = self.llm._generation_kwargs(GenerationOptions.from_params({}))
+        self.assertNotIn("logits_processor", kwargs)
+        self.assertEqual(kwargs["max_new_tokens"], 512)
+
+    def test_compile_failure_maps_to_code(self) -> None:
+        self._stub_backend(compile_error=RuntimeError("bad type"))
+        with self.assertRaises(GrammarCompileFailedError) as caught:
+            self.llm._generation_kwargs(self.options())
+        self.assertEqual(caught.exception.code, "grammar_compile_failed")
+
+    def test_compiled_grammar_is_cached_per_schema(self) -> None:
+        calls = self._stub_backend(compile_result="grammar")
+        first = self.llm._generation_kwargs(self.options())
+        second = self.llm._generation_kwargs(self.options())
+        self.assertEqual(calls["compiled"], 1)
+        self.assertEqual(first["logits_processor"], ("list", [("processor", "grammar")]))
+        self.assertEqual(second["logits_processor"], ("list", [("processor", "grammar")]))
 
 
 class InspectorTest(unittest.TestCase):

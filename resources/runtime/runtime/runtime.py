@@ -13,6 +13,7 @@ provisioned.
 from __future__ import annotations
 
 import gc
+import json
 import os
 import platform
 import sys
@@ -29,6 +30,7 @@ from .errors import (
     DeviceUnavailableError,
     GenerationCancelledError,
     GenerationFailedError,
+    GrammarCompileFailedError,
     GrammarUnsupportedError,
     InsufficientMemoryError,
     ModelLoadFailedError,
@@ -86,6 +88,38 @@ def _package_version(name: str) -> str:
         return "not installed"
 
 
+def strip_thinking_channels(text: str) -> str:
+    """Drop reasoning-channel spans, keeping the answered text.
+
+    Two vendor-documented protocols, applied in order: Gemma
+    `<|channel>name … <channel|>` (the template's own parser keeps what
+    follows the last `<channel|>`) and Qwen `<think>…</think>`. An unclosed
+    span — thinking cut off by the token budget — drops to the end of the
+    text, since a half thought is never an answer.
+    """
+
+    for opener, closer in (("<|channel>", "<channel|>"), ("<think>", "</think>")):
+        parts = []
+        rest = text
+        while True:
+            start = rest.find(opener)
+            if start < 0:
+                parts.append(rest)
+                break
+            parts.append(rest[:start])
+            end = rest.find(closer, start + len(opener))
+            if end < 0:
+                break
+            rest = rest[end + len(closer):]
+        text = "".join(parts)
+        # The prompt already ends inside an open channel, so generation
+        # usually emits only the closer: drop the orphaned thought up to it.
+        lone = text.find(closer)
+        if lone >= 0 and opener not in text[:lone]:
+            text = text[lone + len(closer):]
+    return text
+
+
 def detect_runtime() -> RuntimeInfo:
     """Report the active PyTorch backend.
 
@@ -96,7 +130,7 @@ def detect_runtime() -> RuntimeInfo:
 
     versions = {
         name: _package_version(name)
-        for name in ("torch", "transformers", "accelerate", "safetensors", "peft")
+        for name in ("torch", "transformers", "accelerate", "safetensors", "peft", "xgrammar")
     }
     base = {
         "protocolVersion": PROTOCOL_VERSION,
@@ -236,6 +270,8 @@ class LocalLLM:
         self._runtime: RuntimeInfo | None = None
         self._cancelled = threading.Event()
         self._generating = threading.Lock()
+        self._grammar_compiler: Any = None
+        self._grammars: dict[str, Any] = {}
 
     @property
     def runtime(self) -> RuntimeInfo:
@@ -397,18 +433,34 @@ class LocalLLM:
         self.config = None
         self.generation_config = None
         self.path = None
+        # Compiled grammars borrow the tokenizer's vocabulary; a new model
+        # needs a new compiler.
+        self._grammar_compiler = None
+        self._grammars = {}
         gc.collect()
         try:
             torch = _torch()
         except DeviceUnavailableError:
             return
-        for empty in (
-            getattr(getattr(torch, "cuda", None), "empty_cache", None),
-            getattr(getattr(torch, "xpu", None), "empty_cache", None),
-            getattr(getattr(torch, "mps", None), "empty_cache", None),
+        # Purge only backends that report themselves available. Merely
+        # existing is not enough: a half-initialized backend (seen with MPS,
+        # where the module exposes empty_cache but using it aborts the
+        # interpreter) turns an unconditional purge into a segfault, and no
+        # except clause catches that.
+        for available, empty in (
+            (lambda: torch.cuda.is_available(), getattr(torch.cuda, "empty_cache", None)),
+            (
+                lambda: hasattr(torch, "xpu") and torch.xpu.is_available(),
+                getattr(getattr(torch, "xpu", None), "empty_cache", None),
+            ),
+            (
+                lambda: getattr(getattr(torch, "backends", None), "mps", None) is not None
+                and torch.backends.mps.is_available(),
+                getattr(getattr(torch, "mps", None), "empty_cache", None),
+            ),
         ):
             try:
-                if empty is not None:
+                if empty is not None and available():
                     empty()
             except Exception:
                 pass
@@ -420,10 +472,16 @@ class LocalLLM:
             raise ModelNotLoadedError("No model is currently loaded.")
 
     def _context_length(self) -> int | None:
-        for key in ("max_position_embeddings", "n_positions", "max_sequence_length"):
-            value = getattr(self.config, key, None)
-            if isinstance(value, int) and value > 0:
-                return value
+        # Parity with the inspector and the extension: multimodal configs nest
+        # the text window under text_config, and only the loaded worker was
+        # still looking at the top level — reporting unknown context, which
+        # collapsed every context-derived budget (including the tool-decision
+        # probe's) to a single token.
+        for source in (self.config, getattr(self.config, "text_config", None)):
+            for key in ("max_position_embeddings", "n_positions", "max_sequence_length"):
+                value = getattr(source, key, None)
+                if isinstance(value, int) and value > 0:
+                    return value
         return None
 
     def _supports_chat(self) -> bool:
@@ -474,16 +532,55 @@ class LocalLLM:
         device = self._input_device()
         return {name: tensor.to(device) for name, tensor in inputs.items()}
 
-    def _generation_kwargs(self, options: GenerationOptions) -> dict[str, Any]:
-        if options.jsonSchema is not None:
+    def _grammar_processor(self, schema: Any):
+        """A logits processor constraining output to `schema`, cached per schema.
+
+        xgrammar masks on the CPU from token IDs, so guidance works wherever
+        the weights live (CPU, CUDA, XPU, MPS). The compiler is built lazily:
+        importing the backend on a machine without it must refuse the request,
+        not break loads and inspections that never constrain.
+        """
+
+        try:
+            from xgrammar import GrammarCompiler, TokenizerInfo
+            from xgrammar.contrib.hf import LogitsProcessor
+        except ImportError as exc:
             raise GrammarUnsupportedError(
                 "Schema-constrained generation is not available in this runtime "
                 "build. Install a grammar backend to enable tool calling."
+            ) from exc
+        if self._grammar_compiler is None:
+            vocab_size = getattr(self.config, "vocab_size", None)
+            info_kwargs = {"vocab_size": vocab_size} if isinstance(vocab_size, int) else {}
+            self._grammar_compiler = GrammarCompiler(
+                TokenizerInfo.from_huggingface(self.tokenizer, **info_kwargs)
             )
+        key = json.dumps(schema, sort_keys=True)
+        if key not in self._grammars:
+            try:
+                self._grammars[key] = self._grammar_compiler.compile_json_schema(schema)
+            except Exception as exc:
+                raise GrammarCompileFailedError(
+                    f"Could not compile the response schema to a grammar: {exc}"
+                ) from exc
+        return LogitsProcessor(self._grammars[key])
+
+    def _generation_kwargs(self, options: GenerationOptions) -> dict[str, Any]:
+        # The grammar refusal is coded: on a machine without the backend the
+        # transformers import below must not fire first and mask it.
+        processor = (
+            self._grammar_processor(options.jsonSchema)
+            if options.jsonSchema is not None
+            else None
+        )
         kwargs: dict[str, Any] = {
             "max_new_tokens": options.maxNewTokens,
             "repetition_penalty": options.repetitionPenalty,
         }
+        if processor is not None:
+            from transformers import LogitsProcessorList
+
+            kwargs["logits_processor"] = LogitsProcessorList([processor])
         if options.temperature > 0:
             kwargs.update({
                 "do_sample": True,
@@ -495,19 +592,27 @@ class LocalLLM:
             kwargs["do_sample"] = False
         return kwargs
 
-    def _encode_chat(self, messages: list[dict[str, str]]):
+    def _encode_chat(
+        self, messages: list[dict[str, str]], options: GenerationOptions | None = None
+    ):
         if not self._supports_chat():
             raise ChatNotSupportedError(
                 "This model provides no chat template. Use completion mode."
             )
         # The tokenizer owns role formatting, special tokens and generation
         # markers; reproducing any of that here would drift per model family.
+        # enable_thinking passes through only when set, so every existing
+        # caller renders byte-identically to before.
+        template_kwargs: dict[str, Any] = {}
+        if options is not None and options.enableThinking is not None:
+            template_kwargs["enable_thinking"] = options.enableThinking
         return self.tokenizer.apply_chat_template(
             messages,
             tokenize=True,
             add_generation_prompt=True,
             return_tensors="pt",
             return_dict=True,
+            **template_kwargs,
         )
 
     def _assert_context(self, prompt_tokens: int, options: GenerationOptions) -> None:
@@ -562,7 +667,7 @@ class LocalLLM:
             options = options or GenerationOptions()
             self._cancelled.clear()
             inputs = (
-                self._encode_chat(messages)
+                self._encode_chat(messages, options)
                 if messages is not None
                 else self.tokenizer(prompt or "", return_tensors="pt")
             )
@@ -570,23 +675,41 @@ class LocalLLM:
             prompt_tokens = int(inputs["input_ids"].shape[-1])
             self._assert_context(prompt_tokens, options)
             kwargs = self._generation_kwargs(options)
-            text = (
-                self._generate_blocking(inputs, kwargs)
-                if on_token is None
-                else self._generate_streaming(inputs, kwargs, on_token)
-            )
+            # A thinking turn streams its reasoning trace; the caller asked
+            # for an answer, so buffer, strip the channels and emit once.
+            thinking = options.enableThinking is True
+            buffered: list[str] = []
+            sink = buffered.append if thinking and on_token is not None else on_token
+            if on_token is None:
+                text = self._generate_blocking(inputs, kwargs, keep_specials=thinking)
+            else:
+                streamed = self._generate_streaming(inputs, kwargs, sink, keep_specials=thinking)
+                text = "".join(buffered) if thinking else streamed
+            if thinking:
+                text = self._clean_special_tokens(strip_thinking_channels(text))
+                if on_token is not None and text:
+                    on_token(text)
             return GenerationResult(text=text, inputTokens=prompt_tokens)
         finally:
             self._generating.release()
 
-    def _trim(self, output, prompt_length: int) -> str:
+    def _trim(self, output, prompt_length: int, skip_special_tokens: bool = True) -> str:
         generated = (
             output if getattr(self.config, "is_encoder_decoder", False)
             else output[:, prompt_length:]
         )
-        return self.tokenizer.decode(generated[0], skip_special_tokens=True)
+        return self.tokenizer.decode(generated[0], skip_special_tokens=skip_special_tokens)
 
-    def _generate_blocking(self, inputs: dict, kwargs: dict) -> str:
+    def _clean_special_tokens(self, text: str) -> str:
+        # Drop structural markers (<turn|>, <eos>, …) after channel stripping
+        # took the reasoning channels: a plain round-trip keeps display text
+        # and lets the tokenizer discard what it owns as special.
+        return self.tokenizer.decode(
+            self.tokenizer.encode(text, add_special_tokens=False),
+            skip_special_tokens=True,
+        )
+
+    def _generate_blocking(self, inputs: dict, kwargs: dict, keep_specials: bool = False) -> str:
         torch = _torch()
         prompt_length = int(inputs["input_ids"].shape[-1])
         try:
@@ -601,14 +724,16 @@ class LocalLLM:
             raise GenerationFailedError(str(exc)) from exc
         if self._cancelled.is_set():
             raise GenerationCancelledError("Generation was cancelled.")
-        return self._trim(output, prompt_length)
+        return self._trim(output, prompt_length, skip_special_tokens=not keep_specials)
 
-    def _generate_streaming(self, inputs: dict, kwargs: dict, on_token: TokenSink) -> str:
+    def _generate_streaming(
+        self, inputs: dict, kwargs: dict, on_token: TokenSink, keep_specials: bool = False
+    ) -> str:
         torch = _torch()
         from transformers import TextIteratorStreamer
 
         streamer = TextIteratorStreamer(
-            self.tokenizer, skip_prompt=True, skip_special_tokens=True,
+            self.tokenizer, skip_prompt=True, skip_special_tokens=not keep_specials,
         )
         failure: list[BaseException] = []
 

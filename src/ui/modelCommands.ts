@@ -621,7 +621,8 @@ async function validateModel(
               !isValidProbeContinuation(continuationText)
             ) {
               throw new Error(
-                'The model produced a tool call but could not continue with a final text response after the tool result.',
+                'The model produced a tool call but could not continue with a final text response after the tool result. ' +
+                `toolCalls=${continuation.toolCallCount} text=${JSON.stringify(continuationText.slice(0, 300))}`,
               );
             }
             await services.models.registry.markToolCalling(model.id, 'supported');

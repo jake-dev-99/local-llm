@@ -163,8 +163,24 @@ export function interpreterExePath(interpreterDir: string, target: string): stri
     : path.join(interpreterDir, 'bin', 'python3');
 }
 
+/**
+ * The on-disk name for a downloaded wheel: the url's last path segment,
+ * percent-decoded. PyTorch serves local version segments encoded
+ * (`torch-2.14.0%2Bcpu-...`), and pip parses a wheel's filename before it opens
+ * the archive, so writing the segment verbatim fails the install with
+ * InvalidWheelFilename — after the whole multi-gigabyte download. A malformed
+ * escape keeps the raw segment, which still names the wheel where the pin
+ * fallback would not, and a decode that yields a path separator is discarded so
+ * the file cannot land outside the wheels directory.
+ */
 function safeWheelFilename(wheel: { url: string; name: string }): string {
-  return wheel.url.split('/').pop()?.split('?')[0] || `${wheel.name}.whl`;
+  const segment = wheel.url.split('/').pop()?.split('?')[0] || `${wheel.name}.whl`;
+  try {
+    const decoded = decodeURIComponent(segment);
+    return /[/\\]/.test(decoded) ? segment : decoded;
+  } catch {
+    return segment;
+  }
 }
 
 export async function removeStaleEnvironments(

@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { ChatRequest, ChatStreamEvent } from '../domain.ts';
+import type { ChatRequest, ChatStreamEvent, ChatTool } from '../domain.ts';
 import type { InferenceClient } from './inferenceClient.ts';
 import { PythonWorkerClient, type WorkerTransport } from './pythonWorkerClient.ts';
 import { PythonWorkerError, type PythonModelInfo } from './pythonWorkerTypes.ts';
+import { toolDecisionJsonSchema } from './toolProtocol.ts';
 import { TransformersClient } from './transformersClient.ts';
 
 interface FakeTransport extends WorkerTransport {
@@ -51,11 +52,59 @@ const modelInfo: PythonModelInfo = {
   },
 };
 
-function harness() {
+function harness(info: PythonModelInfo = modelInfo) {
   const transport = fakeTransport();
   const worker = new PythonWorkerClient({ transport });
-  const client: InferenceClient = new TransformersClient(worker, modelInfo);
+  const client: InferenceClient = new TransformersClient(worker, info);
   return { transport, worker, client };
+}
+
+const grammarInfo: PythonModelInfo = {
+  ...modelInfo,
+  runtime: {
+    ...modelInfo.runtime,
+    versions: { ...modelInfo.runtime.versions, xgrammar: '0.2.7' },
+  },
+};
+
+function grammarHarness() {
+  return harness(grammarInfo);
+}
+
+const readFileTool: ChatTool = {
+  type: 'function',
+  function: {
+    name: 'read_file',
+    description: 'Read a file.',
+    parameters: {
+      type: 'object',
+      properties: { path: { type: 'string' } },
+      required: ['path'],
+      additionalProperties: false,
+    },
+  },
+};
+
+function toolRequest(overrides: Partial<ChatRequest> = {}): ChatRequest {
+  return chatRequest({
+    tools: [readFileTool],
+    toolChoice: 'required',
+    toolCallMaxTokens: 64,
+    ...overrides,
+  });
+}
+
+function tick(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+/** Answers the decision's tokenize step, then yields until generate.chat is sent. */
+async function answerTokenize(transport: FakeTransport, tokens: number): Promise<void> {
+  const tokenize = requestsOf(transport, 'model.tokenize').at(-1);
+  assert.ok(tokenize, 'decision input was counted');
+  transport.emit({ id: tokenize['id'], ok: true, result: { tokens } });
+  await tick();
+  await tick();
 }
 
 function chatRequest(overrides: Partial<ChatRequest> = {}): ChatRequest {
@@ -128,14 +177,73 @@ test('refuses a request carrying tool definitions', async () => {
   );
 });
 
-test('refuses a history that already contains tool turns', async () => {
-  const { client } = harness();
+test('a history with a tool result answers with final text', async () => {
+  const { transport, client } = grammarHarness();
+  const events: ChatStreamEvent[] = [];
 
+  const pending = client.chat(toolRequest({
+    toolChoice: 'auto',
+    messages: [
+      { role: 'user', content: 'Get the value.' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{
+          id: 'call_1',
+          type: 'function',
+          function: { name: 'read_file', arguments: '{"path":"a.txt"}' },
+        }],
+      },
+      { role: 'tool', content: 'ok', tool_call_id: 'call_1' },
+    ],
+  }), (event) => events.push(event));
+  const generation = requestsOf(transport, 'generate.chat')[0];
+  assert.ok(generation);
+  const sent = (generation['params'] as Record<string, unknown>)['messages'] as Array<Record<string, unknown>>;
+  const options = (generation['params'] as Record<string, unknown>)['options'] as Record<string, unknown>;
+  assert.ok(!('jsonSchema' in options), 'continuation is unconstrained');
+  assert.equal(options['enableThinking'], true, 'continuation opens the reasoning channel');
+  // The call record travels with the history: without it the tool result
+  // arrives unattributed and the model cannot use it.
+  const assistant = sent.find((message) => message['role'] === 'assistant');
+  assert.ok(Array.isArray(assistant?.['tool_calls']), 'tool_calls reach the template');
+  // Templates take the parsed mapping, not the OpenAI wire string.
+  assert.deepEqual(
+    (assistant?.['tool_calls'] as Array<Record<string, unknown>>)[0],
+    {
+      id: 'call_1',
+      type: 'function',
+      function: { name: 'read_file', arguments: { path: 'a.txt' } },
+    },
+  );
+  const tool = sent.find((message) => message['role'] === 'tool');
+  assert.equal(tool?.['tool_call_id'], 'call_1');
+
+  transport.emit({ id: generation['id'], ok: true, result: { text: 'The value is ok.', inputTokens: 20 } });
+  const result = await pending;
+
+  assert.equal(result.toolCallCount, 0);
+  assert.deepEqual(events, [{ kind: 'text', text: 'The value is ok.' }]);
+});
+
+test('a dangling tool call with no result is refused', async () => {
+  const { client } = grammarHarness();
+
+  // No tools on the request, so this is a plain turn: the half-turn history
+  // (a call record with no result) is malformed input, not a decision.
   await assert.rejects(
     client.chat(chatRequest({
       messages: [
         { role: 'user', content: 'hi' },
-        { role: 'tool', content: '{}', tool_call_id: 'call_1' },
+        {
+          role: 'assistant',
+          content: '',
+          tool_calls: [{
+            id: 'call_1',
+            type: 'function',
+            function: { name: 'read_file', arguments: '{}' },
+          }],
+        },
       ],
     }), () => undefined),
     /cannot use tools yet/,
@@ -225,4 +333,91 @@ test('declares the capabilities this runtime does not have', () => {
   assert.equal(client.supports.infill, false);
   assert.equal(client.supports.constrainedDecoding, false);
   assert.equal(client.infill, undefined);
+});
+
+test('the profile reports tool support when the grammar backend is present', async () => {
+  const { client } = grammarHarness();
+  assert.equal(client.supports.constrainedDecoding, true);
+  const profile = await client.getModelProfile();
+
+  assert.equal(profile.supportsTools, true);
+  assert.equal(profile.supportsToolCalls, true);
+});
+
+test('a required decision emits one validated tool call', async () => {
+  const { transport, client } = grammarHarness();
+  const events: ChatStreamEvent[] = [];
+  const decision = '{"kind":"tool","name":"read_file","arguments":{"path":"a.txt"}}';
+
+  const pending = client.chat(toolRequest(), (event) => events.push(event));
+  await answerTokenize(transport, 41);
+  const generation = requestsOf(transport, 'generate.chat')[0];
+  assert.ok(generation);
+  const params = generation['params'] as Record<string, unknown>;
+  const options = params['options'] as Record<string, unknown>;
+  assert.equal(options['temperature'], 0);
+  assert.equal(options['maxNewTokens'], 64);
+  assert.deepEqual(options['jsonSchema'], toolDecisionJsonSchema([readFileTool], true));
+  const messages = params['messages'] as Array<Record<string, unknown>>;
+  assert.match(String(messages.at(-1)?.['content'] ?? ''), /Available tools/);
+
+  transport.emit({ id: generation['id'], ok: true, result: { text: decision, inputTokens: 41 } });
+  const result = await pending;
+
+  assert.equal(result.toolCallCount, 1);
+  assert.equal(result.inputTokens, 41);
+  assert.deepEqual(events, [{
+    kind: 'toolCall',
+    id: (events[0] as { id: string }).id,
+    name: 'read_file',
+    input: { path: 'a.txt' },
+  }]);
+});
+
+test('a decision over budget fails before generating', async () => {
+  const { transport, client } = grammarHarness();
+
+  const pending = client.chat(toolRequest({ inputTokenBudget: 10 }), () => undefined);
+  // Attach before answering: the refusal fires while yielding, and an
+  // unhandled rejection is fatal before the assertion would attach.
+  const asserted = assert.rejects(pending, /input budget/);
+  await answerTokenize(transport, 41);
+
+  await asserted;
+  assert.equal(requestsOf(transport, 'generate.chat').length, 0);
+});
+
+test('an empty decision is an error, not an empty answer', async () => {
+  const { transport, client } = grammarHarness();
+
+  const pending = client.chat(toolRequest(), () => undefined);
+  await answerTokenize(transport, 41);
+  const generation = requestsOf(transport, 'generate.chat')[0];
+  assert.ok(generation);
+  transport.emit({ id: generation['id'], ok: true, result: { text: '  ', inputTokens: 41 } });
+
+  await assert.rejects(pending, /no decision/);
+});
+
+test('an automatic final answers with tools disabled', async () => {
+  const { transport, client } = grammarHarness();
+  const events: ChatStreamEvent[] = [];
+
+  const pending = client.chat(toolRequest({ toolChoice: 'auto' }), (event) => events.push(event));
+  await answerTokenize(transport, 41);
+  const decision = requestsOf(transport, 'generate.chat')[0];
+  assert.ok(decision);
+  transport.emit({ id: decision['id'], ok: true, result: { text: '{"kind":"final"}', inputTokens: 41 } });
+  await tick();
+  await tick();
+  const final = requestsOf(transport, 'generate.chat')[1];
+  assert.ok(final, 'a final answer was requested');
+  const params = final['params'] as Record<string, unknown>;
+  assert.ok(!('jsonSchema' in (params['options'] as Record<string, unknown>)), 'final is unconstrained');
+
+  transport.emit({ id: final['id'], ok: true, result: { text: 'done', inputTokens: 12 } });
+  const result = await pending;
+
+  assert.equal(result.toolCallCount, 0);
+  assert.deepEqual(events, [{ kind: 'text', text: 'done' }]);
 });

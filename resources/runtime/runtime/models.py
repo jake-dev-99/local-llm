@@ -105,6 +105,10 @@ class GenerationOptions:
     topK: int = 50
     repetitionPenalty: float = 1.0
     jsonSchema: dict[str, Any] | None = None
+    # Reasoning-channel switch for the chat template. None leaves the template
+    # default untouched; True/False is passed through as enable_thinking, the
+    # documented kwarg thinking models (Qwen3, Gemma, Ministral, …) read.
+    enableThinking: bool | None = None
 
     @classmethod
     def from_params(cls, raw: dict[str, Any] | None) -> "GenerationOptions":

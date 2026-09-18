@@ -78,12 +78,35 @@ export interface PythonGenerationResult {
   inputTokens: number;
 }
 
+/**
+ * A chat turn as the worker's template receives it. Tool records travel with
+ * the message so a result arrives attributed to its call; HF templates render
+ * the OpenAI shape natively.
+ */
+export interface PythonChatMessage {
+  role: string;
+  content: string;
+  tool_call_id?: string;
+  tool_calls?: Array<{
+    id: string;
+    type: 'function';
+    function: { name: string; arguments: unknown };
+  }>;
+}
+
 export interface PythonGenerationOptions {
   maxNewTokens?: number;
   temperature?: number;
   topP?: number;
   topK?: number;
   repetitionPenalty?: number;
+  /** JSON Schema constraining the output; the worker compiles it to a grammar. */
+  jsonSchema?: unknown;
+  /**
+   * Reasoning-channel switch for the chat template. Absent leaves the
+   * template default; true opens the thinking channel where supported.
+   */
+  enableThinking?: boolean;
 }
 
 export interface PythonRuntimePolicy {
