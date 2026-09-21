@@ -16,6 +16,7 @@ import { isExtensionOwned } from './modelIdentity.ts';
 import {
   isSafetensorsDirectory,
   readSafetensorsCheckpoint,
+  validateCheckpointStatic,
   type SafetensorsCheckpoint,
 } from './safetensorsDirectory.ts';
 import { ModelRegistry } from './modelRegistry.js';
@@ -168,21 +169,22 @@ export class ModelManager {
       model.repository === metadata.id &&
       model.revision === metadata.revision,
     );
-    if (existing) {
-      return existing;
-    }
     const repositoryName = safeDirectoryName(path.basename(metadata.id));
-    const directory = this.destination(
-      repositoryName,
-      `huggingface:${metadata.id}:${metadata.revision}:safetensors`,
-    );
+    const directory = existing && isExtensionOwned(existing)
+      ? existing.filePath
+      : this.destination(
+        repositoryName,
+        `huggingface:${metadata.id}:${metadata.revision}:safetensors`,
+      );
     await mkdir(directory, { recursive: true });
+    let downloaded = false;
     for (const [index, file] of files.entries()) {
       const destination = path.join(directory, file.filename);
       if (await completedRepositoryFileMatches(destination, file)) {
         continue;
       }
       await rm(destination, { force: true });
+      downloaded = true;
       const url = huggingFaceDownloadUrl(metadata.id, metadata.revision, file.filename);
       await vscode.window.withProgress(
         {
@@ -204,6 +206,18 @@ export class ModelManager {
       throw new Error(
         `Downloaded repository ${metadata.id} is not a complete Safetensors checkpoint.`,
       );
+    }
+    const validation = await validateCheckpointStatic(directory);
+    if (!validation.ok) {
+      throw new Error(
+        `Downloaded repository ${metadata.id} validation failed: ${validation.errors.join(' ')}`,
+      );
+    }
+    for (const warning of validation.warnings) {
+      this.logger.info(`Downloaded repository ${metadata.id}: ${warning}`);
+    }
+    if (existing && !downloaded && existing.filePath === directory) {
+      return existing;
     }
     const checkpoint = await readSafetensorsCheckpoint(
       directory,

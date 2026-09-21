@@ -1,5 +1,13 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import test from 'node:test';
@@ -135,6 +143,7 @@ function responseAt(url: string, body: string | Buffer, init?: ResponseInit): Re
 test('downloads every file in the Qwen Safetensors repository and reuses them', async () => {
   const ModelManager = await loadModelManager();
   const storage = mkdtempSync(path.join(tmpdir(), 'local-llm-hf-safetensors-'));
+  const movedStorage = mkdtempSync(path.join(tmpdir(), 'local-llm-hf-moved-'));
   const repository = 'unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit';
   const revision = '6700c3e5bdeb050a379c8d2a4133f43f3647f20f';
   const shardNames = Array.from(
@@ -163,7 +172,13 @@ test('downloads every file in the Qwen Safetensors repository and reuses them', 
     if (url.includes('/api/models/')) {
       const siblings = [
         { rfilename: 'README.md', size: 10 },
-        ...[...bodies].map(([rfilename, body]) => ({ rfilename, size: body.length })),
+        ...[...bodies].map(([rfilename, body]) => ({
+          rfilename,
+          lfs: {
+            size: body.length,
+            sha256: createHash('sha256').update(body).digest('hex'),
+          },
+        })),
       ];
       return responseAt(url, JSON.stringify({ id: repository, sha: revision, siblings }), {
         status: 200,
@@ -207,6 +222,83 @@ test('downloads every file in the Qwen Safetensors repository and reuses them', 
     assert.ok(second);
     assert.equal(second.id, first.id);
     assert.equal(fileDownloads, bodies.size, 'completed immutable files were reused');
+
+    const afterDirectoryChange = await new ModelManager(
+      { ...context, globalStorageUri: uriFor(movedStorage) },
+      firstRegistry,
+      logger,
+    ).downloadFromHuggingFace(repository);
+    assert.ok(afterDirectoryChange);
+    assert.equal(afterDirectoryChange.filePath, first.filePath);
+    assert.equal(fileDownloads, bodies.size, 'the registered managed directory was retained');
+
+    const damagedName = shardNames[0];
+    assert.ok(damagedName);
+    const expectedShard = bodies.get(damagedName);
+    assert.ok(expectedShard);
+    writeFileSync(path.join(first.filePath, damagedName), Buffer.alloc(expectedShard.length));
+    const repaired = await new ModelManager(managedContext, firstRegistry, logger)
+      .downloadFromHuggingFace(repository);
+    assert.ok(repaired);
+    assert.equal(fileDownloads, bodies.size + 1, 'the damaged registered shard was fetched again');
+    assert.deepEqual(readFileSync(path.join(first.filePath, damagedName)), expectedShard);
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(storage, { recursive: true, force: true });
+    rmSync(movedStorage, { recursive: true, force: true });
+  }
+});
+
+test('does not register a downloaded checkpoint that fails static validation', async () => {
+  const ModelManager = await loadModelManager();
+  const storage = mkdtempSync(path.join(tmpdir(), 'local-llm-hf-invalid-'));
+  const repository = 'example/invalid-safetensors';
+  const revision = '1111111111111111111111111111111111111111';
+  const weights = shard('{"w":{"dtype":"BF16","shape":[8],"data_offsets":[0,16]}}', 16);
+  const bodies = new Map<string, Buffer>([
+    ['config.json', Buffer.from('{invalid')],
+    ['model.safetensors', weights],
+    ['tokenizer.json', Buffer.from('{}')],
+  ]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.includes('/api/models/')) {
+      return responseAt(url, JSON.stringify({
+        id: repository,
+        sha: revision,
+        siblings: [...bodies].map(([rfilename, body]) => ({
+          rfilename,
+          lfs: {
+            size: body.length,
+            sha256: createHash('sha256').update(body).digest('hex'),
+          },
+        })),
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    const marker = `/resolve/${revision}/`;
+    const filename = decodeURIComponent(url.slice(url.indexOf(marker) + marker.length));
+    const body = bodies.get(filename);
+    return body
+      ? responseAt(url, body, {
+        status: 200,
+        headers: { 'content-length': String(body.length), etag: `"${filename}"` },
+      })
+      : responseAt(url, 'missing', { status: 404 });
+  };
+
+  try {
+    const registry = fakeRegistry();
+    const manager = new ModelManager(
+      { ...context, globalStorageUri: uriFor(storage) },
+      registry,
+      logger,
+    );
+    await assert.rejects(
+      manager.downloadFromHuggingFace(repository),
+      /validation failed.*config\.json is missing or unreadable/i,
+    );
+    assert.equal(registry.models.length, 0);
   } finally {
     globalThis.fetch = originalFetch;
     rmSync(storage, { recursive: true, force: true });
