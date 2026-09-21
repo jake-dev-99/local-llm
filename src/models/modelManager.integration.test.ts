@@ -12,6 +12,7 @@ import type { InstalledModel } from '../domain.ts';
  * directory rather than by reading the code.
  */
 interface TestModelManager {
+  downloadFromHuggingFace(repository: string): Promise<InstalledModel | undefined>;
   importSafetensorsDirectory(uri: { fsPath: string; toString(): string }): Promise<InstalledModel>;
   stageSafetensorsFile(
     uri: { fsPath: string; toString(): string },
@@ -124,6 +125,93 @@ function checkpointDirectory(config: object = {}): string {
   );
   return directory;
 }
+
+function responseAt(url: string, body: string | Buffer, init?: ResponseInit): Response {
+  const response = new Response(body as unknown as BodyInit, init);
+  Object.defineProperty(response, 'url', { value: url });
+  return response;
+}
+
+test('downloads every file in the Qwen Safetensors repository and reuses them', async () => {
+  const ModelManager = await loadModelManager();
+  const storage = mkdtempSync(path.join(tmpdir(), 'local-llm-hf-safetensors-'));
+  const repository = 'unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit';
+  const revision = '6700c3e5bdeb050a379c8d2a4133f43f3647f20f';
+  const shardNames = Array.from(
+    { length: 5 },
+    (_, index) => `model-${String(index + 1).padStart(5, '0')}-of-00005.safetensors`,
+  );
+  const bodies = new Map<string, Buffer>([
+    ['chat_template.jinja', Buffer.from('{{ messages }}')],
+    ['config.json', Buffer.from(JSON.stringify({
+      architectures: ['Qwen3_5MoeForConditionalGeneration'],
+      model_type: 'qwen3_5_moe',
+    }))],
+    ...shardNames.map((filename, index) => [
+      filename,
+      shard(`{"w${index}":{"dtype":"BF16","shape":[8],"data_offsets":[0,16]}}`, 16),
+    ] as const),
+    ['model.safetensors.index.json', Buffer.from('{"weight_map":{}}')],
+    ['processor_config.json', Buffer.from('{}')],
+    ['tokenizer.json', Buffer.from('{}')],
+    ['tokenizer_config.json', Buffer.from('{}')],
+  ]);
+  let fileDownloads = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.includes('/api/models/')) {
+      const siblings = [
+        { rfilename: 'README.md', size: 10 },
+        ...[...bodies].map(([rfilename, body]) => ({ rfilename, size: body.length })),
+      ];
+      return responseAt(url, JSON.stringify({ id: repository, sha: revision, siblings }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    const marker = `/resolve/${revision}/`;
+    const filename = decodeURIComponent(url.slice(url.indexOf(marker) + marker.length));
+    const body = bodies.get(filename);
+    if (!body) {
+      return responseAt(url, 'missing', { status: 404 });
+    }
+    fileDownloads += 1;
+    return responseAt(url, body, {
+      status: 200,
+      headers: {
+        'content-length': String(body.length),
+        etag: `"${filename}"`,
+      },
+    });
+  };
+
+  try {
+    const managedContext = { ...context, globalStorageUri: uriFor(storage) };
+    const firstRegistry = fakeRegistry();
+    const first = await new ModelManager(managedContext, firstRegistry, logger)
+      .downloadFromHuggingFace(repository);
+    assert.ok(first);
+    assert.equal(first.format, 'safetensors');
+    assert.equal(first.runtime, 'transformers');
+    assert.equal(first.managed, true);
+    assert.equal(first.name, 'Qwen3.6 35B A3B UD MLX 4bit');
+    assert.equal(first.repository, repository);
+    assert.equal(first.revision, revision);
+    assert.deepEqual(readdirSync(first.filePath).sort(), [...bodies.keys()].sort());
+    assert.equal(fileDownloads, bodies.size);
+
+    const secondRegistry = fakeRegistry();
+    const second = await new ModelManager(managedContext, secondRegistry, logger)
+      .downloadFromHuggingFace(repository);
+    assert.ok(second);
+    assert.equal(second.id, first.id);
+    assert.equal(fileDownloads, bodies.size, 'completed immutable files were reused');
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(storage, { recursive: true, force: true });
+  }
+});
 
 test('registers a checkpoint in place without copying it', async () => {
   const ModelManager = await loadModelManager();

@@ -1,7 +1,7 @@
 # Local LLM Engine
 
-Local LLM Engine is a self-contained VS Code extension for running GGUF models
-without installing Ollama, Python, Docker, or llama.cpp separately. Each VSIX
+Local LLM Engine is a VS Code extension for running GGUF and Safetensors models.
+GGUF requires no separate Ollama, Python, Docker, or llama.cpp install. Each VSIX
 contains a platform-specific `llama-server` worker that the extension starts and
 manages. A bundled manifest pins the worker commit and SHA-256; packaging and
 runtime startup both reject worker bytes that do not match it.
@@ -14,7 +14,7 @@ The prototype supports:
 
 - Apple Silicon macOS (`darwin-arm64`) with Metal acceleration
 - Intel 64-bit Windows 10 or 11 (`win32-x64`) with Intel SYCL acceleration or explicit CPU inference
-- GGUF import, resumable Hugging Face downloads, and direct HTTPS downloads
+- GGUF import, resumable Hugging Face GGUF and Safetensors downloads, and direct GGUF HTTPS downloads
 - installed models in VS Code's native Chat model picker
 - ordinary streaming Chat
 - a bundled **Local Agent** that preserves VS Code's native agent loop, edit
@@ -42,9 +42,9 @@ in VS Code global storage and remain available across extension upgrades.
 ## First use
 
 1. Run **Local LLM: Manage Models** from the Command Palette.
-2. Import a `.gguf`, enter a Hugging Face GGUF repository, or provide a direct
-   HTTPS `.gguf` URL. The Hugging Face picker only shows complete single-file
-   GGUF downloads; numbered shard parts are excluded.
+2. Import a local model, enter a Hugging Face GGUF or Safetensors repository,
+   or provide a direct HTTPS `.gguf` URL. Safetensors downloads include every
+   root shard and model sidecar. Numbered GGUF shard parts remain excluded.
 3. Run **Local LLM: Validate Model Compatibility**. This loads the model,
    reads the actual llama.cpp runtime capabilities, probes inline FIM, performs
    one structured tool call, and verifies the final response after its result.

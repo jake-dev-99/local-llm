@@ -67,7 +67,7 @@ export async function inspectHuggingFaceRepository(
     throw new Error('Hugging Face metadata did not include a repository revision.');
   }
   const files = (payload.siblings ?? [])
-    .filter((item) => item.rfilename?.toLowerCase().endsWith('.gguf'))
+    .filter((item) => typeof item.rfilename === 'string' && item.rfilename.length > 0)
     .map((item) => ({
       filename: item.rfilename as string,
       size: item.lfs?.size ?? item.size ?? 0,
@@ -75,7 +75,7 @@ export async function inspectHuggingFaceRepository(
     }))
     .sort((a, b) => a.filename.localeCompare(b.filename));
   if (files.length === 0) {
-    throw new Error(`Repository ${normalized} contains no GGUF files.`);
+    throw new Error(`Repository ${normalized} contains no downloadable files.`);
   }
   return { id: payload.id ?? normalized, revision: payload.sha, files };
 }

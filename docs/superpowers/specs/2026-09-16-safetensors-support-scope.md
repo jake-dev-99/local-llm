@@ -61,10 +61,10 @@ Known defect to fix: the two sides disagree. TS rejects above
 `MAX_HEADER_BYTES = 128 MiB`. Unify on one value — **decided and aligned: 128 MiB** both sides, with a
 shared cross-side fixture test.
 
-Out of scope for MVP: downloading Safetensors from Hugging Face
-(`src/models/modelSources.ts:70` filters `.gguf` only and throws when none
-match), copying checkpoints into extension storage, and any GGUF↔Safetensors
-conversion.
+Hugging Face Safetensors repository downloads and extension-owned checkpoint
+storage were added by
+`docs/superpowers/specs/2026-09-21-hugging-face-safetensors-download-design.md`.
+GGUF↔Safetensors conversion remains out of scope.
 
 ## 3. Architecture
 
