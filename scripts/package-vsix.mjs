@@ -19,7 +19,7 @@ await mkdir(packageDirectory, { recursive: true });
 const ignoreFile = path.join(packageDirectory, `.vscodeignore-${target}`);
 await writeFile(
   ignoreFile,
-  targetIgnoreEntries(target).join('\n'),
+  (await targetIgnoreEntries(root, target)).join('\n'),
 );
 const packageManifest = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
 const output = await prepareVsixOutput(root, packageManifest.version, target);

@@ -33,13 +33,22 @@ test('Darwin verification neither prepares nor requires Windows files', async (c
   });
 });
 
-test('ignore rules exclude the complete other-platform tree', () => {
-  assert.equal(targetIgnoreEntries('darwin-arm64').includes('resources/workers/win32-x64/**'), true);
-  assert.equal(targetIgnoreEntries('win32-x64').includes('resources/workers/darwin-arm64/**'), true);
+test('ignore rules are the .vscodeignore entries plus the other platform tree', async (context) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'local-llm-ignore-'));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  await writeFile(path.join(root, '.vscodeignore'), '# comment\r\nsrc/**\n\n.sf/**\n');
+
+  assert.deepEqual(await targetIgnoreEntries(root, 'darwin-arm64'), [
+    'src/**', '.sf/**', 'resources/workers/win32-x64/**',
+  ]);
+  assert.deepEqual(await targetIgnoreEntries(root, 'win32-x64'), [
+    'src/**', '.sf/**', 'resources/workers/darwin-arm64/**',
+  ]);
 });
 
-test('ignore rules exclude internal implementation work records', () => {
-  assert.equal(targetIgnoreEntries('win32-x64').includes('.superpowers/**'), true);
+test('ignore rules exclude internal implementation work records', async () => {
+  const repository = path.join(import.meta.dirname, '..');
+  assert.equal((await targetIgnoreEntries(repository, 'win32-x64')).includes('.superpowers/**'), true);
 });
 
 test('target preparation rejects unsupported targets before reading the manifest', async (context) => {

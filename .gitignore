@@ -11,4 +11,4 @@ resources/workers/win32-x64/sycl/
 !resources/workers/*/.gitkeep
 .sf
 __pycache__/
-.build
+.build.sfdx/
