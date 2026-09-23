@@ -39,6 +39,7 @@ implements vscode.LanguageModelChatProvider<LocalLanguageModelInformation>, vsco
   private readonly registrySubscription: vscode.Disposable;
 
   readonly onDidChangeLanguageModelChatInformation = this.changeEmitter.event;
+  private lastAdvertised: string | undefined;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -54,7 +55,7 @@ implements vscode.LanguageModelChatProvider<LocalLanguageModelInformation>, vsco
     _token: vscode.CancellationToken,
   ): LocalLanguageModelInformation[] {
     const config = readConfig(this.context);
-    return this.registry.list()
+    const models = this.registry.list()
       .filter((model) => model.runtimeProfile?.hasChatTemplate !== false)
       .map((model) => this.modelInformation(
         model,
@@ -62,6 +63,17 @@ implements vscode.LanguageModelChatProvider<LocalLanguageModelInformation>, vsco
         config.maxOutputTokens,
         config.maxTools,
       ));
+    // VS Code budgets a chat prompt against these limits before it sends the
+    // request, so a prompt that does not fit never reaches this provider.
+    const advertised = models.map((model) =>
+      `${model.name}: input ${model.maxInputTokens}, output ${model.maxOutputTokens}, ` +
+      `tools ${model.capabilities.toolCalling === false ? 'off' : 'on'}`,
+    ).join('; ');
+    if (advertised !== this.lastAdvertised) {
+      this.lastAdvertised = advertised;
+      this.logger.info(`Advertised to VS Code: ${advertised || 'no models'}.`);
+    }
+    return models;
   }
 
   /**
@@ -308,7 +320,7 @@ implements vscode.LanguageModelChatProvider<LocalLanguageModelInformation>, vsco
     const installed = this.requireModel(model.installedModelId);
     const cancellation = toAbortSignal(token);
     try {
-      return await this.worker.run(
+      const count = await this.worker.run(
         installed,
         'utility',
         async (client, signal) => {
@@ -334,6 +346,12 @@ implements vscode.LanguageModelChatProvider<LocalLanguageModelInformation>, vsco
         },
         cancellation.signal,
       );
+      this.logger.debug(
+        `Token count for ${installed.name}: ${count} tokens ` +
+        `(${typeof text === 'string' ? 'text' : `${roleName(text.role)} message`}; ` +
+        `advertised input limit ${model.maxInputTokens}).`,
+      );
+      return count;
     } catch (error) {
       if (token.isCancellationRequested || isAbortError(error)) {
         this.logger.info(
@@ -451,6 +469,17 @@ function numericOption(
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
+}
+
+function roleName(role: vscode.LanguageModelChatMessageRole): string {
+  switch (role) {
+    case vscode.LanguageModelChatMessageRole.User:
+      return 'user';
+    case vscode.LanguageModelChatMessageRole.Assistant:
+      return 'assistant';
+    default:
+      return 'system';
+  }
 }
 
 function isAbortError(error: unknown): boolean {
