@@ -33,3 +33,31 @@ export function workerLineLevel(line: string): WorkerLineLevel {
   }
   return 'debug';
 }
+
+export interface LineBuffer {
+  /** Adds a chunk and returns the lines it completed, without their line breaks. */
+  push(chunk: string): string[];
+  /** Returns whatever partial line remains, once the stream has ended. */
+  flush(): string[];
+}
+
+/**
+ * Reassembles lines from a process stream, whose chunks break wherever the pipe
+ * happens to, including in the middle of a line. Classifying a chunk instead of
+ * a line splits a warning from its level letter and demotes it to debug.
+ */
+export function createLineBuffer(): LineBuffer {
+  let pending = '';
+  return {
+    push(chunk) {
+      const lines = (pending + chunk).split(/\r?\n/);
+      pending = lines.pop() ?? '';
+      return lines;
+    },
+    flush() {
+      const rest = pending;
+      pending = '';
+      return rest ? [rest] : [];
+    },
+  };
+}

@@ -76,6 +76,16 @@ implements vscode.LanguageModelChatProvider<LocalLanguageModelInformation>, vsco
     if (advertised !== this.lastAdvertised) {
       this.lastAdvertised = advertised;
       this.logger.info(`Advertised to VS Code: ${advertised || 'no models'}.`);
+      for (const model of models) {
+        if (model.maxOutputTokens < config.maxOutputTokens) {
+          this.logger.warn(
+            `${model.name} has a ${model.maxInputTokens + model.maxOutputTokens}-token context window on this computer, ` +
+            `so replies are limited to ${model.maxOutputTokens} tokens (localLlm.maxOutputTokens is ${config.maxOutputTokens}) ` +
+            `and prompts to ${model.maxInputTokens}. VS Code drops any chat prompt larger than that without sending it; ` +
+            'agent prompts with tools often are.',
+          );
+        }
+      }
     }
     return models;
   }
@@ -246,10 +256,10 @@ implements vscode.LanguageModelChatProvider<LocalLanguageModelInformation>, vsco
           const physicalContext = config.contextSize > 0
             ? Math.max(2, Math.min(config.contextSize, profile.loadedContextSize))
             : Math.max(2, profile.loadedContextSize);
-          const maxTokens = clamp(
+          // The same split VS Code was told about, so a request it sends fits.
+          const { maxOutputTokens: maxTokens } = modelTokenLimits(
+            physicalContext,
             numericOption(options.modelOptions, 'maxTokens', config.maxOutputTokens),
-            1,
-            physicalContext - 1,
           );
           const modelMessages = messagesForSystemRoleSupport(
             adaptedMessages,

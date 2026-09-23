@@ -27,7 +27,7 @@ import { isFatalWorkerError } from './workerError.js';
 import { verifiedWorkerBundle } from './workerIntegrity.js';
 import { prepareWorkerLaunch } from './workerLaunch.js';
 import type { WorkerBackend } from './workerManifest.js';
-import { createWorkerDiagnostics, workerLineLevel } from './workerDiagnostics.js';
+import { createLineBuffer, createWorkerDiagnostics, workerLineLevel } from './workerDiagnostics.js';
 import { beginWorkerActivity, finishWorkerActivity } from './workerActivity.js';
 import { discoverSycl0 } from './syclDevice.js';
 
@@ -491,10 +491,14 @@ export class WorkerManager implements vscode.Disposable {
       );
       child.stdout.setEncoding('utf8');
       child.stderr.setEncoding('utf8');
-      const observeOutput = (): ((data: string) => void) => {
+      const observeOutput = (stream: NodeJS.ReadableStream): void => {
         let tail = '';
-        return (data) => {
-          this.logWorkerOutput(data);
+        const lines = createLineBuffer();
+        stream.on('end', () => {
+          this.logWorkerOutput(lines.flush().join('\n'));
+        });
+        stream.on('data', (data: string) => {
+          this.logWorkerOutput(lines.push(data).join('\n'));
           if (backend !== 'sycl' || memoryAttempt.outOfMemory) {
             return;
           }
@@ -511,10 +515,10 @@ export class WorkerManager implements vscode.Disposable {
               );
             }
           }
-        };
+        });
       };
-      child.stdout.on('data', observeOutput());
-      child.stderr.on('data', observeOutput());
+      observeOutput(child.stdout);
+      observeOutput(child.stderr);
       const spawnError = new Promise<never>((_resolve, reject) => {
         child?.once('error', (error) => {
           this.logger.error('Local worker process error', error);

@@ -3,6 +3,15 @@ export interface ModelTokenLimits {
   maxOutputTokens: number;
 }
 
+/**
+ * Splits one context window between the prompt and the reply.
+ *
+ * The reply may take at most half. VS Code budgets its whole prompt against
+ * `maxInputTokens` before it sends a request, and when the prompt cannot fit it
+ * abandons the request without ever calling the provider. Letting a large
+ * `maxOutputTokens` take everything but one token of a small fitted window
+ * made a model impossible to chat with, silently.
+ */
 export function modelTokenLimits(
   contextSize: number,
   requestedMaxOutput: number,
@@ -10,7 +19,7 @@ export function modelTokenLimits(
   const physicalContext = Math.max(2, Math.floor(contextSize));
   const maxOutputTokens = Math.min(
     Math.max(1, Math.floor(requestedMaxOutput)),
-    physicalContext - 1,
+    Math.floor(physicalContext / 2),
   );
   return {
     maxInputTokens: physicalContext - maxOutputTokens,

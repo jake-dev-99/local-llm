@@ -9,10 +9,21 @@ test('modelTokenLimits never advertises more than the physical context window', 
   });
 });
 
-test('modelTokenLimits clamps output while preserving at least one input token', () => {
+test('output never takes more than half the window, so the prompt keeps the rest', () => {
+  // A 27B model fitted to 4096 tokens with maxOutputTokens 8192 used to
+  // advertise an input limit of 1. VS Code cannot fit any prompt in that and
+  // abandons the request without calling the provider.
+  assert.deepEqual(modelTokenLimits(4_096, 8_192), {
+    maxInputTokens: 2_048,
+    maxOutputTokens: 2_048,
+  });
   assert.deepEqual(modelTokenLimits(512, 2_048), {
-    maxInputTokens: 1,
-    maxOutputTokens: 511,
+    maxInputTokens: 256,
+    maxOutputTokens: 256,
+  });
+  assert.deepEqual(modelTokenLimits(4_097, 8_192), {
+    maxInputTokens: 2_049,
+    maxOutputTokens: 2_048,
   });
 });
 
