@@ -365,11 +365,11 @@ implements vscode.LanguageModelChatProvider<LocalLanguageModelInformation>, vsco
         cancellation.signal,
       );
       this.promptDrops.counted(installed.id, installed.name, count, model.maxInputTokens);
-      this.logger.debug(
-        `Token count for ${installed.name}: ${count} tokens ` +
-        `(${typeof text === 'string' ? 'text' : `${roleName(text.role)} message`}; ` +
-        `advertised input limit ${model.maxInputTokens}).`,
-      );
+      // this.logger.debug(
+      //   `Token count for ${installed.name}: ${count} tokens ` +
+      //   `(${typeof text === 'string' ? 'text' : `${roleName(text.role)} message`}; ` +
+      //   `advertised input limit ${model.maxInputTokens}).`,
+      // );
       return count;
     } catch (error) {
       if (token.isCancellationRequested || isAbortError(error)) {
@@ -516,16 +516,16 @@ function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
 }
 
-function roleName(role: vscode.LanguageModelChatMessageRole): string {
-  switch (role) {
-    case vscode.LanguageModelChatMessageRole.User:
-      return 'user';
-    case vscode.LanguageModelChatMessageRole.Assistant:
-      return 'assistant';
-    default:
-      return 'system';
-  }
-}
+// function roleName(role: vscode.LanguageModelChatMessageRole): string {
+//   switch (role) {
+//     case vscode.LanguageModelChatMessageRole.User:
+//       return 'user';
+//     case vscode.LanguageModelChatMessageRole.Assistant:
+//       return 'assistant';
+//     default:
+//       return 'system';
+//   }
+// }
 
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
