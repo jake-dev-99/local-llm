@@ -64,7 +64,35 @@ implements vscode.LanguageModelChatProvider<LocalLanguageModelInformation>, vsco
       ));
   }
 
+  /**
+   * Every chat submission is logged on arrival and every way it ends is logged,
+   * including a failure while adapting the request before any generation.
+   */
   async provideLanguageModelChatResponse(
+    model: LocalLanguageModelInformation,
+    messages: readonly vscode.LanguageModelChatRequestMessage[],
+    options: vscode.ProvideLanguageModelChatResponseOptions,
+    progress: vscode.Progress<vscode.LanguageModelResponsePart>,
+    token: vscode.CancellationToken,
+  ): Promise<void> {
+    this.logger.info(
+      `Chat request received for ${model.name}: ${messages.length} message${messages.length === 1 ? '' : 's'}, ` +
+      `${options.tools?.length ?? 0} tool${options.tools?.length === 1 ? '' : 's'}.`,
+    );
+    try {
+      await this.respond(model, messages, options, progress, token);
+      this.logger.info(`Chat request for ${model.name} completed.`);
+    } catch (error) {
+      if (error instanceof vscode.CancellationError) {
+        this.logger.info(`Chat request for ${model.name} ended: cancelled.`);
+      } else {
+        this.logger.error(`Local chat request failed for ${model.name}`, error, true);
+      }
+      throw error;
+    }
+  }
+
+  private async respond(
     model: LocalLanguageModelInformation,
     messages: readonly vscode.LanguageModelChatRequestMessage[],
     options: vscode.ProvideLanguageModelChatResponseOptions,
@@ -260,9 +288,12 @@ implements vscode.LanguageModelChatProvider<LocalLanguageModelInformation>, vsco
       );
     } catch (error) {
       if (token.isCancellationRequested || isAbortError(error)) {
+        this.logger.info(
+          `Chat request for ${installed.name} cancelled ` +
+          `(${token.isCancellationRequested ? 'by VS Code' : 'inside the local runtime'}).`,
+        );
         throw new vscode.CancellationError();
       }
-      this.logger.error(`Local chat request failed for ${installed.name}`, error, true);
       throw error;
     } finally {
       cancellation.dispose();
@@ -303,6 +334,16 @@ implements vscode.LanguageModelChatProvider<LocalLanguageModelInformation>, vsco
         },
         cancellation.signal,
       );
+    } catch (error) {
+      if (token.isCancellationRequested || isAbortError(error)) {
+        this.logger.info(
+          `Token count for ${installed.name} cancelled ` +
+          `(${token.isCancellationRequested ? 'by VS Code' : 'inside the local runtime'}).`,
+        );
+      } else {
+        this.logger.error(`Token count failed for ${installed.name}`, error);
+      }
+      throw error;
     } finally {
       cancellation.dispose();
     }

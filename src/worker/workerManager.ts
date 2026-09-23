@@ -102,6 +102,9 @@ export class WorkerManager implements vscode.Disposable {
     return this.scheduler.run(
       kind,
       async (scheduledSignal) => {
+        if (this.currentModel?.id !== model.id || this.workerState.kind !== 'ready') {
+          this.logger.info(`[Model Loading] ${model.name} requested by a ${kind} request.`);
+        }
         const session = await this.ensureReady(model, scheduledSignal);
         const client = session.client;
         const activeState = beginWorkerActivity(this.workerState, kind);
