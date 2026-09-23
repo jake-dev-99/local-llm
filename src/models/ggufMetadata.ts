@@ -62,7 +62,9 @@ export async function readGgufMetadata(
     onWarning?.(`Could not read GGUF metadata from ${filePath}: ${describeError(error)}`);
     return undefined;
   } finally {
-    await handle?.close().catch(() => undefined);
+    await handle?.close().catch((error: unknown) => {
+      onWarning?.(`Could not close ${filePath}: ${describeError(error)}`);
+    });
   }
 }
 

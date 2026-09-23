@@ -95,7 +95,9 @@ export async function readSafetensorsHeader(
     onWarning?.(`Could not read the Safetensors header of ${name}: ${describeError(error)}`);
     return undefined;
   } finally {
-    await handle?.close().catch(() => undefined);
+    await handle?.close().catch((error: unknown) => {
+      onWarning?.(`Could not close ${filePath}: ${describeError(error)}`);
+    });
   }
 }
 
@@ -238,7 +240,9 @@ async function readJsonFile(
     onWarning?.(`Could not read ${path.basename(filePath)}: ${describeError(error)}`);
     return undefined;
   } finally {
-    await handle?.close().catch(() => undefined);
+    await handle?.close().catch((error: unknown) => {
+      onWarning?.(`Could not close ${filePath}: ${describeError(error)}`);
+    });
   }
 }
 
