@@ -976,6 +976,44 @@ test('a stream cut off in the middle of an event fails', async () => {
   );
 });
 
+test('a malformed event on a stream that stays open does not hold the worker connection', async () => {
+  const openStreams: Array<import('node:http').ServerResponse> = [];
+  const server = createServer((request, response) => {
+    request.resume();
+    request.on('end', () => {
+      if (request.url === '/v1/chat/completions/input_tokens') {
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end('{"input_tokens":10}');
+      } else if (request.url === '/tokenize') {
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end('{"tokens":[1,2,3]}');
+      } else {
+        // The worker keeps generating after the client has given up on it.
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.write('data: {"choices":[{"delta":{"content":\n\n');
+        openStreams.push(response);
+      }
+    });
+  });
+  await listen(server);
+  const client = await testClient(server);
+  try {
+    await assert.rejects(client.chat(plainRequest, () => undefined), /not valid JSON/);
+    const next = client.tokenize('next request');
+    const timeout = new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error('the next request queued behind the abandoned stream')), 2_000).unref();
+    });
+    assert.equal(await Promise.race([next, timeout]), 3);
+  } finally {
+    for (const response of openStreams) {
+      response.destroy();
+    }
+    await client.dispose();
+    server.closeAllConnections();
+    await close(server);
+  }
+});
+
 async function withRawStreamWorker(
   stream: string,
   run: (client: TestLlamaClient) => Promise<void>,

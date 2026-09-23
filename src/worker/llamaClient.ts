@@ -416,19 +416,41 @@ export class LlamaClient implements InferenceClient {
     let finishReason: string | undefined;
     let tokensPerSecond: number | undefined;
     let firstStreamData = true;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (firstStreamData && value && value.byteLength > 0) {
-        firstStreamData = false;
-        this.diagnostics?.info(
-          `${GENERATION_PHASE} ${trace.id} first stream data (${stage}): elapsed=${Date.now() - trace.startedAt} ms.`,
-        );
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (firstStreamData && value && value.byteLength > 0) {
+          firstStreamData = false;
+          this.diagnostics?.info(
+            `${GENERATION_PHASE} ${trace.id} first stream data (${stage}): elapsed=${Date.now() - trace.startedAt} ms.`,
+          );
+        }
+        buffer += decoder.decode(value, { stream: !done });
+        const frames = buffer.split(/\r?\n\r?\n/);
+        buffer = frames.pop() ?? '';
+        for (const frame of frames) {
+          const consumed = this.consumeSseFrame(frame, pendingTools);
+          if (consumed.timings) {
+            this.logTimings(trace, stage, consumed.timings);
+            tokensPerSecond = finiteNumber(consumed.timings.predicted_per_second)
+              ?? tokensPerSecond;
+          }
+          const text = consumed.text;
+          textCharacters += text.length;
+          reasoningCharacters += consumed.reasoning.length;
+          finishReason = consumed.finishReason ?? finishReason;
+          if (bufferText) {
+            bufferedText += text;
+          } else if (text) {
+            onEvent({ kind: 'text', text });
+          }
+        }
+        if (done) {
+          break;
+        }
       }
-      buffer += decoder.decode(value, { stream: !done });
-      const frames = buffer.split(/\r?\n\r?\n/);
-      buffer = frames.pop() ?? '';
-      for (const frame of frames) {
-        const consumed = this.consumeSseFrame(frame, pendingTools);
+      if (buffer.trim()) {
+        const consumed = this.consumeSseFrame(buffer, pendingTools, true);
         if (consumed.timings) {
           this.logTimings(trace, stage, consumed.timings);
           tokensPerSecond = finiteNumber(consumed.timings.predicted_per_second)
@@ -444,26 +466,11 @@ export class LlamaClient implements InferenceClient {
           onEvent({ kind: 'text', text });
         }
       }
-      if (done) {
-        break;
-      }
-    }
-    if (buffer.trim()) {
-      const consumed = this.consumeSseFrame(buffer, pendingTools, true);
-      if (consumed.timings) {
-        this.logTimings(trace, stage, consumed.timings);
-        tokensPerSecond = finiteNumber(consumed.timings.predicted_per_second)
-          ?? tokensPerSecond;
-      }
-      const text = consumed.text;
-      textCharacters += text.length;
-      reasoningCharacters += consumed.reasoning.length;
-      finishReason = consumed.finishReason ?? finishReason;
-      if (bufferText) {
-        bufferedText += text;
-      } else if (text) {
-        onEvent({ kind: 'text', text });
-      }
+    } catch (error) {
+      // Leaving the body unread would hold the single worker connection
+      // while the worker keeps streaming, queueing every later request.
+      await this.abandonStream(reader, trace, stage);
+      throw error;
     }
 
     let toolCallCount = 0;
@@ -709,6 +716,22 @@ export class LlamaClient implements InferenceClient {
     return response;
   }
 
+  /** Cancels a response body the client stopped reading, reporting a cancel that fails. */
+  private async abandonStream(
+    reader: ReadableStreamDefaultReader<Uint8Array>,
+    trace: ChatTrace,
+    stage: string,
+  ): Promise<void> {
+    try {
+      await reader.cancel();
+    } catch (error) {
+      this.diagnostics?.info(
+        `${GENERATION_PHASE} ${trace.id} could not cancel the abandoned response stream (${stage}): ` +
+        `${error instanceof Error ? error.message : String(error)}.`,
+      );
+    }
+  }
+
   /**
    * Concatenates the text of a streamed completion.
    *
@@ -738,26 +761,33 @@ export class LlamaClient implements InferenceClient {
       }
       content += consumed.text;
     };
-    while (true) {
-      const { done, value } = await reader.read();
-      if (firstStreamData && value && value.byteLength > 0) {
-        firstStreamData = false;
-        this.diagnostics?.info(
-          `${GENERATION_PHASE} ${trace.id} first stream data (${stage}): elapsed=${Date.now() - trace.startedAt} ms.`,
-        );
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (firstStreamData && value && value.byteLength > 0) {
+          firstStreamData = false;
+          this.diagnostics?.info(
+            `${GENERATION_PHASE} ${trace.id} first stream data (${stage}): elapsed=${Date.now() - trace.startedAt} ms.`,
+          );
+        }
+        buffer += decoder.decode(value, { stream: !done });
+        const frames = buffer.split(/\r?\n\r?\n/);
+        buffer = frames.pop() ?? '';
+        for (const frame of frames) {
+          consume(frame);
+        }
+        if (done) {
+          break;
+        }
       }
-      buffer += decoder.decode(value, { stream: !done });
-      const frames = buffer.split(/\r?\n\r?\n/);
-      buffer = frames.pop() ?? '';
-      for (const frame of frames) {
-        consume(frame);
+      if (buffer.trim()) {
+        consume(buffer);
       }
-      if (done) {
-        break;
-      }
-    }
-    if (buffer.trim()) {
-      consume(buffer);
+    } catch (error) {
+      // Leaving the body unread would hold the single worker connection
+      // while the worker keeps streaming, queueing every later request.
+      await this.abandonStream(reader, trace, stage);
+      throw error;
     }
     return content;
   }
