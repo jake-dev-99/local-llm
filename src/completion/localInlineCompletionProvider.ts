@@ -99,10 +99,16 @@ implements vscode.InlineCompletionItemProvider, vscode.Disposable {
       }
       return insertText ? [new vscode.InlineCompletionItem(insertText, new vscode.Range(position, position))] : [];
     } catch (error) {
-      if (!signal.aborted) {
-        this.logger.debug(
-          `Inline completion skipped: ${error instanceof Error ? error.message : String(error)}`,
-        );
+      // Typing on and chat preemption cancel completions constantly; those are
+      // routine. Anything else is a real failure and must be visible.
+      const cancelled = signal.aborted ||
+        error instanceof vscode.CancellationError ||
+        (error instanceof Error && error.name === 'AbortError');
+      const detail = error instanceof Error ? error.message : String(error);
+      if (cancelled) {
+        this.logger.debug(`Inline completion cancelled: ${detail}`);
+      } else {
+        this.logger.warn(`Inline completion failed: ${detail}`);
       }
       return [];
     } finally {

@@ -449,7 +449,7 @@ export class LlamaClient implements InferenceClient {
       }
     }
     if (buffer.trim()) {
-      const consumed = this.consumeSseFrame(buffer, pendingTools);
+      const consumed = this.consumeSseFrame(buffer, pendingTools, true);
       if (consumed.timings) {
         this.logTimings(trace, stage, consumed.timings);
         tokensPerSecond = finiteNumber(consumed.timings.predicted_per_second)
@@ -602,6 +602,7 @@ export class LlamaClient implements InferenceClient {
   private consumeSseFrame(
     frame: string,
     pendingTools: Map<number, PendingToolCall>,
+    trailing = false,
   ): ConsumedSseFrame {
     const data = frame
       .split(/\r?\n/)
@@ -616,7 +617,13 @@ export class LlamaClient implements InferenceClient {
     try {
       chunk = JSON.parse(data) as OpenAiChunk;
     } catch {
-      return { text: '', reasoning: '' };
+      // A dropped event can carry answer text or a tool-call fragment, so a
+      // reply assembled without it would be silently incomplete.
+      throw new Error(
+        trailing
+          ? `The local worker's response stream ended in the middle of an event: ${data.slice(0, 200)}`
+          : `The local worker sent a stream event that is not valid JSON: ${data.slice(0, 200)}`,
+      );
     }
     if (chunk.error !== undefined) {
       throw workerStreamError('/v1/chat/completions', chunk.error);

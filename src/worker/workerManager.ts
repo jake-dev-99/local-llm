@@ -27,7 +27,7 @@ import { isFatalWorkerError } from './workerError.js';
 import { verifiedWorkerBundle } from './workerIntegrity.js';
 import { prepareWorkerLaunch } from './workerLaunch.js';
 import type { WorkerBackend } from './workerManifest.js';
-import { createWorkerDiagnostics } from './workerDiagnostics.js';
+import { createWorkerDiagnostics, workerLineLevel } from './workerDiagnostics.js';
 import { beginWorkerActivity, finishWorkerActivity } from './workerActivity.js';
 import { discoverSycl0 } from './syclDevice.js';
 
@@ -221,7 +221,9 @@ export class WorkerManager implements vscode.Disposable {
 
   dispose(): void {
     this.disposed = true;
-    void this.stop();
+    this.stop().catch((error: unknown) => {
+      this.logger.error('Failed to stop the local worker during shutdown', error);
+    });
     this.stateEmitter.dispose();
   }
 
@@ -372,7 +374,11 @@ export class WorkerManager implements vscode.Disposable {
       runtime: session.runtime,
       ...(session.port === undefined ? {} : { port: session.port }),
     });
-    session.onExit((exit) => void this.handleExit(session, exit, memoryAttempt));
+    session.onExit((exit) => {
+      this.handleExit(session, exit, memoryAttempt).catch((error: unknown) => {
+        this.logger.error('Recovering from the local worker exit failed', error, true);
+      });
+    });
   }
 
   private async startAttempt(
@@ -394,12 +400,14 @@ export class WorkerManager implements vscode.Disposable {
       const launch = await prepareWorkerLaunch({
         target,
         mode: config.acceleration,
-        resolveBundle: (workerTarget, mode) => verifiedWorkerBundle(
-          this.context.extensionUri.fsPath,
-          workerTarget,
-          mode,
+        resolveBundle: (workerTarget, mode) => this.timedPhase(
+          'Verifying the bundled worker files',
+          () => verifiedWorkerBundle(this.context.extensionUri.fsPath, workerTarget, mode),
         ),
-        discoverSycl: discoverSycl0,
+        discoverSycl: (executable) => this.timedPhase(
+          'Discovering the SYCL device',
+          () => discoverSycl0(executable),
+        ),
       });
       const executable = launch.bundle.executablePath;
       const backend = launch.backend;
@@ -685,6 +693,15 @@ export class WorkerManager implements vscode.Disposable {
     }
   }
 
+  /** Logs a slow loading step as it starts and how long it took, so a long load is never a silent one. */
+  private async timedPhase<T>(description: string, operation: () => Promise<T>): Promise<T> {
+    const startedAt = Date.now();
+    this.logger.info(`[Model Loading] ${description}…`);
+    const result = await operation();
+    this.logger.info(`[Model Loading] ${description}: done in ${Date.now() - startedAt} ms.`);
+    return result;
+  }
+
   private logWorkerOutput(data: string): void {
     const fitted = parseFittedContext(data);
     if (fitted) {
@@ -694,8 +711,19 @@ export class WorkerManager implements vscode.Disposable {
       );
     }
     for (const line of data.split(/\r?\n/)) {
-      if (line.trim()) {
-        this.logger.debug(`worker: ${line.trim()}`);
+      const text = line.trim();
+      if (!text) {
+        continue;
+      }
+      switch (workerLineLevel(text)) {
+        case 'error':
+          this.logger.error(`worker: ${text}`);
+          break;
+        case 'warn':
+          this.logger.warn(`worker: ${text}`);
+          break;
+        default:
+          this.logger.debug(`worker: ${text}`);
       }
     }
   }

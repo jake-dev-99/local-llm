@@ -55,7 +55,9 @@ implements vscode.LanguageModelChatProvider<LocalLanguageModelInformation>, vsco
     _token: vscode.CancellationToken,
   ): LocalLanguageModelInformation[] {
     const config = readConfig(this.context);
-    const models = this.registry.list()
+    const installed = this.registry.list();
+    const hidden = installed.filter((model) => model.runtimeProfile?.hasChatTemplate === false);
+    const models = installed
       .filter((model) => model.runtimeProfile?.hasChatTemplate !== false)
       .map((model) => this.modelInformation(
         model,
@@ -68,7 +70,9 @@ implements vscode.LanguageModelChatProvider<LocalLanguageModelInformation>, vsco
     const advertised = models.map((model) =>
       `${model.name}: input ${model.maxInputTokens}, output ${model.maxOutputTokens}, ` +
       `tools ${model.capabilities.toolCalling === false ? 'off' : 'on'}`,
-    ).join('; ');
+    ).join('; ') + (hidden.length
+      ? ` | hidden from the model picker (no chat template): ${hidden.map((model) => model.name).join(', ')}`
+      : '');
     if (advertised !== this.lastAdvertised) {
       this.lastAdvertised = advertised;
       this.logger.info(`Advertised to VS Code: ${advertised || 'no models'}.`);

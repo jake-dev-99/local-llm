@@ -952,6 +952,57 @@ test('an empty reply fails instead of ending silently', async () => {
   }, undefined, 'stop');
 });
 
+test('a stream event that is not JSON fails instead of being dropped', async () => {
+  await withRawStreamWorker(
+    'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\ndata: {"choices":[{"delta":{"content":\n\ndata: [DONE]\n\n',
+    async client => {
+      await assert.rejects(
+        client.chat(plainRequest, () => undefined),
+        /stream event that is not valid JSON/,
+      );
+    },
+  );
+});
+
+test('a stream cut off in the middle of an event fails', async () => {
+  await withRawStreamWorker(
+    'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\ndata: {"choices":[{"delta":{"con',
+    async client => {
+      await assert.rejects(
+        client.chat(plainRequest, () => undefined),
+        /ended in the middle of an event/,
+      );
+    },
+  );
+});
+
+async function withRawStreamWorker(
+  stream: string,
+  run: (client: TestLlamaClient) => Promise<void>,
+): Promise<void> {
+  const server = createServer((request, response) => {
+    request.resume();
+    request.on('end', () => {
+      if (request.url === '/v1/chat/completions/input_tokens') {
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end('{"input_tokens":10}');
+      } else {
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(stream);
+      }
+    });
+  });
+  await listen(server);
+  const client = await testClient(server);
+  try {
+    await run(client);
+  } finally {
+    await client.dispose();
+    server.closeAllConnections();
+    await close(server);
+  }
+}
+
 async function withFinalWorker(
   deltas: Array<Record<string, unknown>>,
   run: (client: TestLlamaClient, bodies: Array<Record<string, unknown>>) => Promise<void>,

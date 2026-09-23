@@ -60,7 +60,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         event.affectsConfiguration('localLlm.metalMemoryReserveMiB') ||
         event.affectsConfiguration('localLlm.startupTimeoutSeconds')
       ) {
-        void worker.stop();
+        worker.stop().catch((error: unknown) => {
+          logger.error('Failed to stop the local worker after a settings change', error, true);
+        });
       }
     }),
   );
