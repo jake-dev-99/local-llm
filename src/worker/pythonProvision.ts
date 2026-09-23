@@ -24,6 +24,7 @@ import {
   type PythonEnvFlavor,
   type PythonEnvFlavorSetting,
 } from './pythonEnvironment.ts';
+import { describeError, isMissingFileError } from '../errorDetail.ts';
 
 export interface EnsureEnvironmentOptions {
   storagePath: string;
@@ -91,12 +92,15 @@ export async function ensureEnvironment(
   },
 ): Promise<EnsuredEnvironment> {
   const { storagePath, target } = options;
-  const flavor = await resolveEnvFlavor(target, options.flavorSetting);
+  // Provisioning output is logged as worker output; the prefix raises these
+  // above debug so a fallback is visible at the default log level.
+  const warn = (message: string): void => options.onLog(`[warning] ${message}`);
+  const flavor = await resolveEnvFlavor(target, options.flavorSetting, undefined, warn);
   const directory = envDirectory(storagePath, target, flavor);
   const release = await deps.readReleaseManifest(options.releaseManifestPath, target);
   const wheels = wheelsForFlavor(release, flavor);
   const releaseForFlavor: EnvManifestTarget = { ...release, wheels };
-  if (await envMatchesManifest(storagePath, target, flavor, releaseForFlavor)) {
+  if (await envMatchesManifest(storagePath, target, flavor, releaseForFlavor, warn)) {
     return { pythonPath: venvPython(directory, target), target, flavor, fresh: false };
   }
   options.onLog(`[Provisioning] Installing Python environment (${target}/${flavor}).`);
@@ -107,7 +111,7 @@ export async function ensureEnvironment(
   options.progress.report({ message: 'Downloading Python interpreter' });
   await deps.download(
     release.interpreter.url, archivePath, release.interpreter.sha256,
-    undefined, options.progress, options.token,
+    undefined, options.progress, options.token, warn,
   );
   const interpreterDir = path.join(directory, 'interpreter');
   await mkdir(interpreterDir, { recursive: true });
@@ -119,7 +123,7 @@ export async function ensureEnvironment(
   for (const [index, wheel] of wheels.entries()) {
     options.progress.report({ message: `Downloading ${wheel.name} (${index + 1}/${wheels.length})` });
     const destination = path.join(directory, 'wheels', safeWheelFilename(wheel));
-    await deps.download(wheel.url, destination, wheel.sha256, undefined, options.progress, options.token);
+    await deps.download(wheel.url, destination, wheel.sha256, undefined, options.progress, options.token, warn);
     wheelPaths.push(destination);
   }
   const interpreterExe = interpreterExePath(interpreterDir, target);
@@ -186,21 +190,35 @@ function safeWheelFilename(wheel: { url: string; name: string }): string {
 export async function removeStaleEnvironments(
   storagePath: string,
   keep: { target: string; flavor: PythonEnvFlavor },
+  onWarning?: (message: string) => void,
 ): Promise<void> {
-  // Best-effort hygiene after a successful provision; never throws.
-  try {
-    const root = path.join(storagePath, 'python-env');
-    for (const target of await readdir(root).catch(() => [] as string[])) {
-      for (const flavor of await readdir(path.join(root, target)).catch(() => [] as string[])) {
-        if (flavor.endsWith('.json')) {
-          continue;
-        }
-        if (target !== keep.target || flavor !== keep.flavor) {
-          await rm(path.join(root, target, flavor), { recursive: true, force: true }).catch(() => undefined);
+  // Best-effort hygiene after a successful provision: it never throws, because
+  // it must never break a working env, but a stale env it cannot remove holds
+  // gigabytes, so every failure is reported.
+  const listed = async (directory: string): Promise<string[]> => {
+    try {
+      return await readdir(directory);
+    } catch (error) {
+      if (!isMissingFileError(error)) {
+        onWarning?.(`Could not list ${directory} to remove stale Python environments: ${describeError(error)}`);
+      }
+      return [];
+    }
+  };
+  const root = path.join(storagePath, 'python-env');
+  for (const target of await listed(root)) {
+    for (const flavor of await listed(path.join(root, target))) {
+      if (flavor.endsWith('.json')) {
+        continue;
+      }
+      if (target !== keep.target || flavor !== keep.flavor) {
+        const stale = path.join(root, target, flavor);
+        try {
+          await rm(stale, { recursive: true, force: true });
+        } catch (error) {
+          onWarning?.(`Could not remove the stale Python environment ${stale}: ${describeError(error)}`);
         }
       }
     }
-  } catch {
-    // Hygiene must never break a working env.
   }
 }

@@ -18,6 +18,7 @@ from pathlib import Path
 
 from .errors import InvalidModelError, MissingWeightsError
 from .models import ModelInspection
+from .protocol import log
 
 # Safetensors stores an 8-byte little-endian header length followed by a JSON
 # header. A header past this size means the file is not what it claims to be.
@@ -60,12 +61,15 @@ def read_safetensors_header(file_path: Path) -> dict:
         with file_path.open("rb") as handle:
             prefix = handle.read(8)
             if len(prefix) < 8:
+                log("warning", f"{file_path.name} is too short to hold a Safetensors header.")
                 return {}
             (length,) = struct.unpack("<Q", prefix)
             if length <= 0 or length > MAX_HEADER_BYTES:
+                log("warning", f"{file_path.name} declares an implausible header length ({length} bytes).")
                 return {}
             return json.loads(handle.read(length).decode("utf-8"))
-    except (OSError, ValueError, json.JSONDecodeError):
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        log("warning", f"Could not read the Safetensors header of {file_path.name}: {exc!r}")
         return {}
 
 
@@ -97,7 +101,11 @@ def _weight_summary(files: list[Path]) -> tuple[int, str | None]:
 def _read_json(path: Path) -> dict:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        # Optional sidecars are routinely absent; the caller decides if it matters.
+        return {}
+    except (OSError, ValueError) as exc:
+        log("warning", f"Could not read {path.name}: {exc!r}")
         return {}
 
 

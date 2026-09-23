@@ -60,6 +60,33 @@ test('detection prefers CUDA, then Arc, then CPU, never throws', async () => {
   );
 });
 
+test('a GPU probe that fails for a reason other than absence is reported', async () => {
+  const missing = Object.assign(new Error('spawn nvidia-smi ENOENT'), { code: 'ENOENT' });
+  const quiet: string[] = [];
+  assert.equal(
+    await detectWindowsGpuFlavor(async (exe) => {
+      if (exe === 'nvidia-smi') {
+        throw missing;
+      }
+      return { stdout: 'Intel(R) Arc(TM) 140T Graphics', stderr: '' };
+    }, (warning) => quiet.push(warning)),
+    'xpu',
+  );
+  assert.deepEqual(quiet, [], 'no NVIDIA driver is the normal case on Intel, not a warning');
+
+  const warnings: string[] = [];
+  assert.equal(
+    await detectWindowsGpuFlavor(async (exe) => {
+      throw exe === 'nvidia-smi'
+        ? Object.assign(new Error('NVIDIA-SMI has failed'), { code: 9 })
+        : new Error('Get-CimInstance : Access denied');
+    }, (warning) => warnings.push(warning)),
+    'cpu',
+  );
+  assert.match(warnings[0] ?? '', /nvidia-smi is installed but failed/);
+  assert.match(warnings[1] ?? '', /falls back to CPU: .*Access denied/);
+});
+
 test('target resolution covers macOS arm64 and Windows x64 only', () => {
   assert.equal(resolveEnvTarget('darwin', 'arm64'), 'darwin-arm64');
   assert.equal(resolveEnvTarget('win32', 'x64'), 'win32-x64');

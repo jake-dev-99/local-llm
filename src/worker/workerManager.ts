@@ -302,7 +302,11 @@ export class WorkerManager implements vscode.Disposable {
         }),
     );
     throwIfAborted(signal);
-    await removeStaleEnvironments(storagePath, { target: env.target, flavor: env.flavor });
+    await removeStaleEnvironments(
+      storagePath,
+      { target: env.target, flavor: env.flavor },
+      (message) => this.logger.warn(message),
+    );
     return env.pythonPath;
   }
 

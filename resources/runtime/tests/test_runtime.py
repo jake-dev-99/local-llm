@@ -424,6 +424,18 @@ class InspectorTest(unittest.TestCase):
         )
         self.assertEqual(inspector.read_safetensors_header(fixture), {})
 
+    def test_an_unreadable_header_says_why(self) -> None:
+        import contextlib
+        import io
+
+        fixture = (
+            Path(__file__).parent / "fixtures" / "oversize-header-claim.safetensors"
+        )
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            self.assertEqual(inspector.read_safetensors_header(fixture), {})
+        self.assertIn("[warning] oversize-header-claim.safetensors declares", stderr.getvalue())
+
     def test_rejects_a_missing_directory(self) -> None:
         with self.assertRaises(InvalidModelError):
             inspector.inspect(Path("/definitely/not/here"))

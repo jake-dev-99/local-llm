@@ -37,6 +37,7 @@ from .errors import (
     ModelNotLoadedError,
 )
 from .inspector import inspect as inspect_checkpoint
+from .protocol import log
 from .models import (
     PROTOCOL_VERSION,
     GenerationOptions,
@@ -189,7 +190,8 @@ def available_device_bytes() -> int | None:
             return int(torch.xpu.get_device_properties(0).total_memory)
         if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             return int(torch.mps.recommended_max_memory())
-    except Exception:
+    except Exception as exc:
+        log("warning", f"Could not measure accelerator memory, so loading is not gated on it: {exc!r}")
         return None
     return None
 
@@ -201,13 +203,16 @@ def available_host_bytes() -> int | None:
     one number would not earn its place in the dependency set.
     """
 
+    # One of the two probes is expected to be missing on each platform, so a
+    # failure is reported only when neither produced a figure.
+    failures: list[str] = []
     try:
         pages = os.sysconf("SC_PHYS_PAGES")
         page_size = os.sysconf("SC_PAGE_SIZE")
         if pages > 0 and page_size > 0:
             return int(pages) * int(page_size)
-    except (AttributeError, ValueError, OSError):
-        pass
+    except (AttributeError, ValueError, OSError) as exc:
+        failures.append(f"sysconf: {exc!r}")
     try:
         import ctypes
 
@@ -228,8 +233,13 @@ def available_host_bytes() -> int | None:
         status.dwLength = ctypes.sizeof(MemoryStatus)
         if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
             return int(status.ullTotalPhys)
-    except Exception:
-        pass
+    except Exception as exc:
+        failures.append(f"GlobalMemoryStatusEx: {exc!r}")
+    log(
+        "warning",
+        "Could not determine physical memory, so loading is not gated on it: "
+        + "; ".join(failures or ["no probe reported a figure"]),
+    )
     return None
 
 
@@ -343,7 +353,16 @@ class LocalLLM:
             generation_config = GenerationConfig.from_pretrained(
                 resolved, local_files_only=True,
             )
-        except Exception:
+        except Exception as exc:
+            # A checkpoint without generation_config.json uses the model's
+            # built-in defaults. One that ships the file but cannot load it
+            # loses its own sampling defaults and stop tokens, which is not.
+            if (Path(resolved) / "generation_config.json").exists():
+                log(
+                    "warning",
+                    "generation_config.json could not be loaded; using the model's "
+                    f"built-in generation defaults instead: {exc!r}",
+                )
             generation_config = model.generation_config
 
         self.path = resolved
@@ -462,8 +481,8 @@ class LocalLLM:
             try:
                 if empty is not None and available():
                     empty()
-            except Exception:
-                pass
+            except Exception as exc:
+                log("warning", f"Could not release cached accelerator memory after unloading: {exc!r}")
 
     # ------------------------------------------------------------ introspection
 

@@ -13,6 +13,7 @@
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import * as path from 'node:path';
+import { describeError, isMissingFileError } from '../errorDetail.ts';
 
 export type PythonEnvFlavor = 'cpu' | 'cuda' | 'xpu';
 export type PythonEnvFlavorSetting = 'auto' | PythonEnvFlavor;
@@ -73,16 +74,23 @@ export function hasIntelArc(names: readonly string[]): boolean {
 
 /**
  * Detects the Windows GPU flavor. Never throws: any probe failure degrades
- * to CPU, and the `pythonEnvFlavor` setting always wins over detection.
+ * to CPU, and the `pythonEnvFlavor` setting always wins over detection. Every
+ * failed probe is reported, because a GPU machine quietly provisioned for CPU
+ * looks healthy and is just slow.
  */
 export async function detectWindowsGpuFlavor(
   run: CommandRunner = runCommand,
+  onWarning?: (message: string) => void,
 ): Promise<PythonEnvFlavor> {
   try {
     await run('nvidia-smi', ['-L']);
     return 'cuda';
-  } catch {
-    // No NVIDIA driver; fall through to the Intel check.
+  } catch (error) {
+    // No nvidia-smi means no NVIDIA driver, the normal case on Intel. One that
+    // exists and fails is a broken driver, which must not pass for "no GPU".
+    if (!isMissingFileError(error)) {
+      onWarning?.(`nvidia-smi is installed but failed, so CUDA is not used: ${describeError(error)}`);
+    }
   }
   try {
     const { stdout } = await run('powershell', [
@@ -94,8 +102,9 @@ export async function detectWindowsGpuFlavor(
     if (hasIntelArc(parseVideoControllerNames(stdout))) {
       return 'xpu';
     }
-  } catch {
-    // PowerShell unavailable or query failed; CPU is the safe answer.
+  } catch (error) {
+    // CPU is the safe answer, but not a silent one.
+    onWarning?.(`Could not list video controllers, so the Python environment falls back to CPU: ${describeError(error)}`);
   }
   return 'cpu';
 }
@@ -125,7 +134,8 @@ export function resolveEnvTarget(
 export async function resolveEnvFlavor(
   target: string,
   setting: PythonEnvFlavorSetting,
-  detect: () => Promise<PythonEnvFlavor> = detectWindowsGpuFlavor,
+  detect?: () => Promise<PythonEnvFlavor>,
+  onWarning?: (message: string) => void,
 ): Promise<PythonEnvFlavor> {
   if (setting !== 'auto') {
     return setting;
@@ -134,7 +144,7 @@ export async function resolveEnvFlavor(
     return 'cpu';
   }
   if (target === 'win32-x64') {
-    return detect();
+    return (detect ?? (() => detectWindowsGpuFlavor(runCommand, onWarning)))();
   }
   return 'cpu';
 }
@@ -195,13 +205,19 @@ export async function envMatchesManifest(
   target: string,
   flavor: PythonEnvFlavor,
   expected: EnvManifestTarget,
+  onWarning?: (message: string) => void,
 ): Promise<boolean> {
   let recorded: EnvManifestTarget;
   try {
     recorded = parseInstalledRecord(
       JSON.parse(await readFile(installedManifestPath(storagePath, target, flavor), 'utf8')),
     );
-  } catch {
+  } catch (error) {
+    // No record is a first install. An unreadable one forces a reinstall of
+    // several gigabytes, which must say why.
+    if (!isMissingFileError(error)) {
+      onWarning?.(`The installed Python environment record is unreadable; reinstalling: ${describeError(error)}`);
+    }
     return false;
   }
   const expectedWheels = wheelsForFlavor(expected, flavor);
