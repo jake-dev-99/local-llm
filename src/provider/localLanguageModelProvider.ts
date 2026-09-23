@@ -27,6 +27,7 @@ import {
   resolveLocalAgentToolPolicy,
 } from './localAgentTools.js';
 import { modelLoadProgress } from './modelLoadProgress.js';
+import { type DroppedPrompt, PromptDropDetector } from './promptDropDetector.js';
 import { messagesForSystemRoleSupport } from './messageRoleSupport.js';
 
 export interface LocalLanguageModelInformation extends vscode.LanguageModelChatInformation {
@@ -40,6 +41,7 @@ implements vscode.LanguageModelChatProvider<LocalLanguageModelInformation>, vsco
 
   readonly onDidChangeLanguageModelChatInformation = this.changeEmitter.event;
   private lastAdvertised: string | undefined;
+  private readonly promptDrops: PromptDropDetector;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -48,6 +50,7 @@ implements vscode.LanguageModelChatProvider<LocalLanguageModelInformation>, vsco
     private readonly logger: LocalLlmLogger,
   ) {
     this.registrySubscription = registry.onDidChange(() => this.changeEmitter.fire());
+    this.promptDrops = new PromptDropDetector((drop) => this.reportDroppedPrompt(drop));
   }
 
   provideLanguageModelChatInformation(
@@ -101,6 +104,7 @@ implements vscode.LanguageModelChatProvider<LocalLanguageModelInformation>, vsco
     progress: vscode.Progress<vscode.LanguageModelResponsePart>,
     token: vscode.CancellationToken,
   ): Promise<void> {
+    this.promptDrops.sent(model.installedModelId);
     this.logger.info(
       `Chat request received for ${model.name}: ${messages.length} message${messages.length === 1 ? '' : 's'}, ` +
       `${options.tools?.length ?? 0} tool${options.tools?.length === 1 ? '' : 's'}.`,
@@ -360,6 +364,7 @@ implements vscode.LanguageModelChatProvider<LocalLanguageModelInformation>, vsco
         },
         cancellation.signal,
       );
+      this.promptDrops.counted(installed.id, installed.name, count, model.maxInputTokens);
       this.logger.debug(
         `Token count for ${installed.name}: ${count} tokens ` +
         `(${typeof text === 'string' ? 'text' : `${roleName(text.role)} message`}; ` +
@@ -382,12 +387,38 @@ implements vscode.LanguageModelChatProvider<LocalLanguageModelInformation>, vsco
   }
 
   dispose(): void {
+    this.promptDrops.dispose();
     this.registrySubscription.dispose();
     this.changeEmitter.dispose();
   }
 
   refresh(): void {
     this.changeEmitter.fire();
+  }
+
+  /**
+   * VS Code measured a prompt and then never sent it. It says nothing when it
+   * does this, so the provider has to.
+   */
+  private reportDroppedPrompt(drop: DroppedPrompt): void {
+    const measured = `VS Code counted tokens ${drop.counts} time${drop.counts === 1 ? '' : 's'} ` +
+      `for a ${drop.modelName} prompt (largest piece ${drop.largestCount} tokens) against its ` +
+      `${drop.inputLimit}-token input limit, then did not send the request.`;
+    if (drop.countedTokens > drop.inputLimit) {
+      this.logger.error(
+        `Chat request to ${drop.modelName} was dropped by VS Code: the prompt does not fit. ${measured} ` +
+        'Use a model with a larger context window on this computer, or a smaller prompt ' +
+        '(plain Chat instead of Agent, fewer attachments).',
+        undefined,
+        true,
+      );
+      return;
+    }
+    this.logger.warn(
+      `Chat request to ${drop.modelName} was not sent by VS Code, although the prompt fits. ${measured} ` +
+      'The reason is inside VS Code: see Output > GitHub Copilot Chat.',
+      true,
+    );
   }
 
   private modelInformation(
