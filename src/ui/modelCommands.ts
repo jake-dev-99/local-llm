@@ -352,9 +352,9 @@ async function isCudaFlavor(services: CommandServices): Promise<boolean> {
 
 async function downloadHuggingFace(services: CommandServices): Promise<void> {
   const repository = await vscode.window.showInputBox({
-    title: 'Download GGUF from Hugging Face',
+    title: 'Download from Hugging Face',
     prompt: 'Repository',
-    placeHolder: 'owner/model-GGUF',
+    placeHolder: 'owner/model',
     ignoreFocusOut: true,
     validateInput: validateRepositoryInput,
   });

@@ -7,11 +7,16 @@ import { readConfig } from '../config.js';
 import type { InstalledModel, ModelSource } from '../domain.js';
 import type { LocalLlmLogger } from '../logging.js';
 import { readGgufMetadata } from './ggufMetadata.js';
-import { isSingleFileGguf, selectableHuggingFaceFiles } from './huggingFaceFileSelection.js';
+import {
+  isSingleFileGguf,
+  safetensorsHuggingFaceFiles,
+  selectableHuggingFaceFiles,
+} from './huggingFaceFileSelection.js';
 import { isExtensionOwned } from './modelIdentity.ts';
 import {
   isSafetensorsDirectory,
   readSafetensorsCheckpoint,
+  validateCheckpointStatic,
   type SafetensorsCheckpoint,
 } from './safetensorsDirectory.ts';
 import { ModelRegistry } from './modelRegistry.js';
@@ -21,6 +26,7 @@ import {
   huggingFaceDownloadUrl,
   inspectHuggingFaceRepository,
   safeModelFilename,
+  sha256File,
   sourceUrlForRegistry,
   type HuggingFaceFile,
 } from './modelSources.js';
@@ -95,13 +101,27 @@ export class ModelManager {
         }
       },
     );
-    const selectableFiles = selectableHuggingFaceFiles(metadata.files);
-    if (selectableFiles.length === 0) {
-      throw new Error(
-        `Repository ${metadata.id} contains GGUF files, but none are supported single-file downloads.`,
-      );
+    const artifact = await chooseHuggingFaceArtifact(
+      selectableHuggingFaceFiles(metadata.files),
+      safetensorsHuggingFaceFiles(metadata.files),
+    );
+    if (!artifact) {
+      if (metadata.files.some((file) => file.filename.toLowerCase().endsWith('.safetensors'))) {
+        throw new Error(
+          `Repository ${metadata.id} has Safetensors weights, but no complete root checkpoint with config.json.`,
+        );
+      }
+      if (metadata.files.some((file) => file.filename.toLowerCase().endsWith('.gguf'))) {
+        throw new Error(
+          `Repository ${metadata.id} contains GGUF files, but none are supported single-file downloads.`,
+        );
+      }
+      throw new Error(`Repository ${metadata.id} contains no supported GGUF or Safetensors model.`);
     }
-    const chosen = await chooseHuggingFaceFile(selectableFiles);
+    if (artifact.kind === 'safetensors') {
+      return this.downloadSafetensorsRepository(metadata, artifact.files, token);
+    }
+    const chosen = artifact.file;
     if (!chosen) {
       return undefined;
     }
@@ -135,6 +155,83 @@ export class ModelManager {
       sourceUrl: sourceUrlForRegistry(url),
       repository: metadata.id,
       revision: metadata.revision,
+    });
+  }
+
+  private async downloadSafetensorsRepository(
+    metadata: { id: string; revision: string },
+    files: HuggingFaceFile[],
+    token: string | undefined,
+  ): Promise<InstalledModel> {
+    const existing = this.registry.list().find((model) =>
+      model.source === 'huggingface' &&
+      model.format === 'safetensors' &&
+      model.repository === metadata.id &&
+      model.revision === metadata.revision,
+    );
+    const repositoryName = safeDirectoryName(path.basename(metadata.id));
+    const directory = existing && isExtensionOwned(existing)
+      ? existing.filePath
+      : this.destination(
+        repositoryName,
+        `huggingface:${metadata.id}:${metadata.revision}:safetensors`,
+      );
+    await mkdir(directory, { recursive: true });
+    let downloaded = false;
+    for (const [index, file] of files.entries()) {
+      const destination = path.join(directory, file.filename);
+      if (await completedRepositoryFileMatches(destination, file)) {
+        continue;
+      }
+      await rm(destination, { force: true });
+      downloaded = true;
+      const url = huggingFaceDownloadUrl(metadata.id, metadata.revision, file.filename);
+      await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: `Downloading ${file.filename} (${index + 1}/${files.length})`,
+          cancellable: true,
+        },
+        (progress, cancellation) => downloadModel(
+          url,
+          destination,
+          file.sha256,
+          token,
+          progress,
+          cancellation,
+        ),
+      );
+    }
+    if (!(await isSafetensorsDirectory(directory))) {
+      throw new Error(
+        `Downloaded repository ${metadata.id} is not a complete Safetensors checkpoint.`,
+      );
+    }
+    const validation = await validateCheckpointStatic(directory);
+    if (!validation.ok) {
+      throw new Error(
+        `Downloaded repository ${metadata.id} validation failed: ${validation.errors.join(' ')}`,
+      );
+    }
+    for (const warning of validation.warnings) {
+      this.logger.info(`Downloaded repository ${metadata.id}: ${warning}`);
+    }
+    if (existing && !downloaded && existing.filePath === directory) {
+      return existing;
+    }
+    const checkpoint = await readSafetensorsCheckpoint(
+      directory,
+      (warning) => this.logger.info(warning),
+    );
+    return this.registerCheckpointDirectory(directory, checkpoint, {
+      managed: true,
+      source: 'huggingface',
+      sourceUrl: sourceUrlForRegistry(
+        `https://huggingface.co/${metadata.id}/tree/${metadata.revision}`,
+      ),
+      repository: metadata.id,
+      revision: metadata.revision,
+      filename: repositoryName,
     });
   }
 
@@ -274,9 +371,17 @@ export class ModelManager {
   private async registerCheckpointDirectory(
     directory: string,
     checkpoint: SafetensorsCheckpoint,
-    options: { managed: boolean; source: ModelSource; sourceUrl?: string },
+    options: {
+      managed: boolean;
+      source: ModelSource;
+      sourceUrl?: string;
+      repository?: string;
+      revision?: string;
+      filename?: string;
+    },
   ): Promise<InstalledModel> {
-    const name = friendlyName(path.basename(directory));
+    const filename = options.filename ?? path.basename(directory);
+    const name = friendlyDirectoryName(filename);
     const model: InstalledModel = {
       id: `${slug(name)}-${checkpoint.identity.digest.slice(0, 12)}`,
       name,
@@ -285,7 +390,9 @@ export class ModelManager {
       sha256: checkpoint.identity.digest,
       source: options.source,
       ...(options.sourceUrl ? { sourceUrl: options.sourceUrl } : {}),
-      filename: path.basename(directory),
+      ...(options.repository ? { repository: options.repository } : {}),
+      ...(options.revision ? { revision: options.revision } : {}),
+      filename,
       installedAt: new Date().toISOString(),
       format: 'safetensors',
       runtime: 'transformers',
@@ -503,8 +610,75 @@ async function chooseHuggingFaceFile(
   return selected?.file;
 }
 
+type HuggingFaceArtifact =
+  | { kind: 'gguf'; file: HuggingFaceFile }
+  | { kind: 'safetensors'; files: HuggingFaceFile[] };
+
+async function chooseHuggingFaceArtifact(
+  ggufFiles: HuggingFaceFile[],
+  safetensorsFiles: HuggingFaceFile[],
+): Promise<HuggingFaceArtifact | undefined> {
+  if (safetensorsFiles.length === 0 && ggufFiles.length === 0) {
+    return undefined;
+  }
+  if (safetensorsFiles.length === 0) {
+    const file = await chooseHuggingFaceFile(ggufFiles);
+    return file ? { kind: 'gguf', file } : undefined;
+  }
+  if (ggufFiles.length === 0) {
+    return { kind: 'safetensors', files: safetensorsFiles };
+  }
+  const safetensorsBytes = safetensorsFiles.reduce((total, file) => total + file.size, 0);
+  const items: Array<vscode.QuickPickItem & { artifact: HuggingFaceArtifact }> = [
+    {
+      label: 'Safetensors checkpoint',
+      description: `${formatSize(safetensorsBytes)} · ${safetensorsFiles.length} files`,
+      detail: 'All root checkpoint shards and sidecars',
+      artifact: { kind: 'safetensors', files: safetensorsFiles },
+    },
+    ...ggufFiles.map((file) => ({
+      label: path.basename(file.filename),
+      ...(file.size > 0 ? { description: formatSize(file.size) } : {}),
+      detail: file.filename,
+      artifact: { kind: 'gguf', file } as HuggingFaceArtifact,
+    })),
+  ];
+  const selected = await vscode.window.showQuickPick(items, {
+    title: 'Select a model download',
+    placeHolder: 'Choose the checkpoint format or GGUF quantization',
+    matchOnDescription: true,
+    matchOnDetail: true,
+  });
+  return selected?.artifact;
+}
+
+async function completedRepositoryFileMatches(
+  destination: string,
+  file: HuggingFaceFile,
+): Promise<boolean> {
+  try {
+    const metadata = await stat(destination);
+    if (!metadata.isFile() || file.size <= 0 || metadata.size !== file.size) {
+      return false;
+    }
+    return file.sha256
+      ? (await sha256File(destination)).toLowerCase() === file.sha256.toLowerCase()
+      : true;
+  } catch {
+    return false;
+  }
+}
+
+function safeDirectoryName(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'model';
+}
+
 function friendlyName(filename: string): string {
   return path.basename(filename, path.extname(filename)).replace(/[-_]+/g, ' ').trim();
+}
+
+function friendlyDirectoryName(filename: string): string {
+  return path.basename(filename).replace(/[-_]+/g, ' ').trim();
 }
 
 function slug(value: string): string {
