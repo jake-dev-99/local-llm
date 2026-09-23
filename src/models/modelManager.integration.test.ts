@@ -106,7 +106,7 @@ function fakeRegistry() {
   };
 }
 
-const logger = { info: () => undefined, error: () => undefined };
+const logger = { info: () => undefined, warn: () => undefined, error: () => undefined };
 const context = { secrets: { get: async () => undefined } };
 
 function uriFor(fsPath: string) {
@@ -559,5 +559,22 @@ test('removing a model the extension copied does delete it', async () => {
     assert.equal(registry.models.length, 0);
   } finally {
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('a successful Hugging Face response that is not JSON fails instead of reading as an empty repository', async () => {
+  const ModelManager = await loadModelManager();
+  const storage = mkdtempSync(path.join(tmpdir(), 'local-llm-hf-garbage-'));
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response('<html>Service temporarily unavailable</html>', { status: 200 });
+  try {
+    const managedContext = { ...context, globalStorageUri: uriFor(storage) };
+    await assert.rejects(
+      new ModelManager(managedContext, fakeRegistry(), logger).downloadFromHuggingFace('owner/repo'),
+      /not JSON: <html>Service temporarily unavailable/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(storage, { recursive: true, force: true });
   }
 });

@@ -67,3 +67,11 @@ function describeValue(value: unknown): string {
     return String(value);
   }
 }
+
+/** Whether a filesystem error means the path does not exist, the one case a caller may treat as an answer rather than a failure. */
+export function isMissingFileError(error: unknown): boolean {
+  const code = typeof error === 'object' && error !== null
+    ? (error as NodeJS.ErrnoException).code
+    : undefined;
+  return code === 'ENOENT' || code === 'ENOTDIR';
+}

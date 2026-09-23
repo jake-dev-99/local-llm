@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Transform } from 'node:stream';
 import * as vscode from 'vscode';
+import { describeError, isMissingFileError } from '../errorDetail.js';
 
 export interface HuggingFaceFile {
   filename: string;
@@ -54,6 +55,14 @@ export async function inspectHuggingFaceRepository(
   try {
     payload = JSON.parse(responseText) as HuggingFaceApiModel;
   } catch {
+    // An error body may be plain text, which the check below reports. A
+    // successful response that is not JSON would otherwise read as an empty
+    // repository.
+    if (response.ok) {
+      throw new Error(
+        `Hugging Face returned a response for ${normalized} that is not JSON: ${responseText.trim().slice(0, 200)}`,
+      );
+    }
     payload = {};
   }
   if (!response.ok) {
@@ -137,6 +146,7 @@ export async function downloadModel(
   bearerToken: string | undefined,
   progress: vscode.Progress<{ message?: string; increment?: number }>,
   token: vscode.CancellationToken,
+  onWarning?: (message: string) => void,
 ): Promise<{ sha256: string; size: number }> {
   if (activeDownloadDestinations.has(destinationPath)) {
     throw new Error('A download for this model is already in progress.');
@@ -150,6 +160,7 @@ export async function downloadModel(
       bearerToken,
       progress,
       token,
+      onWarning,
     );
   } finally {
     activeDownloadDestinations.delete(destinationPath);
@@ -163,6 +174,7 @@ async function downloadModelExclusive(
   bearerToken: string | undefined,
   progress: vscode.Progress<{ message?: string; increment?: number }>,
   token: vscode.CancellationToken,
+  onWarning?: (message: string) => void,
 ): Promise<{ sha256: string; size: number }> {
   const parsed = new URL(url);
   if (parsed.protocol !== 'https:') {
@@ -174,12 +186,24 @@ async function downloadModelExclusive(
   const metadataPath = `${temporaryPath}.json`;
   await mkdir(path.dirname(destinationPath), { recursive: true });
   try {
-    let existingSize = await stat(temporaryPath).then((value) => value.size).catch(() => 0);
+    let existingSize = await stat(temporaryPath).then(
+      (value) => value.size,
+      (error: unknown) => {
+        if (isMissingFileError(error)) {
+          return 0;
+        }
+        throw error;
+      },
+    );
     let partialMetadata = existingSize > 0
-      ? await readPartialMetadata(metadataPath)
+      ? await readPartialMetadata(metadataPath, onWarning)
       : undefined;
     let validator = resumeValidator(partialMetadata);
     if (existingSize > 0 && !validator) {
+      onWarning?.(
+        `Discarding ${formatBytes(existingSize)} of a partial download of ${path.basename(destinationPath)}: ` +
+        'it has no ETag or Last-Modified validator, so resuming could splice different bytes.',
+      );
       await Promise.all([
         rm(temporaryPath, { force: true }),
         rm(metadataPath, { force: true }),
@@ -195,6 +219,10 @@ async function downloadModelExclusive(
       controller.signal,
     );
     if (existingSize > 0 && response.status !== 206) {
+      onWarning?.(
+        `The server answered HTTP ${response.status} instead of resuming ${path.basename(destinationPath)}; ` +
+        `discarding ${formatBytes(existingSize)} and downloading from the start.`,
+      );
       await response.body?.cancel();
       await Promise.all([
         rm(temporaryPath, { force: true }),
@@ -226,7 +254,7 @@ async function downloadModelExclusive(
     const responseBytes = finiteContentLength(response.headers.get('content-length'));
     const total = contentRangeTotal(response.headers.get('content-range')) ??
       (responseBytes > 0 ? existingSize + responseBytes : 0);
-    await assertDiskSpace(path.dirname(destinationPath), responseBytes || undefined);
+    await assertDiskSpace(path.dirname(destinationPath), responseBytes || undefined, onWarning);
     let downloaded = existingSize;
     let lastPercent = total > 0 ? (downloaded / total) * 100 : 0;
     const counter = new Transform({
@@ -349,10 +377,12 @@ async function fetchDownload(
 
 async function readPartialMetadata(
   metadataPath: string,
+  onWarning?: (message: string) => void,
 ): Promise<PartialDownloadMetadata | undefined> {
   try {
     const parsed = JSON.parse(await readFile(metadataPath, 'utf8')) as unknown;
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      onWarning?.(`Partial download metadata ${path.basename(metadataPath)} is not a JSON object.`);
       return undefined;
     }
     const record = parsed as Record<string, unknown>;
@@ -362,7 +392,10 @@ async function readPartialMetadata(
         ? { lastModified: record.lastModified }
         : {}),
     };
-  } catch {
+  } catch (error) {
+    if (!isMissingFileError(error)) {
+      onWarning?.(`Partial download metadata ${path.basename(metadataPath)} is unreadable: ${describeError(error)}`);
+    }
     return undefined;
   }
 }
@@ -418,7 +451,11 @@ function contentRangeTotal(value: string | null): number | undefined {
   return match?.[1] ? Number(match[1]) : undefined;
 }
 
-async function assertDiskSpace(directory: string, requiredBytes: number | undefined): Promise<void> {
+async function assertDiskSpace(
+  directory: string,
+  requiredBytes: number | undefined,
+  onWarning?: (message: string) => void,
+): Promise<void> {
   if (!requiredBytes || requiredBytes <= 0) {
     return;
   }
@@ -437,6 +474,7 @@ async function assertDiskSpace(directory: string, requiredBytes: number | undefi
     }
     // Some remote filesystems do not support statfs. The streamed download still
     // fails safely without replacing a completed model.
+    onWarning?.(`Could not check free disk space in ${directory}; downloading without the check: ${describeError(error)}`);
   }
 }
 

@@ -12,7 +12,7 @@
 
 import { open, readdir, stat } from 'node:fs/promises';
 import * as path from 'node:path';
-import { describeError } from '../errorDetail.ts';
+import { describeError, isMissingFileError } from '../errorDetail.ts';
 import { directoryIdentity, type DirectoryIdentity, type ModelFileInput } from './modelIdentity.ts';
 
 /**
@@ -43,13 +43,19 @@ export interface SafetensorsCheckpoint {
  * checkpoint actually loads; this only decides which install path to take.
  */
 export async function isSafetensorsDirectory(directory: string): Promise<boolean> {
+  let entries: string[];
   try {
-    const entries = await readdir(directory);
-    return entries.includes('config.json') &&
-      entries.some((entry) => entry.toLowerCase().endsWith('.safetensors'));
-  } catch {
-    return false;
+    entries = await readdir(directory);
+  } catch (error) {
+    // A missing directory is simply not a checkpoint. One that exists but
+    // cannot be read must not be mistaken for "not a checkpoint".
+    if (isMissingFileError(error)) {
+      return false;
+    }
+    throw error;
   }
+  return entries.includes('config.json') &&
+    entries.some((entry) => entry.toLowerCase().endsWith('.safetensors'));
 }
 
 /**
@@ -58,24 +64,35 @@ export async function isSafetensorsDirectory(directory: string): Promise<boolean
  * An unreadable header must never block an install: the digest still covers the
  * file's path and size, so the model remains identifiable, just less precisely.
  */
-export async function readSafetensorsHeader(filePath: string): Promise<Buffer | undefined> {
+export async function readSafetensorsHeader(
+  filePath: string,
+  onWarning?: (message: string) => void,
+): Promise<Buffer | undefined> {
+  const name = path.basename(filePath);
   let handle;
   try {
     handle = await open(filePath, 'r');
     const prefix = Buffer.alloc(8);
     const { bytesRead } = await handle.read(prefix, 0, 8, 0);
     if (bytesRead < 8) {
+      onWarning?.(`${name} is too short to hold a Safetensors header.`);
       return undefined;
     }
     const length = Number(prefix.readBigUInt64LE(0));
     if (!Number.isSafeInteger(length) || length <= 0 ||
         length > MAX_SAFETENSORS_HEADER_BYTES) {
+      onWarning?.(`${name} declares an implausible Safetensors header length (${length} bytes).`);
       return undefined;
     }
     const header = Buffer.alloc(length);
     const read = await handle.read(header, 0, length, 8);
-    return read.bytesRead === length ? header : undefined;
-  } catch {
+    if (read.bytesRead !== length) {
+      onWarning?.(`${name} ends inside its Safetensors header; the file is truncated.`);
+      return undefined;
+    }
+    return header;
+  } catch (error) {
+    onWarning?.(`Could not read the Safetensors header of ${name}: ${describeError(error)}`);
     return undefined;
   } finally {
     await handle?.close().catch(() => undefined);
@@ -88,7 +105,10 @@ export async function readSafetensorsHeader(filePath: string): Promise<Buffer | 
  * Checkpoints are flat, so this does not recurse. A nested directory would not
  * be part of the checkpoint and including it would only make the digest drift.
  */
-export async function collectCheckpointFiles(directory: string): Promise<ModelFileInput[]> {
+export async function collectCheckpointFiles(
+  directory: string,
+  onWarning?: (message: string) => void,
+): Promise<ModelFileInput[]> {
   const entries = await readdir(directory, { withFileTypes: true });
   const files: ModelFileInput[] = [];
   for (const entry of entries) {
@@ -98,7 +118,7 @@ export async function collectCheckpointFiles(directory: string): Promise<ModelFi
     const absolute = path.join(directory, entry.name);
     const metadata = await stat(absolute);
     const header = entry.name.toLowerCase().endsWith('.safetensors')
-      ? await readSafetensorsHeader(absolute)
+      ? await readSafetensorsHeader(absolute, onWarning)
       : undefined;
     files.push({
       path: entry.name,
@@ -166,7 +186,7 @@ export async function validateCheckpointStatic(directory: string): Promise<Check
   } else {
     let readable = 0;
     for (const file of weights) {
-      if ((await readSafetensorsHeader(path.join(directory, file))) !== undefined) {
+      if ((await readSafetensorsHeader(path.join(directory, file), (warning) => warnings.push(warning))) !== undefined) {
         readable += 1;
       }
     }
@@ -189,7 +209,7 @@ export async function readSafetensorsCheckpoint(
   directory: string,
   onWarning?: (message: string) => void,
 ): Promise<SafetensorsCheckpoint> {
-  const files = await collectCheckpointFiles(directory);
+  const files = await collectCheckpointFiles(directory, onWarning);
   const config = await readJsonFile(path.join(directory, 'config.json'), onWarning);
   const architecture = architectureOf(config);
   const trainedContextLength = contextLengthOf(config);

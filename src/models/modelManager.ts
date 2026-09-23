@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { readConfig } from '../config.js';
 import type { InstalledModel, ModelSource } from '../domain.js';
+import { isMissingFileError } from '../errorDetail.js';
 import type { LocalLlmLogger } from '../logging.js';
 import { readGgufMetadata } from './ggufMetadata.js';
 import {
@@ -199,6 +200,7 @@ export class ModelManager {
           token,
           progress,
           cancellation,
+          (message) => this.logger.warn(message),
         ),
       );
     }
@@ -321,15 +323,21 @@ export class ModelManager {
       const sourceDir = path.dirname(sourcePath);
       for (const sidecar of SIDECAR_FILES) {
         try {
-          await stat(path.join(sourceDir, sidecar));
           await copyFile(path.join(sourceDir, sidecar), path.join(directory, sidecar));
-        } catch {
+        } catch (error) {
           // Absent siblings are normal for a lone download; HF or error below.
+          // A sibling that exists but cannot be copied is a real failure.
+          if (!isMissingFileError(error)) {
+            throw error;
+          }
         }
       }
       try {
         await stat(path.join(directory, 'config.json'));
-      } catch {
+      } catch (error) {
+        if (!isMissingFileError(error)) {
+          throw error;
+        }
         await this.supplyStagedConfig(directory, options);
       }
       if (!(await isSafetensorsDirectory(directory))) {
@@ -455,6 +463,7 @@ export class ModelManager {
           },
           (progress, cancellation) => downloadModel(
             url, path.join(directory, sidecar), undefined, token, progress, cancellation,
+            (message) => this.logger.warn(message),
           ),
         );
       } catch (error) {
@@ -464,7 +473,10 @@ export class ModelManager {
             `${error instanceof Error ? error.message : String(error)}`,
           );
         }
-        this.logger.info(`Optional ${sidecar} not fetched from ${repository}; continuing.`);
+        this.logger.warn(
+          `Optional ${sidecar} not fetched from ${repository}; continuing without it: ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+        );
       }
     }
   }
@@ -515,7 +527,10 @@ export class ModelManager {
         cancellable: true,
       },
       (progress, token) =>
-        downloadModel(url, destination, expectedSha256, bearerToken, progress, token),
+        downloadModel(
+          url, destination, expectedSha256, bearerToken, progress, token,
+          (message) => this.logger.warn(message),
+        ),
     );
     try {
       await assertGguf(destination);
@@ -664,8 +679,11 @@ async function completedRepositoryFileMatches(
     return file.sha256
       ? (await sha256File(destination)).toLowerCase() === file.sha256.toLowerCase()
       : true;
-  } catch {
-    return false;
+  } catch (error) {
+    if (isMissingFileError(error)) {
+      return false;
+    }
+    throw error;
   }
 }
 

@@ -8,6 +8,7 @@ import type {
   InstalledModel,
   ModelRuntimeProfile,
 } from '../domain.js';
+import { isMissingFileError } from '../errorDetail.js';
 import type { LocalLlmLogger } from '../logging.js';
 import type { ModelManager } from '../models/modelManager.js';
 import { formatBytes } from '../models/modelSources.js';
@@ -271,8 +272,11 @@ async function configSourceForLoneFile(
   try {
     await stat(path.join(path.dirname(weightsPath), 'config.json'));
     return {};
-  } catch {
-    // No sibling; ask.
+  } catch (error) {
+    // No sibling; ask. A sibling that exists but cannot be read is a failure.
+    if (!isMissingFileError(error)) {
+      throw error;
+    }
   }
   const choice = await vscode.window.showQuickPick(
     [
@@ -340,12 +344,15 @@ function validateRepositoryInput(value: string): string | undefined {
     : 'Enter a repository as owner/name.';
 }
 
-/** Whether the provisioned flavor has CUDA; false on any doubt. */
+/** Whether the provisioned flavor has CUDA; false, with the reason logged, when it cannot be determined. */
 async function isCudaFlavor(services: CommandServices): Promise<boolean> {
   try {
     const config = readConfig(services.context);
     return (await resolveEnvFlavor(resolveEnvTarget(), config.pythonEnvFlavor)) === 'cuda';
-  } catch {
+  } catch (error) {
+    services.logger.warn(
+      `Could not determine the Python environment flavor; treating it as without CUDA: ${error instanceof Error ? error.message : String(error)}`,
+    );
     return false;
   }
 }
@@ -741,8 +748,8 @@ async function validateFillInMiddle(
       throw error;
     }
     await services.models.registry.markFillInMiddle(model.id, 'unsupported');
-    services.logger.debug(
-      `FIM validation unavailable for ${model.name}: ${error instanceof Error ? error.message : String(error)}`,
+    services.logger.warn(
+      `Inline completion disabled for ${model.name}: its fill-in-the-middle probe failed: ${error instanceof Error ? error.message : String(error)}`,
     );
     return false;
   }

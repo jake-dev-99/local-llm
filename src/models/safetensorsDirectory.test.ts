@@ -230,3 +230,40 @@ test('nested text_config supplies the context length', async () => {
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('an unreadable header says why instead of vanishing', async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'local-llm-bad-'));
+  try {
+    writeFileSync(path.join(directory, 'short.safetensors'), Buffer.alloc(4));
+    const warnings: string[] = [];
+    await readSafetensorsHeader(path.join(directory, 'short.safetensors'), (warning) => warnings.push(warning));
+    await readSafetensorsHeader(path.join(directory, 'missing.safetensors'), (warning) => warnings.push(warning));
+    assert.match(warnings[0] ?? '', /short\.safetensors is too short/);
+    assert.match(warnings[1] ?? '', /Could not read the Safetensors header of missing\.safetensors/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('a checkpoint path that is a file, not a directory, is not a checkpoint', async () => {
+  const directory = checkpoint();
+  try {
+    assert.equal(await isSafetensorsDirectory(path.join(directory, 'config.json')), false);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('a directory that exists but cannot be read is an error, not "not a checkpoint"', {
+  skip: process.platform === 'win32' || process.getuid?.() === 0,
+}, async () => {
+  const directory = checkpoint();
+  const { chmodSync } = await import('node:fs');
+  chmodSync(directory, 0o000);
+  try {
+    await assert.rejects(isSafetensorsDirectory(directory), /EACCES/);
+  } finally {
+    chmodSync(directory, 0o700);
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
