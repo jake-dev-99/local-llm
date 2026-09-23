@@ -39,8 +39,10 @@ interface OpenAiChunk {
     predicted_per_second?: number;
   };
   choices?: Array<{
+    finish_reason?: string | null;
     delta?: {
       content?: string;
+      reasoning_content?: string;
       tool_calls?: Array<{
         index: number;
         id?: string;
@@ -58,7 +60,20 @@ interface PendingToolCall {
 
 interface ConsumedSseFrame {
   text: string;
+  reasoning: string;
+  finishReason?: string;
   timings?: NonNullable<OpenAiChunk['timings']>;
+}
+
+/**
+ * What one streamed generation left behind beyond its visible answer. A
+ * thinking template sends its reasoning on a separate channel, and a reply
+ * can end with no answer text at all.
+ */
+interface StreamedChatResult extends ChatResult {
+  reasoningCharacters?: number;
+  finishReason?: string;
+  outputTokenLimit?: number;
 }
 
 const TOKEN_COUNT_CACHE_MAX_ENTRIES = 4_096;
@@ -218,12 +233,15 @@ export class LlamaClient implements InferenceClient {
       `toolChoice=${toolChoice} maxOutputTokens=${request.maxTokens}.`,
     );
 
-    const result = await this.executeChat(request, onEvent, trace, signal);
+    const { reasoningCharacters, finishReason, outputTokenLimit, ...result } =
+      await this.executeChat(request, onEvent, trace, signal);
     this.diagnostics?.info(
       `${GENERATION_PHASE} ${trace.id} complete: inputTokens=${result.inputTokens} ` +
-      `outputCharacters=${result.textCharacters} toolCalls=${result.toolCallCount} ` +
+      `outputCharacters=${result.textCharacters} reasoningCharacters=${reasoningCharacters ?? 0} ` +
+      `toolCalls=${result.toolCallCount} finishReason=${finishReason ?? 'unknown'} ` +
       `elapsed=${Date.now() - trace.startedAt} ms.`,
     );
+    assertAnswered(result, reasoningCharacters ?? 0, finishReason, outputTokenLimit ?? request.maxTokens);
     return result;
   }
 
@@ -232,7 +250,7 @@ export class LlamaClient implements InferenceClient {
     onEvent: (event: ChatStreamEvent) => void,
     trace: ChatTrace,
     signal?: AbortSignal,
-  ): Promise<ChatResult> {
+  ): Promise<StreamedChatResult> {
     const tools = request.tools ?? [];
     const toolChoice = request.toolChoice ?? 'auto';
     if (toolChoice === 'required' && tools.length === 0) {
@@ -294,7 +312,7 @@ export class LlamaClient implements InferenceClient {
     onEvent: (event: ChatStreamEvent) => void,
     trace: ChatTrace,
     signal?: AbortSignal,
-  ): Promise<ChatResult> {
+  ): Promise<StreamedChatResult> {
     const fallback = await this.schemaConstrainedFallback(
       request,
       tools,
@@ -330,7 +348,7 @@ export class LlamaClient implements InferenceClient {
     trace: ChatTrace,
     stage: string,
     signal?: AbortSignal,
-  ): Promise<ChatResult> {
+  ): Promise<StreamedChatResult> {
     const tools = request.tools ?? [];
     const toolChoice = request.toolChoice ?? 'auto';
     const finalOnly = toolChoice === 'none';
@@ -394,6 +412,8 @@ export class LlamaClient implements InferenceClient {
     let buffer = '';
     let bufferedText = '';
     let textCharacters = 0;
+    let reasoningCharacters = 0;
+    let finishReason: string | undefined;
     let tokensPerSecond: number | undefined;
     let firstStreamData = true;
     while (true) {
@@ -416,6 +436,8 @@ export class LlamaClient implements InferenceClient {
         }
         const text = consumed.text;
         textCharacters += text.length;
+        reasoningCharacters += consumed.reasoning.length;
+        finishReason = consumed.finishReason ?? finishReason;
         if (bufferText) {
           bufferedText += text;
         } else if (text) {
@@ -435,6 +457,8 @@ export class LlamaClient implements InferenceClient {
       }
       const text = consumed.text;
       textCharacters += text.length;
+      reasoningCharacters += consumed.reasoning.length;
+      finishReason = consumed.finishReason ?? finishReason;
       if (bufferText) {
         bufferedText += text;
       } else if (text) {
@@ -471,6 +495,9 @@ export class LlamaClient implements InferenceClient {
       textCharacters,
       toolCallCount,
       ...(tokensPerSecond !== undefined ? { tokensPerSecond } : {}),
+      reasoningCharacters,
+      ...(finishReason !== undefined ? { finishReason } : {}),
+      outputTokenLimit,
     };
   }
 
@@ -582,19 +609,20 @@ export class LlamaClient implements InferenceClient {
       .map((line) => line.slice(5).trim())
       .join('');
     if (!data || data === '[DONE]') {
-      return { text: '' };
+      return { text: '', reasoning: '' };
     }
 
     let chunk: OpenAiChunk;
     try {
       chunk = JSON.parse(data) as OpenAiChunk;
     } catch {
-      return { text: '' };
+      return { text: '', reasoning: '' };
     }
     if (chunk.error !== undefined) {
       throw workerStreamError('/v1/chat/completions', chunk.error);
     }
-    const delta = chunk.choices?.[0]?.delta;
+    const choice = chunk.choices?.[0];
+    const delta = choice?.delta;
     const toolCalls = delta?.tool_calls ?? [];
     for (const part of toolCalls) {
       const existing = pendingTools.get(part.index) ?? {
@@ -616,6 +644,8 @@ export class LlamaClient implements InferenceClient {
     const text = delta?.content ?? '';
     return {
       text,
+      reasoning: delta?.reasoning_content ?? '',
+      ...(choice?.finish_reason ? { finishReason: choice.finish_reason } : {}),
       ...(chunk.timings ? { timings: chunk.timings } : {}),
     };
   }
@@ -725,6 +755,33 @@ export class LlamaClient implements InferenceClient {
     return content;
   }
 
+}
+
+/**
+ * A thinking template streams its reasoning on `reasoning_content`, which is
+ * not the answer. A reply that ends with no answer and no tool call would
+ * otherwise leave VS Code Chat blank with nothing to explain why.
+ */
+function assertAnswered(
+  result: ChatResult,
+  reasoningCharacters: number,
+  finishReason: string | undefined,
+  outputTokenLimit: number,
+): void {
+  if (result.textCharacters > 0 || result.toolCallCount > 0) {
+    return;
+  }
+  if (reasoningCharacters > 0 && finishReason === 'length') {
+    throw new Error(
+      `The model spent its whole output limit (${outputTokenLimit} tokens) reasoning and never started its answer. ` +
+      'Raise localLlm.maxOutputTokens, or use a model or chat template that thinks less.',
+    );
+  }
+  throw new Error(
+    reasoningCharacters > 0
+      ? 'The model finished reasoning but returned an empty response.'
+      : `The model returned an empty response (finish reason: ${finishReason ?? 'unknown'}).`,
+  );
 }
 
 function finiteNumber(value: number | undefined): number | undefined {

@@ -904,10 +904,59 @@ test('final guidance is included in the measured prompt budget before generation
   }, body => (body.messages as ChatRequest['messages']).at(-1)?.content === 'Edit applied.' ? 100 : 101);
 });
 
+const plainRequest: ChatRequest = {
+  messages: [{ role: 'user', content: 'Say Hi' }],
+  inputTokenBudget: 1_000,
+  maxTokens: 64,
+  temperature: 0,
+};
+
+test('reasoning is not the answer: the reply streams only content', async () => {
+  await withFinalWorker([
+    { reasoning_content: 'The user wants a greeting.' },
+    { content: 'Hi!' },
+  ], async client => {
+    const events: ChatStreamEvent[] = [];
+    await client.chat(plainRequest, event => events.push(event));
+    assert.deepEqual(events, [{ kind: 'text', text: 'Hi!' }]);
+  });
+});
+
+test('a reply that spends the output limit thinking fails instead of ending silently', async () => {
+  await withFinalWorker([
+    { reasoning_content: 'Thinking Process:' },
+    { reasoning_content: ' 1. Analyze' },
+  ], async client => {
+    await assert.rejects(
+      client.chat(plainRequest, () => undefined),
+      /spent its whole output limit \(64 tokens\) reasoning.*localLlm\.maxOutputTokens/s,
+    );
+  }, undefined, 'length');
+});
+
+test('a final answer that spends the output limit thinking fails the same way', async () => {
+  await withFinalWorker([{ reasoning_content: 'Checking the edit.' }], async client => {
+    await assert.rejects(
+      client.chat(finalRequest, () => undefined),
+      /reasoning.*localLlm\.maxOutputTokens/s,
+    );
+  }, undefined, 'length');
+});
+
+test('an empty reply fails instead of ending silently', async () => {
+  await withFinalWorker([{ content: '' }], async client => {
+    await assert.rejects(
+      client.chat(plainRequest, () => undefined),
+      /returned an empty response/,
+    );
+  }, undefined, 'stop');
+});
+
 async function withFinalWorker(
   deltas: Array<Record<string, unknown>>,
   run: (client: TestLlamaClient, bodies: Array<Record<string, unknown>>) => Promise<void>,
   countTokens: (body: Record<string, unknown>) => number = () => 100,
+  finishReason?: string,
 ): Promise<void> {
   const bodies: Array<Record<string, unknown>> = [];
   const server = createServer((request, response) => {
@@ -921,7 +970,10 @@ async function withFinalWorker(
       } else {
         bodies.push(body);
         response.writeHead(200, { 'content-type': 'text/event-stream' });
-        response.end(deltas.map(delta => `data: ${JSON.stringify({ choices: [{ delta }] })}\n\n`).join('') + 'data: [DONE]\n\n');
+        const finish = finishReason
+          ? `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: finishReason }] })}\n\n`
+          : '';
+        response.end(deltas.map(delta => `data: ${JSON.stringify({ choices: [{ delta }] })}\n\n`).join('') + finish + 'data: [DONE]\n\n');
       }
     });
   });
