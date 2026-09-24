@@ -254,7 +254,9 @@ export class LlamaClient implements InferenceClient {
       `toolCalls=${result.toolCallCount} finishReason=${finishReason ?? 'unknown'} ` +
       `elapsed=${Date.now() - trace.startedAt} ms.`,
     );
-    assertAnswered(result, reasoningCharacters ?? 0, finishReason, outputTokenLimit ?? request.maxTokens);
+    if (!(request.allowReasoningOnly && (reasoningCharacters ?? 0) > 0)) {
+      assertAnswered(result, reasoningCharacters ?? 0, finishReason, outputTokenLimit ?? request.maxTokens);
+    }
     return result;
   }
 

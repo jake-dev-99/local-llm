@@ -1057,6 +1057,24 @@ test('a final answer that spends the output limit thinking fails the same way', 
   }, undefined, 'length');
 });
 
+test('a speed measurement may end inside the reasoning', async () => {
+  await withFinalWorker([
+    { reasoning_content: 'Counting from one.' },
+  ], async client => {
+    const result = await client.chat({ ...plainRequest, allowReasoningOnly: true }, () => undefined);
+    assert.equal(result.toolCallCount, 0);
+  }, undefined, 'length');
+});
+
+test('a speed measurement that generated nothing at all still fails', async () => {
+  await withFinalWorker([{ content: '' }], async client => {
+    await assert.rejects(
+      client.chat({ ...plainRequest, allowReasoningOnly: true }, () => undefined),
+      /returned an empty response/,
+    );
+  }, undefined, 'stop');
+});
+
 test('an empty reply fails instead of ending silently', async () => {
   await withFinalWorker([{ content: '' }], async client => {
     await assert.rejects(

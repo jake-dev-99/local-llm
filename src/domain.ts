@@ -172,6 +172,12 @@ export interface ChatRequest {
   maxTokens: number;
   toolCallMaxTokens?: number;
   temperature: number;
+  /**
+   * Accept a reply that ends inside the model's reasoning. Only a measurement
+   * of generation speed wants this: reasoning tokens are generated tokens.
+   * An empty generation is still a failure.
+   */
+  allowReasoningOnly?: boolean;
 }
 
 export type ChatStreamEvent =

@@ -74,7 +74,12 @@ test('benchmark runs three bounded deterministic output samples', async () => {
 
   assert.equal(requests.length, MODEL_BENCHMARK_SAMPLE_COUNT);
   assert.deepEqual(completed, [1, 2, 3]);
-  assert.equal(requests.every((request) => request.maxTokens === 64), true);
+  assert.equal(requests.every((request) => request.maxTokens === 256), true);
+  assert.equal(
+    requests.every((request) => request.allowReasoningOnly === true),
+    true,
+    'a thinking model\'s reasoning tokens are generated tokens; the benchmark must not require an answer',
+  );
   assert.equal(requests.every((request) => request.temperature === 0), true);
   assert.deepEqual(result, {
     minTokensPerSecond: 12,

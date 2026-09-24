@@ -2,7 +2,9 @@ import type { ChatRequest, ChatStreamEvent, InstalledModel } from '../domain.js'
 import type { ChatResult } from '../worker/llamaClient.js';
 
 export const MODEL_BENCHMARK_SAMPLE_COUNT = 3;
-const MODEL_BENCHMARK_MAX_TOKENS = 64;
+// Long enough for a stable decode rate; the prompt asks for far more, so a
+// sample never ends early.
+const MODEL_BENCHMARK_MAX_TOKENS = 256;
 
 interface BenchmarkClient {
   getModelProfile(signal?: AbortSignal): Promise<{ loadedContextSize: number }>;
@@ -53,6 +55,9 @@ export async function benchmarkModel(
         inputTokenBudget: Math.max(1, profile.loadedContextSize - maxTokens),
         maxTokens,
         temperature: 0,
+        // A thinking model may spend the whole sample reasoning; the rate is
+        // what is measured, not the answer.
+        allowReasoningOnly: true,
       },
       () => undefined,
       signal,
