@@ -58,6 +58,12 @@ interface PendingToolCall {
   arguments: string;
 }
 
+interface StreamedContent {
+  content: string;
+  reasoningCharacters: number;
+  finishReason?: string;
+}
+
 interface ConsumedSseFrame {
   text: string;
   reasoning: string;
@@ -287,10 +293,18 @@ export class LlamaClient implements InferenceClient {
       return nativeResult;
     }
 
-    if (toolChoice === 'required') {
+    // Only a generation that finished without a call shows the native channel
+    // is unused. One cut off by the output limit, as a thinking model is while
+    // it is still reasoning, never got the chance to call anything.
+    if (toolChoice === 'required' && nativeResult.finishReason !== 'length') {
       this.nativeToolCalls = 'unavailable';
       this.diagnostics?.info(
         `${GENERATION_PHASE} This model returned no required native tool call; using schema-constrained decisions for this runtime fingerprint.`,
+      );
+    } else if (nativeResult.finishReason === 'length') {
+      this.diagnostics?.info(
+        `${GENERATION_PHASE} ${trace.id} native generation hit its output limit ` +
+        `after ${nativeResult.reasoningCharacters ?? 0} reasoning characters and no tool call; not treating that as evidence about native tool calls.`,
       );
     }
     return this.schemaConstrainedDecision(
@@ -553,7 +567,7 @@ export class LlamaClient implements InferenceClient {
     this.diagnostics?.info(
       `${GENERATION_PHASE} ${trace.id} response headers (schema decision): elapsed=${Date.now() - trace.startedAt} ms.`,
     );
-    const content = await this.readStreamedContent(
+    const { content, reasoningCharacters, finishReason } = await this.readStreamedContent(
       response,
       '/v1/chat/completions',
       trace,
@@ -561,7 +575,11 @@ export class LlamaClient implements InferenceClient {
     );
     if (!content.trim()) {
       throw new Error(
-        'The schema-constrained fallback returned no decision. The worker streamed an empty response.',
+        reasoningCharacters > 0 && finishReason === 'length'
+          ? `The model spent its whole tool-decision limit (${maxTokens} tokens) reasoning and never produced a decision. ` +
+            'Thinking models need room to reason before they choose a tool: raise localLlm.maxToolCallTokens.'
+          : `The schema-constrained fallback returned no decision: the worker streamed no answer text ` +
+            `(${reasoningCharacters} reasoning characters, finish reason ${finishReason ?? 'unknown'}).`,
       );
     }
     return {
@@ -744,7 +762,7 @@ export class LlamaClient implements InferenceClient {
     path: string,
     trace: ChatTrace,
     stage: string,
-  ): Promise<string> {
+  ): Promise<StreamedContent> {
     if (!response.body) {
       throw new Error(`Local worker request ${path} returned an empty streaming response.`);
     }
@@ -752,6 +770,8 @@ export class LlamaClient implements InferenceClient {
     const decoder = new TextDecoder();
     let buffer = '';
     let content = '';
+    let reasoningCharacters = 0;
+    let finishReason: string | undefined;
     let firstStreamData = true;
     const pendingTools = new Map<number, PendingToolCall>();
     const consume = (frame: string): void => {
@@ -760,6 +780,8 @@ export class LlamaClient implements InferenceClient {
         this.logTimings(trace, stage, consumed.timings);
       }
       content += consumed.text;
+      reasoningCharacters += consumed.reasoning.length;
+      finishReason = consumed.finishReason ?? finishReason;
     };
     try {
       while (true) {
@@ -789,7 +811,7 @@ export class LlamaClient implements InferenceClient {
       await this.abandonStream(reader, trace, stage);
       throw error;
     }
-    return content;
+    return { content, reasoningCharacters, ...(finishReason !== undefined ? { finishReason } : {}) };
   }
 
 }

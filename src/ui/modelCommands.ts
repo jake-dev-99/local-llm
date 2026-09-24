@@ -9,6 +9,7 @@ import type {
   ModelRuntimeProfile,
 } from '../domain.js';
 import { isMissingFileError } from '../errorDetail.js';
+import { modelTokenLimits } from '../provider/modelCapacity.js';
 import type { LocalLlmLogger } from '../logging.js';
 import type { ModelManager } from '../models/modelManager.js';
 import { formatBytes } from '../models/modelSources.js';
@@ -545,6 +546,10 @@ async function validateModel(
                 },
               },
             };
+            // Validate with the limits chat will use. A fixed small cap failed
+            // thinking models that chat would have given room to reason.
+            const probeConfig = readConfig(services.context);
+            const probeLimits = modelTokenLimits(profile.loadedContextSize, probeConfig.maxOutputTokens);
             const probeCalls: Array<Extract<ChatStreamEvent, { kind: 'toolCall' }>> = [];
             let probe;
             probe = await client.chat(
@@ -558,8 +563,9 @@ async function validateModel(
                 ],
                 tools: [probeTool],
                 toolChoice: 'required',
-                inputTokenBudget: Math.max(1, profile.loadedContextSize - 128),
-                maxTokens: Math.min(128, Math.max(1, profile.loadedContextSize - 1)),
+                inputTokenBudget: probeLimits.maxInputTokens,
+                maxTokens: probeLimits.maxOutputTokens,
+                toolCallMaxTokens: probeConfig.maxToolCallTokens,
                 temperature: 0,
               },
               (event) => {
@@ -612,8 +618,9 @@ async function validateModel(
                 ],
                 tools: [probeTool],
                 toolChoice: 'auto',
-                inputTokenBudget: Math.max(1, profile.loadedContextSize - 128),
-                maxTokens: Math.min(128, Math.max(1, profile.loadedContextSize - 1)),
+                inputTokenBudget: probeLimits.maxInputTokens,
+                maxTokens: probeLimits.maxOutputTokens,
+                toolCallMaxTokens: probeConfig.maxToolCallTokens,
                 temperature: 0,
               },
               (event) => {

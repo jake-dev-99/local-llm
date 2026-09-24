@@ -397,6 +397,52 @@ test('chat stops repeating the native pass once the worker proves it emits no to
   }
 });
 
+test('a thinking model cut off mid-reasoning is not recorded as lacking native tool calls', async () => {
+  const thinking = (tokens: string[]) =>
+    tokens.map((reasoning_content) => `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content } }] })}\n\n`).join('') +
+    `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'length' }] })}\n\ndata: [DONE]\n\n`;
+  const server = createServer((request, response) => {
+    request.resume();
+    request.on('end', () => {
+      if (request.url === '/v1/chat/completions/input_tokens') {
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end('{"input_tokens":10}');
+        return;
+      }
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.end(thinking(['The user wants', ' the probe called', ' with value ok.']));
+    });
+  });
+  await listen(server);
+  const client = await testClient(server);
+  try {
+    await assert.rejects(
+      client.chat({
+        messages: [{ role: 'user', content: 'Call local_llm_probe with value set to ok.' }],
+        tools: [{
+          type: 'function',
+          function: { name: 'local_llm_probe', parameters: { type: 'object' } },
+        }],
+        toolChoice: 'required',
+        inputTokenBudget: 1_000,
+        maxTokens: 128,
+        toolCallMaxTokens: 128,
+        temperature: 0,
+      }, () => undefined),
+      /spent its whole tool-decision limit \(128 tokens\) reasoning.*localLlm\.maxToolCallTokens/s,
+    );
+    assert.equal(
+      client.getNativeToolCallSupport(),
+      'unknown',
+      'running out of tokens while thinking says nothing about the native tool-call channel',
+    );
+  } finally {
+    await client.dispose();
+    server.closeAllConnections();
+    await close(server);
+  }
+});
+
 test('persisted unavailable support skips the discarded native probe after restart', async () => {
   let nativeRequests = 0;
   let fallbackRequests = 0;
