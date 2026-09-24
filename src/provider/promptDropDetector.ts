@@ -7,16 +7,20 @@
  * provider has no call left to fail, so the drop is only visible as token
  * counting that no chat request follows. This turns that absence into a
  * report.
+ *
+ * VS Code also counts tokens right after a reply, to update its context
+ * display, and sends nothing then because nothing is pending. Counting that
+ * starts within `settleMs` of a finished request is therefore not watched.
  */
 export interface DroppedPrompt {
   modelName: string;
   /** How many token counts VS Code requested while assembling the prompt. */
   counts: number;
   /**
-   * The sum of those counts. VS Code recounts pieces while it prunes, so this
-   * overstates the prompt; a sum within the limit still proves it fit.
+   * The largest single count. VS Code recounts the same pieces while it
+   * prunes, so a sum of counts means nothing; one piece larger than the whole
+   * input limit is the only proof that the prompt could not fit.
    */
-  countedTokens: number;
   largestCount: number;
   inputLimit: number;
 }
@@ -26,17 +30,28 @@ export interface DetectorTimers {
   clear(handle: unknown): void;
 }
 
+export interface DetectorOptions {
+  /** Silence after the last count before a missing request is reported. */
+  graceMs?: number;
+  /** How long after a finished request counting is treated as VS Code's own bookkeeping. */
+  settleMs?: number;
+  timers?: DetectorTimers;
+  now?: () => number;
+}
+
 interface Assembly {
   modelName: string;
   inputLimit: number;
   counts: number;
-  countedTokens: number;
   largestCount: number;
+  /** Counting that began right after a reply; tracked only to be ignored as one burst. */
+  afterReply: boolean;
   timer: unknown;
 }
 
 /** VS Code sends a request within milliseconds of its last count; seconds of silence means it will not. */
 export const PROMPT_SEND_GRACE_MS = 3_000;
+export const REPLY_BOOKKEEPING_MS = 5_000;
 
 const defaultTimers: DetectorTimers = {
   set: (callback, milliseconds) => setTimeout(callback, milliseconds),
@@ -45,18 +60,19 @@ const defaultTimers: DetectorTimers = {
 
 export class PromptDropDetector {
   private readonly assemblies = new Map<string, Assembly>();
+  private readonly lastFinished = new Map<string, number>();
   private readonly onDropped: (drop: DroppedPrompt) => void;
   private readonly graceMs: number;
+  private readonly settleMs: number;
   private readonly timers: DetectorTimers;
+  private readonly now: () => number;
 
-  constructor(
-    onDropped: (drop: DroppedPrompt) => void,
-    graceMs = PROMPT_SEND_GRACE_MS,
-    timers: DetectorTimers = defaultTimers,
-  ) {
+  constructor(onDropped: (drop: DroppedPrompt) => void, options: DetectorOptions = {}) {
     this.onDropped = onDropped;
-    this.graceMs = graceMs;
-    this.timers = timers;
+    this.graceMs = options.graceMs ?? PROMPT_SEND_GRACE_MS;
+    this.settleMs = options.settleMs ?? REPLY_BOOKKEEPING_MS;
+    this.timers = options.timers ?? defaultTimers;
+    this.now = options.now ?? Date.now;
   }
 
   /** Records one token count VS Code requested for a model. */
@@ -65,12 +81,14 @@ export class PromptDropDetector {
     if (current) {
       this.timers.clear(current.timer);
     }
+    const finishedAt = this.lastFinished.get(modelId);
     const assembly: Assembly = {
       modelName,
       inputLimit,
       counts: (current?.counts ?? 0) + 1,
-      countedTokens: (current?.countedTokens ?? 0) + tokens,
       largestCount: Math.max(current?.largestCount ?? 0, tokens),
+      afterReply: current?.afterReply ??
+        (finishedAt !== undefined && this.now() - finishedAt < this.settleMs),
       timer: undefined,
     };
     assembly.timer = this.timers.set(() => {
@@ -78,10 +96,12 @@ export class PromptDropDetector {
         return;
       }
       this.assemblies.delete(modelId);
+      if (assembly.afterReply) {
+        return;
+      }
       this.onDropped({
         modelName: assembly.modelName,
         counts: assembly.counts,
-        countedTokens: assembly.countedTokens,
         largestCount: assembly.largestCount,
         inputLimit: assembly.inputLimit,
       });
@@ -96,6 +116,11 @@ export class PromptDropDetector {
       this.timers.clear(assembly.timer);
       this.assemblies.delete(modelId);
     }
+  }
+
+  /** A chat request ended, however it ended. */
+  finished(modelId: string): void {
+    this.lastFinished.set(modelId, this.now());
   }
 
   dispose(): void {

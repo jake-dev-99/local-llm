@@ -119,6 +119,8 @@ implements vscode.LanguageModelChatProvider<LocalLanguageModelInformation>, vsco
         this.logger.error(`Local chat request failed for ${model.name}`, error, true);
       }
       throw error;
+    } finally {
+      this.promptDrops.finished(model.installedModelId);
     }
   }
 
@@ -345,6 +347,12 @@ implements vscode.LanguageModelChatProvider<LocalLanguageModelInformation>, vsco
           if (typeof text === 'string') {
             return client.tokenize(text, signal);
           }
+          // Chat templates such as Qwen's refuse to render a conversation with
+          // no user turn, so a lone system or assistant message can only be
+          // measured with the tokenizer.
+          if (text.role !== vscode.LanguageModelChatMessageRole.User) {
+            return client.tokenize(serializeMessageForTokenCount(text), signal);
+          }
           try {
             const profile = await client.getModelProfile(signal);
             const modelMessages = messagesForSystemRoleSupport(
@@ -403,8 +411,8 @@ implements vscode.LanguageModelChatProvider<LocalLanguageModelInformation>, vsco
   private reportDroppedPrompt(drop: DroppedPrompt): void {
     const measured = `VS Code counted tokens ${drop.counts} time${drop.counts === 1 ? '' : 's'} ` +
       `for a ${drop.modelName} prompt (largest piece ${drop.largestCount} tokens) against its ` +
-      `${drop.inputLimit}-token input limit, then did not send the request.`;
-    if (drop.countedTokens > drop.inputLimit) {
+      `${drop.inputLimit}-token input limit, then did not send a request.`;
+    if (drop.largestCount > drop.inputLimit) {
       this.logger.error(
         `Chat request to ${drop.modelName} was dropped by VS Code: the prompt does not fit. ${measured} ` +
         'Use a model with a larger context window on this computer, or a smaller prompt ' +
@@ -414,10 +422,11 @@ implements vscode.LanguageModelChatProvider<LocalLanguageModelInformation>, vsco
       );
       return;
     }
+    // VS Code also counts tokens for reasons of its own, so without a piece
+    // that cannot fit, a missing request is not proof of a dropped one.
     this.logger.warn(
-      `Chat request to ${drop.modelName} was not sent by VS Code, although the prompt fits. ${measured} ` +
-      'The reason is inside VS Code: see Output > GitHub Copilot Chat.',
-      true,
+      `${measured} If you had just sent a message to ${drop.modelName}, VS Code dropped it; ` +
+      'the reason is inside VS Code: see Output > GitHub Copilot Chat.',
     );
   }
 
