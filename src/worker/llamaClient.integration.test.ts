@@ -429,13 +429,81 @@ test('a thinking model cut off mid-reasoning is not recorded as lacking native t
         toolCallMaxTokens: 128,
         temperature: 0,
       }, () => undefined),
-      /spent its whole tool-decision limit \(128 tokens\) reasoning.*localLlm\.maxToolCallTokens/s,
+      // The native pass already showed reasoning, so the decision ran on the
+      // chat output limit, and that is the setting to raise.
+      /spent its whole tool-decision limit \(128 tokens\) reasoning.*localLlm\.maxOutputTokens/s,
     );
     assert.equal(
       client.getNativeToolCallSupport(),
       'unknown',
       'running out of tokens while thinking says nothing about the native tool-call channel',
     );
+  } finally {
+    await client.dispose();
+    server.closeAllConnections();
+    await close(server);
+  }
+});
+
+test('once a model has shown it reasons, its tool decision gets the chat output budget', async () => {
+  // Observed: Qwen3 4B Thinking reasoned through all 512 maxToolCallTokens of
+  // the schema decision and never reached the JSON.
+  const fallbackBudgets: number[] = [];
+  const server = createServer((request, response) => {
+    let raw = '';
+    request.on('data', (chunk) => { raw += chunk; });
+    request.on('end', () => {
+      if (request.url === '/v1/chat/completions/input_tokens') {
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end('{"input_tokens":10}');
+        return;
+      }
+      const body = JSON.parse(raw) as { response_format?: unknown; max_tokens: number };
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      const frame = (delta: object, finish_reason?: string) =>
+        `data: ${JSON.stringify({ choices: [{ delta, ...(finish_reason ? { finish_reason } : {}) }] })}\n\n`;
+      if (body.response_format) {
+        fallbackBudgets.push(body.max_tokens);
+        response.end(
+          frame({ reasoning_content: 'I should read the file.' }) +
+          frame({ content: JSON.stringify({ kind: 'tool', name: 'read_file', arguments: { filePath: 'a.ts' } }) }, 'stop') +
+          'data: [DONE]\n\n',
+        );
+        return;
+      }
+      response.end(
+        frame({ reasoning_content: 'Let me think about which file.' }) +
+        frame({ content: 'I will look at a.ts.' }, 'stop') +
+        'data: [DONE]\n\n',
+      );
+    });
+  });
+  await listen(server);
+  const client = await testClient(server);
+  try {
+    const events: ChatStreamEvent[] = [];
+    await client.chat({
+      messages: [{ role: 'user', content: 'Review a.ts.' }],
+      tools: [{
+        type: 'function',
+        function: {
+          name: 'read_file',
+          parameters: {
+            type: 'object',
+            properties: { filePath: { type: 'string' } },
+            required: ['filePath'],
+          },
+        },
+      }],
+      toolChoice: 'auto',
+      inputTokenBudget: 1_000,
+      maxTokens: 16_384,
+      toolCallMaxTokens: 512,
+      temperature: 0,
+    }, (event) => events.push(event));
+
+    assert.deepEqual(fallbackBudgets, [16_384]);
+    assert.deepEqual(events.map((event) => event.kind), ['toolCall']);
   } finally {
     await client.dispose();
     server.closeAllConnections();

@@ -121,6 +121,13 @@ export class LlamaClient implements InferenceClient {
 
   private modelProfile: WorkerModelProfile | undefined;
   private nativeToolCalls: NativeToolCallSupport = 'unknown';
+  /**
+   * Whether the loaded model has streamed reasoning. `maxToolCallTokens` caps
+   * a tool decision, which is a few dozen tokens of JSON; a thinking model
+   * reasons for hundreds first, so once it has shown that, its decisions get
+   * the chat output budget instead.
+   */
+  private modelReasons = false;
   private readonly pool: Pool;
   private readonly tokenCounts = new Map<string, number>();
   private chatSequence = 0;
@@ -375,10 +382,7 @@ export class LlamaClient implements InferenceClient {
       );
     }
     const outputTokenLimit = toolChoice === 'required'
-      ? Math.min(
-        request.maxTokens,
-        Math.max(1, Math.floor(request.toolCallMaxTokens ?? request.maxTokens)),
-      )
+      ? this.toolDecisionTokenLimit(request)
       : request.maxTokens;
     if (toolChoice === 'required' && outputTokenLimit < request.maxTokens) {
       this.diagnostics?.info(
@@ -487,6 +491,7 @@ export class LlamaClient implements InferenceClient {
       throw error;
     }
 
+    this.noteReasoning(reasoningCharacters, trace);
     let toolCallCount = 0;
     if (finalOnly) {
       assertFinalResponse(bufferedText, pendingTools.size > 0);
@@ -529,10 +534,7 @@ export class LlamaClient implements InferenceClient {
     trace: ChatTrace,
     signal?: AbortSignal,
   ): Promise<{ decision: ToolDecision; inputTokens: number }> {
-    const maxTokens = Math.min(
-      request.maxTokens,
-      Math.max(1, Math.floor(request.toolCallMaxTokens ?? request.maxTokens)),
-    );
+    const maxTokens = this.toolDecisionTokenLimit(request);
     const messages: ChatMessage[] = [
       ...request.messages,
       {
@@ -577,7 +579,9 @@ export class LlamaClient implements InferenceClient {
       throw new Error(
         reasoningCharacters > 0 && finishReason === 'length'
           ? `The model spent its whole tool-decision limit (${maxTokens} tokens) reasoning and never produced a decision. ` +
-            'Thinking models need room to reason before they choose a tool: raise localLlm.maxToolCallTokens.'
+            (this.modelReasons
+              ? 'That limit is the chat output limit: raise localLlm.maxOutputTokens, or give the model a larger context window.'
+              : 'Thinking models need room to reason before they choose a tool: raise localLlm.maxToolCallTokens.')
           : `The schema-constrained fallback returned no decision: the worker streamed no answer text ` +
             `(${reasoningCharacters} reasoning characters, finish reason ${finishReason ?? 'unknown'}).`,
       );
@@ -734,6 +738,26 @@ export class LlamaClient implements InferenceClient {
     return response;
   }
 
+  private toolDecisionTokenLimit(request: ChatRequest): number {
+    if (this.modelReasons) {
+      return request.maxTokens;
+    }
+    return Math.min(
+      request.maxTokens,
+      Math.max(1, Math.floor(request.toolCallMaxTokens ?? request.maxTokens)),
+    );
+  }
+
+  private noteReasoning(reasoningCharacters: number, trace: ChatTrace): void {
+    if (reasoningCharacters > 0 && !this.modelReasons) {
+      this.modelReasons = true;
+      this.diagnostics?.info(
+        `${GENERATION_PHASE} ${trace.id} this model reasons before answering; ` +
+        'its tool decisions now use the chat output limit instead of localLlm.maxToolCallTokens.',
+      );
+    }
+  }
+
   /** Cancels a response body the client stopped reading, reporting a cancel that fails. */
   private async abandonStream(
     reader: ReadableStreamDefaultReader<Uint8Array>,
@@ -811,6 +835,7 @@ export class LlamaClient implements InferenceClient {
       await this.abandonStream(reader, trace, stage);
       throw error;
     }
+    this.noteReasoning(reasoningCharacters, trace);
     return { content, reasoningCharacters, ...(finishReason !== undefined ? { finishReason } : {}) };
   }
 
