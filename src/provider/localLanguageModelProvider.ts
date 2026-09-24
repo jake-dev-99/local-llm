@@ -380,7 +380,7 @@ implements vscode.LanguageModelChatProvider<LocalLanguageModelInformation>, vsco
       // );
       return count;
     } catch (error) {
-      if (token.isCancellationRequested || isAbortError(error)) {
+      if (token.isCancellationRequested || isAbortError(error) || error instanceof vscode.CancellationError) {
         this.logger.info(
           `Token count for ${installed.name} cancelled ` +
           `(${token.isCancellationRequested ? 'by VS Code' : 'inside the local runtime'}).`,

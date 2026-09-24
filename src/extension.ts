@@ -51,19 +51,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       ) {
         languageModels.refresh();
       }
-      if (
-        event.affectsConfiguration('localLlm.contextSize') ||
-        event.affectsConfiguration('localLlm.cpuThreads') ||
-        event.affectsConfiguration('localLlm.acceleration') ||
-        event.affectsConfiguration('localLlm.batchSize') ||
-        event.affectsConfiguration('localLlm.microBatchSize') ||
-        event.affectsConfiguration('localLlm.metalMemoryReserveMiB') ||
-        event.affectsConfiguration('localLlm.startupTimeoutSeconds')
-      ) {
-        worker.stop().catch((error: unknown) => {
-          logger.error('Failed to stop the local worker after a settings change', error, true);
-        });
-      }
+      // Worker launch settings (context, batch sizes, acceleration, threads,
+      // Python runtime) are compared against the running worker at the next
+      // request, which reloads it then. Stopping here would kill a response
+      // in flight on every keystroke in the settings editor.
     }),
   );
 

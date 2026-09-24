@@ -25,7 +25,7 @@ import { describeError } from '../errorDetail.js';
 import { SYCL_INITIAL_FIT_TARGET_MIB, isSyclDeviceOutOfMemory, nextSyclFitTargetMiB, parseFittedContext, parseFreeDeviceMemoryMiB, resolveFitTargetMiB } from './memoryFit.js';
 import { isFatalWorkerError } from './workerError.js';
 import { verifiedWorkerBundle } from './workerIntegrity.js';
-import { prepareWorkerLaunch } from './workerLaunch.js';
+import { changedLaunchSettings, launchSettings, type LaunchSettings, prepareWorkerLaunch } from './workerLaunch.js';
 import type { WorkerBackend } from './workerManifest.js';
 import { createLineBuffer, createWorkerDiagnostics, workerLineLevel } from './workerDiagnostics.js';
 import { beginWorkerActivity, finishWorkerActivity } from './workerActivity.js';
@@ -53,6 +53,8 @@ export class WorkerManager implements vscode.Disposable {
    * other. That is also why no second scheduler was needed.
    */
   private session: RuntimeSession | undefined;
+  /** The launch settings the resident session was started with. */
+  private sessionLaunch: LaunchSettings | undefined;
   private currentModel: InstalledModel | undefined;
   private apiKeyFile: string | undefined;
   private startPromise: Promise<RuntimeSession> | undefined;
@@ -149,13 +151,23 @@ export class WorkerManager implements vscode.Disposable {
     signal?: AbortSignal,
   ): Promise<RuntimeSession> {
     return this.withLifecycle(async () => {
+      // Launch settings apply here, at the next request, rather than when they
+      // are edited: stopping on every change killed the response in flight,
+      // and the settings editor saves on each keystroke.
+      const current = launchSettings(readConfig(this.context));
       if (
         this.session &&
         !this.session.exited &&
         this.currentModel?.id === model.id &&
         this.workerState.kind === 'ready'
       ) {
-        return this.session;
+        const changed = this.sessionLaunch ? changedLaunchSettings(this.sessionLaunch, current) : [];
+        if (!changed.length) {
+          return this.session;
+        }
+        this.logger.info(
+          `[Model Loading] Worker settings changed (${changed.join('; ')}); reloading ${model.name} with them.`,
+        );
       }
       if (this.startPromise && this.currentModel?.id === model.id) {
         return this.startPromise;
@@ -169,7 +181,9 @@ export class WorkerManager implements vscode.Disposable {
       const promise = this.start(model, signal);
       this.startPromise = promise;
       try {
-        return await promise;
+        const session = await promise;
+        this.sessionLaunch = current;
+        return session;
       } finally {
         if (this.startPromise === promise) {
           this.startPromise = undefined;

@@ -769,6 +769,11 @@ export class LlamaClient implements InferenceClient {
     try {
       await reader.cancel();
     } catch (error) {
+      // Aborting the request already tore the stream down; there is nothing
+      // left to release, so that is not a failure to report.
+      if (error instanceof Error && error.name === 'AbortError') {
+        return;
+      }
       this.diagnostics?.info(
         `${GENERATION_PHASE} ${trace.id} could not cancel the abandoned response stream (${stage}): ` +
         `${error instanceof Error ? error.message : String(error)}.`,

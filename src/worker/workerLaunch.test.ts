@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  changedLaunchSettings,
+  launchSettings,
   prepareWorkerLaunch,
   type LaunchableWorkerBundle,
 } from './workerLaunch.ts';
@@ -54,3 +56,36 @@ function syclBundle(): LaunchableWorkerBundle {
     files: [],
   };
 }
+
+const baseConfig = {
+  contextSize: 32768,
+  cpuThreads: 0,
+  acceleration: 'auto' as const,
+  batchSize: 256,
+  microBatchSize: 64,
+  metalMemoryReserveMiB: 1024,
+  pythonPath: '',
+  pythonEnvFlavor: 'auto' as const,
+  maxOutputTokens: 8192,
+  temperature: 0.2,
+};
+
+test('a worker launch setting change is named, so the next request reloads with it', () => {
+  const running = launchSettings(baseConfig);
+  assert.deepEqual(
+    changedLaunchSettings(running, launchSettings({ ...baseConfig, batchSize: 1024, microBatchSize: 256 })),
+    ['batchSize 256 → 1024', 'microBatchSize 64 → 256'],
+  );
+  assert.deepEqual(
+    changedLaunchSettings(running, launchSettings({ ...baseConfig, pythonEnvFlavor: 'cpu' })),
+    ['pythonEnvFlavor auto → cpu'],
+  );
+});
+
+test('per-request settings never reload the worker', () => {
+  const running = launchSettings(baseConfig);
+  assert.deepEqual(
+    changedLaunchSettings(running, launchSettings({ ...baseConfig, maxOutputTokens: 16384, temperature: 0.7 })),
+    [],
+  );
+});
