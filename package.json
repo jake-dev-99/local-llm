@@ -58,6 +58,10 @@
         "title": "Local LLM: Import Safetensors Checkpoint"
       },
       {
+        "command": "localLlm.openModelsDirectory",
+        "title": "Local LLM: Open Local Models Directory"
+      },
+      {
         "command": "localLlm.downloadHuggingFace",
         "title": "Local LLM: Download from Hugging Face"
       },

@@ -45,6 +45,10 @@ in VS Code global storage and remain available across extension upgrades.
 2. Import a local model, enter a Hugging Face GGUF or Safetensors repository,
    or provide a direct HTTPS `.gguf` URL. Safetensors downloads include every
    root shard and model sidecar. Numbered GGUF shard parts remain excluded.
+   An imported file can be copied into the models folder or linked where it
+   is, so a model you already keep elsewhere is not stored twice. Removing a
+   linked model never deletes your file. **Local LLM: Open Local Models
+   Directory** opens the models folder.
 3. Run **Local LLM: Validate Model Compatibility**. This loads the model,
    reads the actual llama.cpp runtime capabilities, probes inline FIM, performs
    one structured tool call, and verifies the final response after its result.

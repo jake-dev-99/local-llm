@@ -1,4 +1,4 @@
-import { rm, stat } from 'node:fs/promises';
+import { mkdir, rm, stat } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { readConfig, setDefaultModelId } from '../config.js';
@@ -11,7 +11,7 @@ import type {
 import { isMissingFileError } from '../errorDetail.js';
 import { modelTokenLimits } from '../provider/modelCapacity.js';
 import type { LocalLlmLogger } from '../logging.js';
-import type { ModelManager } from '../models/modelManager.js';
+import type { ImportMode, ModelManager } from '../models/modelManager.js';
 import { formatBytes } from '../models/modelSources.js';
 import {
   benchmarkModel,
@@ -52,6 +52,7 @@ export function registerModelCommands(services: CommandServices): vscode.Disposa
     command('localLlm.importModel', () => importModel(services)),
     command('localLlm.importSafetensorsDirectory', () => importSafetensorsDirectory(services)),
     command('localLlm.importSafetensorsFile', () => importSafetensorsFile(services)),
+    command('localLlm.openModelsDirectory', () => openModelsDirectory(services)),
     command('localLlm.downloadHuggingFace', () => downloadHuggingFace(services)),
     command('localLlm.downloadUrl', () => downloadUrl(services)),
     command('localLlm.removeModel', () => removeModel(services)),
@@ -85,7 +86,7 @@ async function manageModels(services: CommandServices): Promise<void> {
       },
       {
         label: '$(file-add) Import local GGUF',
-        description: 'Copy an existing model into managed storage',
+        description: 'Copy a model file into the models folder, or link it in place',
         command: 'localLlm.importModel',
       },
       {
@@ -95,8 +96,13 @@ async function manageModels(services: CommandServices): Promise<void> {
       },
       {
         label: '$(file-add) Import single .safetensors file',
-        description: 'Copy one weights file into managed storage with its config',
+        description: 'Copy or link one weights file into the models folder with its config',
         command: 'localLlm.importSafetensorsFile',
+      },
+      {
+        label: '$(folder-opened) Open local models folder',
+        description: readConfig(services.context).modelDirectory,
+        command: 'localLlm.openModelsDirectory',
       },
       ...(installed.length
         ? [
@@ -167,8 +173,64 @@ async function importModel(services: CommandServices): Promise<void> {
   if (!uri) {
     return;
   }
-  const model = await services.models.importLocal(uri);
+  const mode = await chooseImportMode(uri.fsPath, 'register');
+  if (!mode) {
+    return;
+  }
+  const model = await services.models.importLocal(uri, mode);
   await finishInstall(services, model);
+}
+
+/**
+ * Asks whether an imported file is copied into the models folder or used from
+ * where it is. A local model is gigabytes; a second copy of one the user
+ * already keeps elsewhere is pure waste, but a copy survives the original
+ * being moved or deleted.
+ */
+async function chooseImportMode(
+  sourcePath: string,
+  linkKind: 'register' | 'hard-link',
+): Promise<ImportMode | undefined> {
+  let size = '';
+  try {
+    size = ` (${formatBytes((await stat(sourcePath)).size)})`;
+  } catch {
+    // The import itself reports an unreadable file; the prompt just omits its size.
+  }
+  const choice = await vscode.window.showQuickPick(
+    [
+      {
+        label: '$(link) Link to the file where it is',
+        description: 'No duplicate on disk',
+        detail: linkKind === 'register'
+          ? 'Moving or deleting the original makes the model unavailable. Removing the model never deletes your file.'
+          : 'Uses a hard link, so it must be on the same drive as the models folder. Removing the model deletes only the link.',
+        mode: 'link' as const,
+      },
+      {
+        label: `$(files) Copy into the models folder${size}`,
+        description: 'Independent of the original',
+        detail: 'Uses the disk space again. The extension owns the copy and deletes it when the model is removed.',
+        mode: 'copy' as const,
+      },
+    ],
+    {
+      title: `Import ${path.basename(sourcePath)}`,
+      placeHolder: 'Link to the model file, or copy it into the models folder?',
+      ignoreFocusOut: true,
+    },
+  );
+  return choice?.mode;
+}
+
+async function openModelsDirectory(services: CommandServices): Promise<void> {
+  const directory = readConfig(services.context).modelDirectory;
+  // A fresh install has no folder until the first model arrives.
+  await mkdir(directory, { recursive: true });
+  const opened = await vscode.env.openExternal(vscode.Uri.file(directory));
+  if (!opened) {
+    throw new Error(`Could not open the models folder in the system file manager: ${directory}`);
+  }
 }
 
 async function importSafetensorsDirectory(services: CommandServices): Promise<void> {
@@ -235,7 +297,11 @@ async function importSafetensorsFile(services: CommandServices): Promise<void> {
   if (!stageOptions) {
     return;
   }
-  const staged = await services.models.stageSafetensorsFile(uri, stageOptions);
+  const mode = await chooseImportMode(uri.fsPath, 'hard-link');
+  if (!mode) {
+    return;
+  }
+  const staged = await services.models.stageSafetensorsFile(uri, stageOptions, mode);
   const cudaAvailable = await isCudaFlavor(services);
   const warnings = checkpointWarnings(
     {

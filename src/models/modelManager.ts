@@ -1,11 +1,11 @@
 
 import { createHash, randomUUID } from 'node:crypto';
-import { copyFile, mkdir, open, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, link, mkdir, open, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { readConfig } from '../config.js';
 import type { InstalledModel, ModelSource } from '../domain.js';
-import { isMissingFileError } from '../errorDetail.js';
+import { describeError, isMissingFileError } from '../errorDetail.js';
 import type { LocalLlmLogger } from '../logging.js';
 import { readGgufMetadata } from './ggufMetadata.js';
 import {
@@ -49,6 +49,13 @@ const SIDECAR_FILES = [
   'generation_config.json',
 ];
 
+/**
+ * How an imported file reaches the models folder. `copy` makes an owned
+ * duplicate the extension may delete; `link` uses the user's file without a
+ * second copy, and the extension never deletes it.
+ */
+export type ImportMode = 'copy' | 'link';
+
 export class ModelManager {
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -56,10 +63,30 @@ export class ModelManager {
     private readonly logger: LocalLlmLogger,
   ) {}
 
-  async importLocal(uri: vscode.Uri): Promise<InstalledModel> {
+  async importLocal(uri: vscode.Uri, mode: ImportMode = 'copy'): Promise<InstalledModel> {
     const sourcePath = uri.fsPath;
     const filename = safeModelFilename(sourcePath);
     await assertGguf(sourcePath);
+    if (mode === 'link') {
+      // Registered where it is. The registry's size and mtime check on every
+      // activation still catches the file changing or disappearing.
+      const [sha256, metadata] = await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: `Fingerprinting ${filename}`,
+        },
+        () => Promise.all([sha256File(sourcePath), stat(sourcePath)]),
+      );
+      return this.register({
+        filename,
+        filePath: sourcePath,
+        fileSize: metadata.size,
+        sha256,
+        source: 'import',
+        sourceUrl: uri.toString(),
+        managed: false,
+      });
+    }
     const destination = this.destination(filename);
     const result = await vscode.window.withProgress(
       {
@@ -302,6 +329,7 @@ export class ModelManager {
   async stageSafetensorsFile(
     fileUri: vscode.Uri,
     options: { repository?: string; configFile?: string; configJson?: string } = {},
+    mode: ImportMode = 'copy',
   ): Promise<{ directory: string; checkpoint: SafetensorsCheckpoint }> {
     const sourcePath = fileUri.fsPath;
     if (!sourcePath.toLowerCase().endsWith('.safetensors')) {
@@ -312,14 +340,18 @@ export class ModelManager {
     const directory = path.join(readConfig(this.context).modelDirectory, `${randomUUID()}-${stem}`);
     await mkdir(directory, { recursive: true });
     try {
-      await vscode.window.withProgress(
-        {
-          location: vscode.ProgressLocation.Notification,
-          title: `Importing ${filename}`,
-          cancellable: true,
-        },
-        (progress, token) => copyLocalModel(sourcePath, path.join(directory, filename), progress, token),
-      );
+      if (mode === 'link') {
+        await linkWeights(sourcePath, path.join(directory, filename));
+      } else {
+        await vscode.window.withProgress(
+          {
+            location: vscode.ProgressLocation.Notification,
+            title: `Importing ${filename}`,
+            cancellable: true,
+          },
+          (progress, token) => copyLocalModel(sourcePath, path.join(directory, filename), progress, token),
+        );
+      }
       const sourceDir = path.dirname(sourcePath);
       for (const sidecar of SIDECAR_FILES) {
         try {
@@ -551,6 +583,8 @@ export class ModelManager {
     sourceUrl?: string;
     repository?: string;
     revision?: string;
+    /** False for a file registered in place, which the extension must never delete. */
+    managed?: boolean;
   }): Promise<InstalledModel> {
     const name = friendlyName(input.filename);
     const fileMetadata = await stat(input.filePath);
@@ -575,17 +609,41 @@ export class ModelManager {
       ...(input.sourceUrl ? { sourceUrl: input.sourceUrl } : {}),
       ...(input.repository ? { repository: input.repository } : {}),
       ...(input.revision ? { revision: input.revision } : {}),
+      ...(input.managed === false ? { managed: false } : {}),
       ...(ggufMetadata?.trainedContextLength
         ? { trainedContextLength: ggufMetadata.trainedContextLength }
         : {}),
     };
     const existing = this.registry.get(model.id);
     await this.registry.upsert(model);
-    if (existing && existing.filePath !== model.filePath) {
+    // Replacing a registration frees the old copy only if the extension made
+    // it. A linked registration points at the user's own file.
+    if (existing && existing.filePath !== model.filePath && isExtensionOwned(existing)) {
       await rm(existing.filePath, { force: true });
     }
     this.logger.info(`Installed local model: ${model.name} (${model.fileSize} bytes).`);
     return model;
+  }
+}
+
+/**
+ * A hard link shares the file's bytes under a second name, so the staged
+ * checkpoint costs no extra space and removing it deletes only the link.
+ * Hard links cannot cross drives; that is reported rather than silently
+ * turned into a copy the user chose not to make.
+ */
+async function linkWeights(sourcePath: string, destination: string): Promise<void> {
+  try {
+    await link(sourcePath, destination);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'EXDEV') {
+      throw new Error(
+        `Cannot link ${path.basename(sourcePath)}: it is on a different drive from the models folder, ` +
+        'and links only work within one drive. Import it as a copy, or set localLlm.modelDirectory to a folder on that drive.',
+      );
+    }
+    throw new Error(`Cannot link ${path.basename(sourcePath)} into the models folder: ${describeError(error)}`);
   }
 }
 

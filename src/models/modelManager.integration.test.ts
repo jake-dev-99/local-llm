@@ -6,6 +6,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -20,11 +21,13 @@ import type { InstalledModel } from '../domain.ts';
  * directory rather than by reading the code.
  */
 interface TestModelManager {
+  importLocal(uri: { fsPath: string; toString(): string }, mode?: 'copy' | 'link'): Promise<InstalledModel>;
   downloadFromHuggingFace(repository: string): Promise<InstalledModel | undefined>;
   importSafetensorsDirectory(uri: { fsPath: string; toString(): string }): Promise<InstalledModel>;
   stageSafetensorsFile(
     uri: { fsPath: string; toString(): string },
     options?: { repository?: string; configFile?: string; configJson?: string },
+    mode?: 'copy' | 'link',
   ): Promise<{ directory: string; checkpoint: { architecture?: string } }>;
   registerStagedSafetensorsDirectory(directory: string): Promise<InstalledModel>;
   remove(model: InstalledModel): Promise<void>;
@@ -575,6 +578,78 @@ test('a successful Hugging Face response that is not JSON fails instead of readi
     );
   } finally {
     globalThis.fetch = originalFetch;
+    rmSync(storage, { recursive: true, force: true });
+  }
+});
+
+/** The smallest file assertGguf accepts: magic, version 3, no tensors, no metadata. */
+function ggufBytes(): Buffer {
+  const bytes = Buffer.alloc(24);
+  bytes.write('GGUF', 0, 'ascii');
+  bytes.writeUInt32LE(3, 4);
+  return bytes;
+}
+
+test('a linked GGUF is registered where it is, never copied, and never deleted', async () => {
+  const ModelManager = await loadModelManager();
+  const registry = fakeRegistry();
+  const source = mkdtempSync(path.join(tmpdir(), 'local-llm-link-src-'));
+  const storage = mkdtempSync(path.join(tmpdir(), 'local-llm-link-storage-'));
+  const original = path.join(source, 'Qwen3-4B.Q8_0.gguf');
+  writeFileSync(original, ggufBytes());
+  try {
+    const manager = new ModelManager({ ...context, globalStorageUri: uriFor(storage) }, registry, logger);
+    const model = await manager.importLocal(uriFor(original), 'link');
+
+    assert.equal(model.filePath, original);
+    assert.equal(model.managed, false, 'the extension does not own a linked file');
+    assert.equal(model.sha256, createHash('sha256').update(ggufBytes()).digest('hex'));
+    assert.deepEqual(readdirSync(storage), [], 'linking writes nothing to the models folder');
+
+    await manager.remove(model);
+    assert.ok(existsSync(original), 'removing a linked model leaves the user\'s file alone');
+  } finally {
+    rmSync(source, { recursive: true, force: true });
+    rmSync(storage, { recursive: true, force: true });
+  }
+});
+
+test('copying a model that was linked does not delete the user\'s original', async () => {
+  const ModelManager = await loadModelManager();
+  const registry = fakeRegistry();
+  const source = mkdtempSync(path.join(tmpdir(), 'local-llm-relink-src-'));
+  const storage = mkdtempSync(path.join(tmpdir(), 'local-llm-relink-storage-'));
+  const original = path.join(source, 'model.gguf');
+  writeFileSync(original, ggufBytes());
+  try {
+    const manager = new ModelManager({ ...context, globalStorageUri: uriFor(storage) }, registry, logger);
+    await manager.importLocal(uriFor(original), 'link');
+    const copied = await manager.importLocal(uriFor(original), 'copy');
+
+    assert.notEqual(copied.filePath, original);
+    assert.ok(existsSync(original), 'replacing a linked registration must not delete the file it linked');
+  } finally {
+    rmSync(source, { recursive: true, force: true });
+    rmSync(storage, { recursive: true, force: true });
+  }
+});
+
+test('a linked single Safetensors file is staged as a hard link, not a second copy', async () => {
+  const ModelManager = await loadModelManager();
+  const source = mkdtempSync(path.join(tmpdir(), 'local-llm-hardlink-src-'));
+  const storage = mkdtempSync(path.join(tmpdir(), 'local-llm-hardlink-storage-'));
+  const weights = path.join(source, 'gemma4.safetensors');
+  writeFileSync(weights, shard('{"w":{"dtype":"BF16","shape":[8],"data_offsets":[0,16]}}', 128));
+  writeFileSync(path.join(source, 'config.json'), JSON.stringify({ architectures: ['GemmaForCausalLM'] }));
+  try {
+    const manager = new ModelManager({ ...context, globalStorageUri: uriFor(storage) }, fakeRegistry(), logger);
+    const staged = await manager.stageSafetensorsFile(uriFor(weights), {}, 'link');
+
+    const stagedWeights = statSync(path.join(staged.directory, 'gemma4.safetensors'));
+    assert.equal(stagedWeights.ino, statSync(weights).ino, 'the staged weights are the same file on disk');
+    assert.equal(statSync(weights).nlink, 2);
+  } finally {
+    rmSync(source, { recursive: true, force: true });
     rmSync(storage, { recursive: true, force: true });
   }
 });
