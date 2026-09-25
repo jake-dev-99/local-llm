@@ -129,11 +129,9 @@ export class ModelManager {
         }
       },
     );
-    const artifact = await chooseHuggingFaceArtifact(
-      selectableHuggingFaceFiles(metadata.files),
-      safetensorsHuggingFaceFiles(metadata.files),
-    );
-    if (!artifact) {
+    const ggufFiles = selectableHuggingFaceFiles(metadata.files);
+    const safetensorsFiles = safetensorsHuggingFaceFiles(metadata.files);
+    if (ggufFiles.length === 0 && safetensorsFiles.length === 0) {
       if (metadata.files.some((file) => file.filename.toLowerCase().endsWith('.safetensors'))) {
         throw new Error(
           `Repository ${metadata.id} has Safetensors weights, but no complete root checkpoint with config.json.`,
@@ -146,13 +144,15 @@ export class ModelManager {
       }
       throw new Error(`Repository ${metadata.id} contains no supported GGUF or Safetensors model.`);
     }
+    const artifact = await chooseHuggingFaceArtifact(ggufFiles, safetensorsFiles);
+    if (!artifact) {
+      // The picker was dismissed.
+      return undefined;
+    }
     if (artifact.kind === 'safetensors') {
       return this.downloadSafetensorsRepository(metadata, artifact.files, token);
     }
     const chosen = artifact.file;
-    if (!chosen) {
-      return undefined;
-    }
     if (!isSingleFileGguf(chosen.filename)) {
       throw new Error(
         'This PoC installs single-file GGUF models. Select a non-sharded GGUF from the repository.',
@@ -677,6 +677,7 @@ async function chooseHuggingFaceFile(
   const selected = await vscode.window.showQuickPick(items, {
     title: 'Select a GGUF model file',
     placeHolder: 'Q4_K_M is usually a good balance of speed and quality',
+    ignoreFocusOut: true,
     matchOnDescription: true,
     matchOnDetail: true,
   });
@@ -687,13 +688,11 @@ type HuggingFaceArtifact =
   | { kind: 'gguf'; file: HuggingFaceFile }
   | { kind: 'safetensors'; files: HuggingFaceFile[] };
 
+/** Asks which artifact to download; undefined means the picker was dismissed. */
 async function chooseHuggingFaceArtifact(
   ggufFiles: HuggingFaceFile[],
   safetensorsFiles: HuggingFaceFile[],
 ): Promise<HuggingFaceArtifact | undefined> {
-  if (safetensorsFiles.length === 0 && ggufFiles.length === 0) {
-    return undefined;
-  }
   if (safetensorsFiles.length === 0) {
     const file = await chooseHuggingFaceFile(ggufFiles);
     return file ? { kind: 'gguf', file } : undefined;
@@ -719,6 +718,7 @@ async function chooseHuggingFaceArtifact(
   const selected = await vscode.window.showQuickPick(items, {
     title: 'Select a model download',
     placeHolder: 'Choose the checkpoint format or GGUF quantization',
+    ignoreFocusOut: true,
     matchOnDescription: true,
     matchOnDetail: true,
   });

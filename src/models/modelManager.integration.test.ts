@@ -582,6 +582,83 @@ test('a successful Hugging Face response that is not JSON fails instead of readi
   }
 });
 
+/**
+ * Runs `downloadFromHuggingFace` against a repository listing `filenames`, with
+ * the stub's picker dismissed. Returns the settled outcome and every file URL
+ * fetched.
+ */
+async function downloadWithDismissedPicker(filenames: string[]): Promise<{
+  outcome: { value: InstalledModel | undefined } | { error: unknown };
+  fileRequests: string[];
+}> {
+  const ModelManager = await loadModelManager();
+  const storage = mkdtempSync(path.join(tmpdir(), 'local-llm-hf-dismissed-'));
+  const repository = 'owner/repo';
+  const fileRequests: string[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.includes('/api/models/')) {
+      return responseAt(url, JSON.stringify({
+        id: repository,
+        sha: '2222222222222222222222222222222222222222',
+        siblings: filenames.map((rfilename) => ({ rfilename, lfs: { size: 1024 } })),
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    fileRequests.push(url);
+    return responseAt(url, 'unexpected', { status: 404 });
+  };
+  try {
+    const manager = new ModelManager(
+      { ...context, globalStorageUri: uriFor(storage) },
+      fakeRegistry(),
+      logger,
+    );
+    const outcome = await manager.downloadFromHuggingFace(repository).then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
+    return { outcome, fileRequests };
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(storage, { recursive: true, force: true });
+  }
+}
+
+test('dismissing the GGUF picker cancels quietly instead of reporting the repository unsupported', async () => {
+  const { outcome, fileRequests } = await downloadWithDismissedPicker([
+    'Devstral-Small-2-24B-Instruct-2512-Q4_K_M.gguf',
+    'Devstral-Small-2-24B-Instruct-2512-Q8_0.gguf',
+    'README.md',
+    'config.json',
+  ]);
+  assert.deepEqual(outcome, { value: undefined });
+  assert.deepEqual(fileRequests, [], 'nothing was downloaded');
+});
+
+test('dismissing the format picker in a repository with GGUF and Safetensors cancels quietly', async () => {
+  const { outcome, fileRequests } = await downloadWithDismissedPicker([
+    'config.json',
+    'model.Q4_K_M.gguf',
+    'model.safetensors',
+    'tokenizer.json',
+  ]);
+  assert.deepEqual(outcome, { value: undefined });
+  assert.deepEqual(fileRequests, [], 'nothing was downloaded');
+});
+
+test('a repository of only sharded GGUF parts is still reported as unsupported', async () => {
+  const { outcome } = await downloadWithDismissedPicker([
+    'model-Q4_K_M-00001-of-00002.gguf',
+    'model-Q4_K_M-00002-of-00002.gguf',
+  ]);
+  assert.ok('error' in outcome, 'the download was rejected');
+  assert.match(
+    String(outcome.error),
+    /contains GGUF files, but none are supported single-file downloads/,
+  );
+});
+
 /** The smallest file assertGguf accepts: magic, version 3, no tensors, no metadata. */
 function ggufBytes(): Buffer {
   const bytes = Buffer.alloc(24);
