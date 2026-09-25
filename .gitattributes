@@ -1,0 +1,4 @@
+# Commit text with LF and check it out with LF on every platform, so a
+# Windows checkout cannot commit CRLF copies. Binaries are detected and left
+# alone.
+* text=auto eol=lf
