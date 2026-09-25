@@ -15,6 +15,37 @@ test('selectableHuggingFaceFiles excludes numbered GGUF shard parts', () => {
   assert.deepEqual(selectableHuggingFaceFiles(files), [files[0]]);
 });
 
+test('selectableHuggingFaceFiles excludes vision projectors wherever mmproj appears in the name', () => {
+  const models = [
+    { filename: 'Devstral-Small-2-24B-Instruct-2512-Q4_K_M.gguf', size: 14_334_446_752 },
+    { filename: 'Qwen2.5-VL-7B-Instruct.Q4_K_M.gguf', size: 4_683_073_184 },
+  ];
+  const projectors = [
+    { filename: 'mmproj-BF16.gguf', size: 879_258_272 },
+    { filename: 'MMPROJ-F32.gguf', size: 1_755_867_808 },
+    { filename: 'mmproj-google_gemma-3-4b-it-f16.gguf', size: 851_251_104 },
+    { filename: 'llava-v1.5-7b-mmproj-model-f16.gguf', size: 624_434_336 },
+    { filename: 'Qwen2.5-VL-7B-Instruct.mmproj-Q8_0.gguf', size: 853_119_328 },
+    { filename: 'nested/mmproj-F16.gguf', size: 878_054_048 },
+  ];
+
+  assert.deepEqual(selectableHuggingFaceFiles([...models, ...projectors]), models);
+});
+
+test('selectableHuggingFaceFiles excludes importance matrices saved as GGUF', () => {
+  const models = [
+    { filename: 'mistralai_Devstral-Small-2-24B-Instruct-2512-Q4_K_M.gguf', size: 14_334_446_752 },
+    { filename: 'Qwen2-7B-Instruct.i1-Q4_K_M.gguf', size: 4_683_073_184 },
+    { filename: 'Llama-3-8B-Instruct-imat-Q4_K_M.gguf', size: 4_920_734_016 },
+  ];
+  const matrices = [
+    { filename: 'mistralai_Devstral-Small-2-24B-Instruct-2512-imatrix.gguf', size: 10_037_344 },
+    { filename: 'imatrix.gguf', size: 5_018_672 },
+  ];
+
+  assert.deepEqual(selectableHuggingFaceFiles([...models, ...matrices]), models);
+});
+
 test('safetensorsHuggingFaceFiles selects the complete Qwen MLX checkpoint', () => {
   const files = [
     { filename: '.gitattributes', size: 1_500 },

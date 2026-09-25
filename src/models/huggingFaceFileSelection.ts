@@ -1,5 +1,7 @@
 export function selectableHuggingFaceFiles<T extends { filename: string }>(files: T[]): T[] {
-  return files.filter((file) => isSingleFileGguf(file.filename));
+  return files.filter((file) =>
+    isSingleFileGguf(file.filename) && !isGgufSidecar(file.filename),
+  );
 }
 
 /**
@@ -30,6 +32,18 @@ export function safetensorsHuggingFaceFiles<T extends { filename: string }>(file
 export function isSingleFileGguf(filename: string): boolean {
   return filename.toLowerCase().endsWith('.gguf') &&
     !/-\d{5}-of-\d{5}\.gguf$/i.test(filename);
+}
+
+/**
+ * GGUF files that repositories ship beside the models but that do not load as
+ * one: vision projectors (`mmproj`) and importance matrices (`imatrix`).
+ * Publishers put the token at the start (`mmproj-F16.gguf`), after a dash
+ * (`llava-v1.5-7b-mmproj-model-f16.gguf`, `...-imatrix.gguf`) or after a dot
+ * (`Qwen2.5-VL-7B-Instruct.mmproj-f16.gguf`).
+ */
+function isGgufSidecar(filename: string): boolean {
+  const basename = filename.slice(filename.lastIndexOf('/') + 1);
+  return /(?:^|[-_.])(?:mmproj|imatrix)(?:[-_.]|$)/i.test(basename);
 }
 
 function isSafetensorsCheckpointFile(filename: string): boolean {

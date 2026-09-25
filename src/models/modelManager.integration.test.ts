@@ -647,6 +647,20 @@ test('dismissing the format picker in a repository with GGUF and Safetensors can
   assert.deepEqual(fileRequests, [], 'nothing was downloaded');
 });
 
+test('a repository whose only GGUFs are vision projectors is reported as unsupported', async () => {
+  const { outcome, fileRequests } = await downloadWithDismissedPicker([
+    'README.md',
+    'mmproj-BF16.gguf',
+    'mmproj-F16.gguf',
+  ]);
+  assert.ok('error' in outcome, 'the download was rejected');
+  assert.match(
+    String(outcome.error),
+    /contains GGUF files, but none are supported single-file downloads/,
+  );
+  assert.deepEqual(fileRequests, [], 'nothing was downloaded');
+});
+
 test('a repository of only sharded GGUF parts is still reported as unsupported', async () => {
   const { outcome } = await downloadWithDismissedPicker([
     'model-Q4_K_M-00001-of-00002.gguf',
