@@ -73,16 +73,32 @@ export function registerModelCommands(services: CommandServices): vscode.Disposa
 async function manageModels(services: CommandServices): Promise<void> {
   const installed = services.models.registry.list();
   const choice = await vscode.window.showQuickPick(
+    // Alphabetical by label text, ignoring the icon.
     [
       {
-        label: '$(cloud-download) Download from Hugging Face',
-        description: 'Choose a GGUF file from a model repository',
-        command: 'localLlm.downloadHuggingFace',
+        label: '$(dashboard) Benchmark model',
+        description: 'Measure min, average, and max output tok/s on this machine',
+        command: 'localLlm.benchmarkModel',
+      },
+      {
+        label: '$(checklist) Check local privacy defaults',
+        description: 'Verify the relevant global VS Code and Copilot settings',
+        command: 'localLlm.checkPrivacyDefaults',
+      },
+      {
+        label: '$(shield) Configure local privacy defaults',
+        description: 'Prefer local Chat paths and disable known remote editor suggestions',
+        command: 'localLlm.configureStrictLocal',
       },
       {
         label: '$(link-external) Download from HTTPS URL',
         description: 'Download a direct .gguf URL',
         command: 'localLlm.downloadUrl',
+      },
+      {
+        label: '$(cloud-download) Download from Hugging Face',
+        description: 'Choose a GGUF file from a model repository',
+        command: 'localLlm.downloadHuggingFace',
       },
       {
         label: '$(file-add) Import local GGUF',
@@ -107,37 +123,17 @@ async function manageModels(services: CommandServices): Promise<void> {
       ...(installed.length
         ? [
             {
-              label: '$(star) Select default model',
-              description: 'Choose the model used for inline completion',
-              command: 'localLlm.selectDefaultModel',
-            },
-            {
               label: '$(trash) Remove a model',
               description: `${installed.length} model${installed.length === 1 ? '' : 's'} installed`,
               command: 'localLlm.removeModel',
             },
+            {
+              label: '$(star) Select default model',
+              description: 'Choose the model used for inline completion',
+              command: 'localLlm.selectDefaultModel',
+            },
           ]
         : []),
-      {
-        label: '$(shield) Configure local privacy defaults',
-        description: 'Prefer local Chat paths and disable known remote editor suggestions',
-        command: 'localLlm.configureStrictLocal',
-      },
-      {
-        label: '$(checklist) Check local privacy defaults',
-        description: 'Verify the relevant global VS Code and Copilot settings',
-        command: 'localLlm.checkPrivacyDefaults',
-      },
-      {
-        label: '$(beaker) Validate model compatibility',
-        description: 'Load a model and verify its structured tool-call path',
-        command: 'localLlm.validateModel',
-      },
-      {
-        label: '$(dashboard) Benchmark model',
-        description: 'Measure min, average, and max output tok/s on this machine',
-        command: 'localLlm.benchmarkModel',
-      },
       {
         label: '$(key) Set Hugging Face token',
         description: 'Optional; required only for gated or private repositories',
@@ -147,6 +143,11 @@ async function manageModels(services: CommandServices): Promise<void> {
         label: '$(pulse) Show runtime status',
         description: 'Inspect the active local worker',
         command: 'localLlm.showStatus',
+      },
+      {
+        label: '$(beaker) Validate model compatibility',
+        description: 'Load a model and verify its structured tool-call path',
+        command: 'localLlm.validateModel',
       },
     ],
     {
