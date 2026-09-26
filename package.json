@@ -22,7 +22,7 @@
   ],
   "main": "./dist/extension.cjs",
   "extensionKind": [
-    "ui"
+    "workspace"
   ],
   "activationEvents": [
     "onStartupFinished"
@@ -174,7 +174,12 @@
             "cpu"
           ],
           "default": "auto",
-          "description": "Use Metal on Apple Silicon or Intel SYCL on x64 Windows automatically. Select cpu to disable device offload in the bundled worker. SYCL failures are reported and never fall back automatically."
+          "description": "Use Metal on Apple Silicon, Intel SYCL on x64 Windows, or Intel SYCL on x64 Linux automatically. Select cpu to disable device offload in the bundled worker. SYCL failures are reported and never fall back automatically."
+        },
+        "localLlm.syclDevice": {
+          "type": "string",
+          "default": "",
+          "description": "Explicit SYCL device selector passed as --device (for example SYCL0 or SYCL1). Empty uses the device discovered by --list-devices. Useful on multi-GPU systems."
         },
         "localLlm.batchSize": {
           "type": "integer",
@@ -265,8 +270,10 @@
     "package": "node scripts/package-vsix.mjs",
     "package:install:win": "npm run package -- win32-x64 && code --install-extension dist/vsix/win32-x64/local-llm-engine-0.3.4-win32-x64.vsix --profile \"State of Michigan\"",
     "package:install:mac": "npm run package -- darwin-arm64 && code --install-extension /Users/jake/Development/consumer/local-llm/dist/vsix/darwin-arm64/local-llm-engine-0.3.4-darwin-arm64.vsix",
+    "package:install:wsl": "npm run package -- linux-x64 && code --install-extension dist/vsix/linux-x64/local-llm-engine-0.3.4-linux-x64.vsix --force",
     "smoke:worker": "node scripts/smoke-worker.mjs",
     "verify:windows-worker": "node scripts/verify-windows-worker.mjs",
+    "verify:linux-worker": "node scripts/verify-linux-worker.mjs",
     "vscode:prepublish": "npm run typecheck && npm run build"
   },
   "devDependencies": {

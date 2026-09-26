@@ -111,6 +111,7 @@ export interface WorkerConfig {
   batchSize: number;
   microBatchSize: number;
   metalMemoryReserveMiB: number;
+  syclDevice: string;
 }
 
 export interface LocalLlmConfig extends WorkerConfig {

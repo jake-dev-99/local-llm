@@ -8,8 +8,8 @@ import { prepareTargetWorkers, targetIgnoreEntries } from './package-workers.mjs
 
 const root = path.resolve(import.meta.dirname, '..');
 const target = process.argv[2] ?? `${process.platform}-${process.arch}`;
-if (!['darwin-arm64', 'win32-x64'].includes(target)) {
-  throw new Error('Usage: npm run package:vsix -- [darwin-arm64|win32-x64]');
+if (!['darwin-arm64', 'win32-x64', 'linux-x64'].includes(target)) {
+  throw new Error('Usage: npm run package:vsix -- [darwin-arm64|win32-x64|linux-x64]');
 }
 await prepareTargetWorkers(root, target);
 

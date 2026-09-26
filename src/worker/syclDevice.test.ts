@@ -27,10 +27,28 @@ test('builds a selector-free environment limited to the bundle and Windows', () 
   });
 });
 
+test('builds a POSIX environment with bundle-first PATH and LD_LIBRARY_PATH', () => {
+  assert.deepEqual(cleanSyclEnvironment(
+    '/extension/workers/sycl/llama-server',
+    {
+      KEEP_ME: 'yes',
+      PATH: '/usr/bin:/bin',
+      LD_LIBRARY_PATH: '/outside/lib',
+      ONEAPI_DEVICE_SELECTOR: 'caller-value',
+      SYCL_DEVICE_FILTER: 'gpu',
+      UR_ADAPTERS_FORCE_LOAD: '/outside/libur_adapter_opencl.so',
+    },
+  ), {
+    KEEP_ME: 'yes',
+    PATH: '/extension/workers/sycl:/usr/bin:/bin',
+    LD_LIBRARY_PATH: '/extension/workers/sycl:/outside/lib',
+  });
+});
+
 test('fails loudly after one attempt when the selected executable exposes no SYCL GPU', async () => {
   let attempts = 0;
   await assert.rejects(
-    discoverSycl0('llama-server.exe', async () => {
+    discoverSycl0('C:\\bundle\\llama-server.exe', async () => {
       attempts += 1;
       return { stdout: 'Available devices:\n', stderr: '' };
     }),
@@ -39,10 +57,31 @@ test('fails loudly after one attempt when the selected executable exposes no SYC
   assert.equal(attempts, 1);
 });
 
+test('probes default, Level Zero, then OpenCL on POSIX and keeps the working selector', async () => {
+  const observed: Array<{ options: { env: NodeJS.ProcessEnv } }> = [];
+  const device = await discoverSycl0(
+    '/bundle/llama-server',
+    async (_executable, _args, options) => {
+      observed.push({ options });
+      if (observed.length < 3) {
+        return { stdout: 'Available devices:\n', stderr: '' };
+      }
+      return { stdout: '', stderr: 'SYCL0: Intel(R) Arc(TM) Graphics\n' };
+    },
+    { KEEP_ME: 'yes' },
+  );
+  assert.equal(device.id, 'SYCL0');
+  assert.equal(observed.length, 3);
+  assert.equal(observed[0]?.options.env.ONEAPI_DEVICE_SELECTOR, undefined);
+  assert.equal(observed[1]?.options.env.ONEAPI_DEVICE_SELECTOR, 'level_zero:gpu');
+  assert.equal(observed[2]?.options.env.ONEAPI_DEVICE_SELECTOR, 'opencl:gpu');
+  assert.equal(device.environment.ONEAPI_DEVICE_SELECTOR, 'opencl:gpu');
+});
+
 test('preserves stderr from a DLL load failure without retrying an adapter', async () => {
   let attempts = 0;
   await assert.rejects(
-    discoverSycl0('llama-server.exe', async () => {
+    discoverSycl0('C:\\bundle\\llama-server.exe', async () => {
       attempts += 1;
       throw Object.assign(new Error('exit 3221225781'), { stderr: 'sycl8.dll was not found' });
     }),

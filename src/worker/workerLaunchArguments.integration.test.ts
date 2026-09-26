@@ -143,6 +143,7 @@ function config(overrides: Partial<LocalLlmConfig> = {}): LocalLlmConfig {
     batchSize: 256,
     microBatchSize: 64,
     metalMemoryReserveMiB: 4096,
+    syclDevice: '',
     temperature: 0.2,
     inlineEnabled: true,
     inlineMaxTokens: 64,

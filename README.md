@@ -14,6 +14,7 @@ The prototype supports:
 
 - Apple Silicon macOS (`darwin-arm64`) with Metal acceleration
 - Intel 64-bit Windows 10 or 11 (`win32-x64`) with Intel SYCL acceleration or explicit CPU inference
+- Intel 64-bit Linux (`linux-x64`, Arch WSL) with Intel SYCL acceleration or explicit CPU inference
 - GGUF import, resumable Hugging Face GGUF and Safetensors downloads, and direct GGUF HTTPS downloads
 - installed models in VS Code's native Chat model picker
 - ordinary streaming Chat
@@ -34,6 +35,12 @@ or:
 
 ```shell
 code --install-extension dist/vsix/win32-x64/local-llm-engine-0.3.4-win32-x64.vsix --force
+```
+
+or, inside WSL on x64 Linux:
+
+```shell
+code --install-extension dist/vsix/linux-x64/local-llm-engine-0.3.4-linux-x64.vsix --force
 ```
 
 Reload VS Code after upgrading from an earlier prototype. Installed models live

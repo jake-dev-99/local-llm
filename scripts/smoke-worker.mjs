@@ -39,8 +39,8 @@ export async function runSmokeWorker(args, dependencies = {}) {
     chatTimeoutMs: CHAT_TIMEOUT_MS,
     ...dependencies,
   };
-  const { backend, modelPath } = await parseSmokeWorkerArguments(args, options);
-  const { bundle, executable } = await options.resolveBundle(options.root, backend);
+  const { backend, modelPath, target } = await parseSmokeWorkerArguments(args, options);
+  const { bundle, executable } = await options.resolveBundle(options.root, backend, target);
   const device = backend === 'sycl' ? await options.discoverSycl(executable) : undefined;
   const port = await options.allocatePort();
   const keyDirectory = await options.makeTempDirectory(path.join(tmpdir(), 'local-llm-worker-smoke-'));
@@ -57,7 +57,7 @@ export async function runSmokeWorker(args, dependencies = {}) {
       cwd: path.dirname(executable),
       env: device?.environment,
       shell: false,
-      windowsHide: true,
+      ...(process.platform === 'win32' ? { windowsHide: true } : {}),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     const spawnFailure = observeSpawnError(child, backend, executable);
@@ -121,29 +121,35 @@ export async function runSmokeWorker(args, dependencies = {}) {
 export async function parseSmokeWorkerArguments(args, { statFile = stat } = {}) {
   let backend;
   let modelPath;
-  for (let index = 0; index < args.length; index += 2) {
+  let target = 'win32-x64';
+  for (let index = 0; index < args.length;) {
     const flag = args[index];
     const value = args[index + 1];
-    if (!value || !['--backend', '--model'].includes(flag)) {
+    if (!value || !['--backend', '--model', '--target'].includes(flag)) {
       throw usageError();
     }
     if (flag === '--backend') backend = value;
     if (flag === '--model') modelPath = value;
+    if (flag === '--target') target = value;
+    index += 2;
   }
   if (!['sycl', 'cpu'].includes(backend) || !modelPath || !path.isAbsolute(modelPath)) {
+    throw usageError();
+  }
+  if (!['win32-x64', 'linux-x64'].includes(target)) {
     throw usageError();
   }
   const model = await statFile(modelPath);
   if (!model.isFile()) {
     throw new Error(`Smoke model must be an existing file: ${modelPath}`);
   }
-  return { backend, modelPath };
+  return { backend, modelPath, target };
 }
 
-export async function resolveRequestedWorkerBundle(root, backend, { readManifest = readFile } = {}) {
+export async function resolveRequestedWorkerBundle(root, backend, target = 'win32-x64', { readManifest = readFile } = {}) {
   const manifestPath = path.join(root, 'resources', 'workers', 'manifest.json');
   const manifest = parseWorkerManifest(JSON.parse(await readManifest(manifestPath, 'utf8')));
-  const bundle = resolveWorkerBundle(manifest, 'win32-x64', backend === 'sycl' ? 'auto' : 'cpu');
+  const bundle = resolveWorkerBundle(manifest, target, backend === 'sycl' ? 'auto' : 'cpu');
   await verifyWorkerBundleFiles(root, bundle);
   return {
     bundle,
@@ -317,7 +323,7 @@ function describeError(error) {
 }
 
 function usageError() {
-  return new Error('Usage: npm run smoke:worker -- --backend sycl|cpu --model /absolute/path/to/model.gguf');
+  return new Error('Usage: npm run smoke:worker -- --backend sycl|cpu --model /absolute/path/to/model.gguf [--target win32-x64|linux-x64]');
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

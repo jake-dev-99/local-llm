@@ -12,6 +12,7 @@ export interface LaunchableWorkerBundle extends ResolvedWorkerBundle {
 export interface PrepareWorkerLaunchInput {
   target: string;
   mode: AccelerationMode;
+  syclDeviceOverride?: string;
   resolveBundle: (target: string, mode: AccelerationMode) => Promise<LaunchableWorkerBundle>;
   discoverSycl: (executable: string) => Promise<DiscoveredSyclDevice>;
 }
@@ -32,7 +33,11 @@ export async function prepareWorkerLaunch(
   }
   const discovered = await input.discoverSycl(bundle.executablePath);
   const { environment, ...syclDevice } = discovered;
-  return { bundle, backend: bundle.backend, syclDevice, environment };
+  const override = input.syclDeviceOverride?.trim();
+  const selected: SyclDevice = override
+    ? { id: override as SyclDevice['id'], description: `${syclDevice.description} (override ${override})` }
+    : syclDevice;
+  return { bundle, backend: bundle.backend, syclDevice: selected, environment };
 }
 
 /**
@@ -46,6 +51,7 @@ export interface LaunchSettings {
   batchSize: number;
   microBatchSize: number;
   metalMemoryReserveMiB: number;
+  syclDevice: string;
   pythonPath: string;
   pythonEnvFlavor: string;
 }
@@ -59,6 +65,7 @@ export function launchSettings<T extends LaunchSettings>(config: T): LaunchSetti
     batchSize: config.batchSize,
     microBatchSize: config.microBatchSize,
     metalMemoryReserveMiB: config.metalMemoryReserveMiB,
+    syclDevice: config.syclDevice,
     pythonPath: config.pythonPath,
     pythonEnvFlavor: config.pythonEnvFlavor,
   };

@@ -34,6 +34,7 @@ export function readConfig(context: vscode.ExtensionContext): LocalLlmConfig {
     acceleration: config.get<'auto' | 'cpu'>('acceleration', 'auto'),
     batchSize,
     microBatchSize,
+    syclDevice: config.get<string>('syclDevice', '').trim(),
 
 
     metalMemoryReserveMiB: config.get<number>('metalMemoryReserveMiB', 1024),

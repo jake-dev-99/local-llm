@@ -23,6 +23,22 @@ test('Windows packaging prepares and verifies the official bundle', async (conte
   );
 });
 
+test('Linux packaging prepares and verifies the local SYCL bundle', async (context) => {
+  const fixture = await packageFixture(context, 'linux-x64');
+  const prepared = [];
+  await prepareTargetWorkers(fixture.root, 'linux-x64', {
+    prepareLinuxArchive: async (root) => prepared.push(root),
+  });
+  assert.deepEqual(prepared, [fixture.root]);
+  await rm(fixture.syclLibrary);
+  await assert.rejects(
+    prepareTargetWorkers(fixture.root, 'linux-x64', {
+      prepareLinuxArchive: async () => undefined,
+    }),
+    /ENOENT.*libsycl\.so/is,
+  );
+});
+
 test('Darwin verification neither prepares nor requires Windows files', async (context) => {
   const fixture = await packageFixture(context, 'darwin-arm64');
   await rm(fixture.windowsDirectory, { recursive: true, force: true });
@@ -33,16 +49,19 @@ test('Darwin verification neither prepares nor requires Windows files', async (c
   });
 });
 
-test('ignore rules are the .vscodeignore entries plus the other platform tree', async (context) => {
+test('ignore rules are the .vscodeignore entries plus the other platform trees', async (context) => {
   const root = await mkdtemp(path.join(tmpdir(), 'local-llm-ignore-'));
   context.after(() => rm(root, { recursive: true, force: true }));
   await writeFile(path.join(root, '.vscodeignore'), '# comment\r\nsrc/**\n\n.sf/**\n');
 
   assert.deepEqual(await targetIgnoreEntries(root, 'darwin-arm64'), [
-    'src/**', '.sf/**', 'resources/workers/win32-x64/**',
+    'src/**', '.sf/**', 'resources/workers/win32-x64/**', 'resources/workers/linux-x64/**',
   ]);
   assert.deepEqual(await targetIgnoreEntries(root, 'win32-x64'), [
-    'src/**', '.sf/**', 'resources/workers/darwin-arm64/**',
+    'src/**', '.sf/**', 'resources/workers/darwin-arm64/**', 'resources/workers/linux-x64/**',
+  ]);
+  assert.deepEqual(await targetIgnoreEntries(root, 'linux-x64'), [
+    'src/**', '.sf/**', 'resources/workers/darwin-arm64/**', 'resources/workers/win32-x64/**',
   ]);
 });
 
@@ -54,8 +73,8 @@ test('ignore rules exclude internal implementation work records', async () => {
 test('target preparation rejects unsupported targets before reading the manifest', async (context) => {
   const fixture = await packageFixture(context, 'darwin-arm64');
   await assert.rejects(
-    prepareTargetWorkers(fixture.root, 'linux-x64'),
-    /Worker target must be darwin-arm64 or win32-x64/,
+    prepareTargetWorkers(fixture.root, 'freebsd-x64'),
+    /Worker target must be darwin-arm64, win32-x64, or linux-x64/,
   );
 });
 
@@ -102,6 +121,19 @@ async function packageFixture(context, target) {
           ),
         },
       },
+      'linux-x64': {
+        modes: {
+          auto: { bundle: 'sycl', backend: 'sycl' },
+          cpu: { bundle: 'sycl', backend: 'cpu' },
+        },
+        bundles: {
+          sycl: await workerBundle(
+            root,
+            'resources/workers/linux-x64/sycl/llama-server',
+            ['resources/workers/linux-x64/sycl/libsycl.so'],
+          ),
+        },
+      },
     },
   };
   const manifestPath = path.join(root, 'resources', 'workers', 'manifest.json');
@@ -113,6 +145,7 @@ async function packageFixture(context, target) {
     target,
     manifest,
     syclDll: path.join(root, 'resources', 'workers', 'win32-x64', 'sycl', 'sycl-runtime.dll'),
+    syclLibrary: path.join(root, 'resources', 'workers', 'linux-x64', 'sycl', 'libsycl.so'),
     windowsDirectory: path.join(root, 'resources', 'workers', 'win32-x64'),
   };
 }

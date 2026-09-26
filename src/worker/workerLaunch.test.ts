@@ -64,6 +64,7 @@ const baseConfig = {
   batchSize: 256,
   microBatchSize: 64,
   metalMemoryReserveMiB: 1024,
+  syclDevice: '',
   pythonPath: '',
   pythonEnvFlavor: 'auto' as const,
   maxOutputTokens: 8192,

@@ -7,6 +7,7 @@ import {
   WINDOWS_WORKER_RELEASE,
   prepareWindowsWorkerArchive,
 } from './windows-worker-archive.mjs';
+import { prepareLinuxWorkerArchive } from './linux-sycl-worker.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const hostTarget = `${process.platform}-${process.arch}`;
@@ -14,6 +15,8 @@ const target = parseTarget(process.argv.slice(2), hostTarget);
 
 if (target === 'win32-x64') {
   await prepareWindowsWorkerArchive(root);
+} else if (target === 'linux-x64') {
+  await prepareLinuxWorkerArchive(root);
 } else {
   await buildDarwinWorker();
 }
@@ -21,11 +24,11 @@ if (target === 'win32-x64') {
 function parseTarget(args, defaultTarget) {
   if (args.length === 0) return defaultTarget;
   if (args.length !== 2 || args[0] !== '--target' || !args[1]) {
-    throw new Error('Usage: npm run build:worker -- [--target darwin-arm64|win32-x64]');
+    throw new Error('Usage: npm run build:worker -- [--target darwin-arm64|win32-x64|linux-x64]');
   }
   const requested = args[1];
-  if (!['darwin-arm64', 'win32-x64'].includes(requested)) {
-    throw new Error(`Worker builds support darwin-arm64 and win32-x64, not ${requested}.`);
+  if (!['darwin-arm64', 'win32-x64', 'linux-x64'].includes(requested)) {
+    throw new Error(`Worker builds support darwin-arm64, win32-x64, and linux-x64, not ${requested}.`);
   }
   return requested;
 }

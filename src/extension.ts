@@ -36,6 +36,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     status,
     vscode.lm.registerLanguageModelChatProvider('local-llm-engine', languageModels),
     vscode.languages.registerInlineCompletionItemProvider({ scheme: 'file' }, inlineCompletions),
+    vscode.languages.registerInlineCompletionItemProvider({ scheme: 'vscode-remote' }, inlineCompletions),
     ...registerModelCommands({ context, models, worker, logger }),
     registry.onDidChange(() => updateStatus(status, worker.state, registry.list().length)),
     worker.onDidChangeState((state) => updateStatus(status, state, registry.list().length)),
@@ -59,11 +60,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   logger.info(
-    `Local LLM Engine activated on ${process.platform}-${process.arch}; ${registry.list().length} model(s) installed.`,
+    `Local LLM Engine activated on ${process.platform}-${process.arch} `
+    + `(remote=${vscode.env.remoteName ?? 'local'} worker=${process.platform}-${process.arch}); `
+    + `${registry.list().length} model(s) installed.`,
   );
   if (!isSupportedPlatform()) {
     void vscode.window.showWarningMessage(
-      `Local LLM Engine does not include a worker for ${process.platform}-${process.arch}. Supported platforms are Apple Silicon macOS and x64 Windows.`,
+      `Local LLM Engine does not include a worker for ${process.platform}-${process.arch}. Supported platforms are Apple Silicon macOS, x64 Windows, and x64 Linux.`,
     );
   }
 }
@@ -77,7 +80,8 @@ export async function deactivate(): Promise<void> {
 function isSupportedPlatform(): boolean {
   return (
     (process.platform === 'darwin' && process.arch === 'arm64') ||
-    (process.platform === 'win32' && process.arch === 'x64')
+    (process.platform === 'win32' && process.arch === 'x64') ||
+    (process.platform === 'linux' && process.arch === 'x64')
   );
 }
 

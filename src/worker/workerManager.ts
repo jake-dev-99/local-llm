@@ -418,6 +418,7 @@ export class WorkerManager implements vscode.Disposable {
       const launch = await prepareWorkerLaunch({
         target,
         mode: config.acceleration,
+        syclDeviceOverride: config.syclDevice,
         resolveBundle: (workerTarget, mode) => this.timedPhase(
           'Verifying the bundled worker files',
           () => verifiedWorkerBundle(this.context.extensionUri.fsPath, workerTarget, mode),
@@ -436,7 +437,7 @@ export class WorkerManager implements vscode.Disposable {
       const syclFitTargetMiB = this.syclFitTargets.get(fitKey) ?? SYCL_INITIAL_FIT_TARGET_MIB;
       if (launch.syclDevice) {
         this.logger.info(
-          `[Model Loading] Windows SYCL preflight passed: ${launch.syclDevice.id} `
+          `[Model Loading] SYCL preflight passed: ${launch.syclDevice.id} `
           + `(${launch.syclDevice.description}).`,
         );
       }
@@ -481,6 +482,7 @@ export class WorkerManager implements vscode.Disposable {
         backend,
         orphanBytes,
         syclFitTargetMiB,
+        launch.syclDevice?.id || config.syclDevice.trim() || 'SYCL0',
       );
       this.logger.info(
         `[Model Loading] Starting local worker: target=${target} bundle=${launch.bundle.bundleName} ` +
@@ -496,7 +498,7 @@ export class WorkerManager implements vscode.Disposable {
         cwd: pathDirectory(executable),
         env: launch.environment,
         shell: false,
-        windowsHide: true,
+        ...(process.platform === 'win32' ? { windowsHide: true } : {}),
         stdio: ['pipe', 'pipe', 'pipe'],
       });
       child.stdin.end();
@@ -845,6 +847,7 @@ export function buildWorkerArguments(
   backend: WorkerBackend,
   concurrentWorkerBytes?: number,
   syclFitTargetMiB = SYCL_INITIAL_FIT_TARGET_MIB,
+  syclDevice = 'SYCL0',
 ): string[] {
   const batchSize = Math.max(32, Math.floor(config.batchSize));
   const microBatchSize = Math.max(
@@ -894,7 +897,7 @@ export function buildWorkerArguments(
         '--fit-target',
         String(syclFitTargetMiB),
         '--device',
-        'SYCL0',
+        syclDevice,
         '--split-mode',
         'none',
         '--main-gpu',

@@ -3,17 +3,23 @@ import path from 'node:path';
 
 import { parseWorkerManifest, verifyPlatformBundles } from '../src/worker/workerManifest.ts';
 import { prepareWindowsWorkerArchive } from './windows-worker-archive.mjs';
+import { prepareLinuxWorkerArchive } from './linux-sycl-worker.mjs';
 
-const TARGETS = new Set(['darwin-arm64', 'win32-x64']);
+const TARGETS = new Set(['darwin-arm64', 'win32-x64', 'linux-x64']);
 
 export async function prepareTargetWorkers(root, target, dependencies = {}) {
   if (!TARGETS.has(target)) {
-    throw new Error('Worker target must be darwin-arm64 or win32-x64.');
+    throw new Error('Worker target must be darwin-arm64, win32-x64, or linux-x64.');
   }
   if (target === 'win32-x64') {
     const prepareWindowsArchive = dependencies.prepareWindowsArchive
       ?? prepareWindowsWorkerArchive;
     await prepareWindowsArchive(root);
+  }
+  if (target === 'linux-x64') {
+    const prepareLinuxArchive = dependencies.prepareLinuxArchive
+      ?? prepareLinuxWorkerArchive;
+    await prepareLinuxArchive(root);
   }
   const manifestPath = path.join(root, 'resources', 'workers', 'manifest.json');
   const rawManifest = JSON.parse(await readFile(manifestPath, 'utf8'));
@@ -36,12 +42,12 @@ export async function prepareTargetWorkers(root, target, dependencies = {}) {
  */
 export async function targetIgnoreEntries(root, target) {
   if (!TARGETS.has(target)) {
-    throw new Error('Worker target must be darwin-arm64 or win32-x64.');
+    throw new Error('Worker target must be darwin-arm64, win32-x64, or linux-x64.');
   }
-  const otherTarget = target === 'darwin-arm64' ? 'win32-x64' : 'darwin-arm64';
+  const others = [...TARGETS].filter((candidate) => candidate !== target);
   const listed = (await readFile(path.join(root, '.vscodeignore'), 'utf8'))
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line && !line.startsWith('#'));
-  return [...listed, `resources/workers/${otherTarget}/**`];
+  return [...listed, ...others.map((other) => `resources/workers/${other}/**`)];
 }

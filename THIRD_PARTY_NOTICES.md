@@ -3,7 +3,12 @@
 Platform VSIX packages include `llama-server` from
 [`ggml-org/llama.cpp`](https://github.com/ggml-org/llama.cpp) commit
 `60eeeb6082c1126bb8bc72902c83123cd056811b` (release `b10472`). The Darwin
-worker is built locally from that source. The Windows VSIX includes the complete,
+worker is built locally from that source. The Linux worker is built locally
+from that source with the Intel oneAPI DPC++ compiler (`icx`/`icpx`,
+`GGML_SYCL=ON`, `GGML_SYCL_F16=OFF`) and bundles the resulting SYCL, Unified
+Runtime, oneMKL, oneDNN, OpenMP, and TBB user-mode runtime closure discovered
+with `readelf`/`ldd` and staged with an `$ORIGIN` runtime path. The Windows
+VSIX includes the complete,
 unmodified official release asset
 [`llama-b10472-bin-win-sycl-x64.zip`](https://github.com/ggml-org/llama.cpp/releases/download/b10472/llama-b10472-bin-win-sycl-x64.zip),
 SHA-256 `0c4c50f1e9805933e043d4970f0c2050e4fb5343b8ac0244a49efaa474705830`.

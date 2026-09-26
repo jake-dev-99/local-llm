@@ -20,6 +20,21 @@ test('smoke options reject a relative model path before inspecting it', async ()
   );
 });
 
+test('smoke options accept an explicit linux-x64 target', async () => {
+  const parsed = await parseSmokeWorkerArguments(
+    ['--backend', 'sycl', '--model', '/models/test.gguf', '--target', 'linux-x64'],
+    { statFile: async () => ({ isFile: () => true }) },
+  );
+  assert.deepEqual(parsed, { backend: 'sycl', modelPath: '/models/test.gguf', target: 'linux-x64' });
+  await assert.rejects(
+    parseSmokeWorkerArguments(
+      ['--backend', 'sycl', '--model', '/models/test.gguf', '--target', 'freebsd-x64'],
+      { statFile: async () => ({ isFile: () => true }) },
+    ),
+    /--target win32-x64\|linux-x64/,
+  );
+});
+
 test('Windows smoke maps sycl and cpu to one official distribution', async (context) => {
   const fixture = await workerFixture(context);
   const sycl = await resolveRequestedWorkerBundle(fixture.root, 'sycl');
